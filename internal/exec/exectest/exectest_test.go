@@ -18,9 +18,18 @@ import (
 //
 // spec: S16/integration-fakes-interfaces
 func TestFakeRunnerSatisfiesRunner(t *testing.T) {
-	var r exec.Runner = exectest.New()
-	if r == nil {
-		t.Fatal("exectest.New() does not satisfy exec.Runner")
+	fake := exectest.New()
+	fake.Script("noop", exectest.Outcome{Exit: 0})
+
+	// The fake is assignable to the exec seam, and works when driven through it.
+	var r exec.Runner = fake
+	h, err := r.Start(context.Background(), exec.Spec{Argv: []string{"noop"}})
+	if err != nil {
+		t.Fatalf("Start through exec.Runner: %v", err)
+	}
+	st, err := h.Wait()
+	if err != nil || st.Code != 0 || st.Signaled {
+		t.Fatalf("Wait through the seam = (%+v, %v), want a clean exit 0", st, err)
 	}
 }
 

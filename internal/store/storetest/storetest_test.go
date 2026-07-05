@@ -15,9 +15,14 @@ import (
 //
 // spec: S16/integration-fakes-interfaces
 func TestFakeSatisfiesStore(t *testing.T) {
+	// The fake is assignable to the meta seam, and works when driven through it.
 	var s store.Store = storetest.New()
-	if s == nil {
-		t.Fatal("storetest.New() does not satisfy store.Store")
+	r, err := s.CreateRun(context.Background(), store.RunSpec{Pipeline: "p", Lane: "l"})
+	if err != nil {
+		t.Fatalf("CreateRun through store.Store: %v", err)
+	}
+	if r.State != store.RunQueued {
+		t.Errorf("new run state = %q, want queued", r.State)
 	}
 }
 

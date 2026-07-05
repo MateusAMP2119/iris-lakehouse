@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // Server is an in-process HTTP server bound to a unix socket. Path is the socket
@@ -57,9 +58,12 @@ func Serve(t testing.TB, h http.Handler) *Server {
 
 	s := &Server{
 		Path: path,
-		srv:  &http.Server{Handler: h},
-		ln:   ln,
-		dir:  dir,
+		// ReadHeaderTimeout bounds header reads (Slowloris guard); the harness is
+		// a real HTTP server, so it carries the same hardening the engine's
+		// listener will.
+		srv: &http.Server{Handler: h, ReadHeaderTimeout: 5 * time.Second},
+		ln:  ln,
+		dir: dir,
 	}
 	s.Client = &http.Client{Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {

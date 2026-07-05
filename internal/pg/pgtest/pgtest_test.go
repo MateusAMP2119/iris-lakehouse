@@ -35,9 +35,15 @@ var canonicalDDL = []string{
 //
 // spec: S16/integration-fakes-interfaces
 func TestRecorderSatisfiesDB(t *testing.T) {
-	var db pg.DB = pgtest.New()
-	if db == nil {
-		t.Fatal("pgtest.New() does not satisfy pg.DB")
+	rec := pgtest.New()
+
+	// The recorder is assignable to the pg seam, and records when driven through it.
+	var db pg.DB = rec
+	if err := db.Exec(context.Background(), "SELECT 1;"); err != nil {
+		t.Fatalf("Exec through pg.DB: %v", err)
+	}
+	if got := rec.Statements(); len(got) != 1 || got[0] != "SELECT 1;" {
+		t.Fatalf("statement issued through the seam not recorded: %v", got)
 	}
 }
 

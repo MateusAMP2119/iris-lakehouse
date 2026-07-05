@@ -33,7 +33,9 @@ func writeScript(t *testing.T, dir, name, body string) string {
 // exec seam, exactly as the fake does.
 //
 // spec: S16/real-process-io-throwaway-scripts
-func TestOSRunnerImplementsRunner(t *testing.T) {
+func TestOSRunnerImplementsRunner(_ *testing.T) {
+	// Compile-time proof the real runner is assignable to the exec seam; the
+	// behavioral tests below drive it through that seam.
 	var _ exec.Runner = exec.NewOSRunner()
 }
 

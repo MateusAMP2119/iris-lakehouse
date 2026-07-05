@@ -19,7 +19,7 @@ import (
 // spec: S16/real-process-io-throwaway-scripts
 func TestUnixSocketHTTPRoundTrip(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"role": "leader"})
 	})
@@ -59,7 +59,7 @@ func TestUnixSocketHTTPRoundTrip(t *testing.T) {
 //
 // spec: S16/real-process-io-throwaway-scripts
 func TestUnixSocketHTTPStatusPropagates(t *testing.T) {
-	srv := socketio.Serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := socketio.Serve(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "no leader", http.StatusServiceUnavailable)
 	}))
 
