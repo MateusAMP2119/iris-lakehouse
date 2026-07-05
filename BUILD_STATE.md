@@ -6,13 +6,13 @@ Task briefs live in `docs/Tasks/`. Process epics E00 → E12, then E14, then E13
 
 Worktrees: `../iris-worktrees/EXX.Y` on branch `issue/EXX.Y-short-name`.
 
-## E00 Conformance Harness and Traceability Gate — epic PR: —
+## E00 Conformance Harness and Traceability Gate — epic PR: #6 (awaiting human review)
 
 - [x] E00.1 Manifest seed and doctrine — done (PR #1: https://github.com/MateusAMP2119/iris-engine-cli/pull/1)
 - [x] E00.2 Traceability gate — done (PR #2: https://github.com/MateusAMP2119/iris-engine-cli/pull/2)
 - [x] E00.3 Golden files and fixtures — done (PR #3: https://github.com/MateusAMP2119/iris-engine-cli/pull/3)
-- [ ] E00.4 Fakes and process IO — in-progress (worktree .worktrees/E00.4, branch issue/E00.4-fakes-process-io)
-- [ ] E00.5 Conformance runner and CI — in-progress (worktree .worktrees/E00.5, branch issue/E00.5-conformance-ci)
+- [x] E00.4 Fakes and process IO — done (PR #5: https://github.com/MateusAMP2119/iris-engine-cli/pull/5)
+- [x] E00.5 Conformance runner and CI — done (PR #4: https://github.com/MateusAMP2119/iris-engine-cli/pull/4)
 
 ## E01 Repo Skeleton, CLI Frame and Config — epic PR: —
 
