@@ -70,5 +70,7 @@ type Handle interface {
 // process in its own process group; a fake starts scripted runs with no real
 // process. Start honors ctx: cancelling it kills the process group.
 type Runner interface {
+	// Start spawns spec and returns a Handle over its process group. Cancelling
+	// ctx kills that group.
 	Start(ctx context.Context, spec Spec) (Handle, error)
 }
