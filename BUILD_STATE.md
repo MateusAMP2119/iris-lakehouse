@@ -1,0 +1,143 @@
+# BUILD_STATE
+
+Orchestrator resume file. One line per task: status ∈ {todo, in-progress, done}; done
+lines carry the PR link. Epic rows track the development→master checkpoint PR.
+Task briefs live in `docs/Tasks/`. Process epics E00 → E12, then E14, then E13.
+
+Worktrees: `../iris-worktrees/EXX.Y` on branch `issue/EXX.Y-short-name`.
+
+## E00 Conformance Harness and Traceability Gate — epic PR: —
+
+- [ ] E00.1 Manifest seed and doctrine — todo
+- [ ] E00.2 Traceability gate — todo (needs E00.1)
+- [ ] E00.3 Golden files and fixtures — todo (needs E00.1)
+- [ ] E00.4 Fakes and process IO — todo (needs E00.3)
+- [ ] E00.5 Conformance runner and CI — todo (needs E00.2, E00.3)
+
+## E01 Repo Skeleton, CLI Frame and Config — epic PR: —
+
+- [ ] E01.1 Module and package layout — todo (needs E00)
+- [ ] E01.2 Cobra tree and exit codes — todo (needs E01.1)
+- [ ] E01.3 Config precedence — todo (needs E01.2)
+- [ ] E01.4 CI and lint wiring — todo (needs E01.1)
+
+## E02 Engine Install, Daemon and Leadership — epic PR: —
+
+- [ ] E02.1 Meta DDL and schema — todo (needs E01)
+- [ ] E02.2 Admin DSN chain — todo (needs E02.1)
+- [ ] E02.3 Managed Postgres subprocess — todo (needs E02.2)
+- [ ] E02.4 Install and uninstall — todo (needs E02.1, E02.2, E02.3)
+- [ ] E02.5 Listeners and daemon protocol — todo (needs E02.4)
+- [ ] E02.6 Leader election single writer — todo (needs E02.5)
+- [ ] E02.7 Crash reconciliation — todo (needs E02.6)
+- [ ] E02.8 Logging and service unit — todo (needs E02.5)
+
+## E03 Declarations, Schemas and Apply — epic PR: —
+
+- [ ] E03.1 Declaration parsing and discovery — todo (needs E01)
+- [ ] E03.2 Lane composer validation — todo (needs E03.1)
+- [ ] E03.3 Single file targets — todo (needs E03.1)
+- [ ] E03.4 Dependency graph validation — todo (needs E03.1)
+- [ ] E03.5 Type mapping and DDL — todo (needs E03.1)
+- [ ] E03.6 Drift classification — todo (needs E03.5)
+- [ ] E03.7 Migration ledger sync — todo (needs E02, E03.5, E03.6)
+- [ ] E03.8 Idempotent provisioning — todo (needs E02, E03.7)
+- [ ] E03.9 Registry persistence in meta — todo (needs E02, E03.2, E03.4)
+- [ ] E03.10 Apply destroy closure — todo (needs E02, E03.8, E03.9)
+
+## E04 Roles, Grants and Credentials — epic PR: —
+
+- [ ] E04.1 Access declaration validation — todo (needs E02, E03)
+- [ ] E04.2 Role and credential lifecycle — todo (needs E02, E03)
+- [ ] E04.3 Grant reconcile and drift — todo (needs E04.1, E04.2)
+- [ ] E04.4 Connection injection and enforcement — todo (needs E04.2, E04.3)
+
+## E05 Dispatcher, Lanes and Dead Letters — epic PR: —
+
+- [ ] E05.1 Exec seam — todo (needs E02, E03)
+- [ ] E05.2 Run environment — todo (needs E05.1)
+- [ ] E05.3 Run records and states — todo (needs E05.1)
+- [ ] E05.4 Lane model and walk — todo (needs E02, E03)
+- [ ] E05.5 Gate and consumption — todo (needs E05.3, E05.4)
+- [ ] E05.6 Failure propagation — todo (needs E05.5)
+- [ ] E05.7 Dead letter replay — todo (needs E05.6)
+- [ ] E05.8 Dead letter drain — todo (needs E05.7)
+- [ ] E05.9 Retention and pruning — todo (needs E05.7)
+- [ ] E05.10 Manual pipeline run — todo (needs E05.5)
+- [ ] E05.11 Doctrines and scope — todo
+- [ ] E05.12 Lane runner pass semantics — todo (needs E05.1, E05.4, E05.5)
+
+## E06 Write Capture, Wipe and Promotion — epic PR: —
+
+- [ ] E06.1 Journal DDL and partitioning — todo (needs E03, E05)
+- [ ] E06.2 Capture trigger emission — todo (needs E06.1)
+- [ ] E06.3 Run attribution — todo (needs E06.2)
+- [ ] E06.4 Payload tiers and modes — todo (needs E06.2, E06.3)
+- [ ] E06.5 Wipe replay and conflicts — todo (needs E06.1)
+- [ ] E06.6 Promotion — todo (needs E06.5)
+- [ ] E06.7 Live wipe closure — todo (needs E06.5, E06.6)
+
+## E07 Provenance, Journal Lifecycle and Object Store — epic PR: —
+
+- [ ] E07.1 Provenance walk — todo (needs E05, E06)
+- [ ] E07.2 Snapshot pin — todo (needs E05, E06)
+- [ ] E07.3 Seal and compaction — todo (needs E05, E06)
+- [ ] E07.4 Checkpoint chain and engine key — todo (needs E07.3)
+- [ ] E07.5 Object store and export — todo (needs E07.4)
+- [ ] E07.6 Archived reads and destroy closure — todo (needs E07.1, E07.5)
+
+## E08 Build, Artifacts and Modes — epic PR: —
+
+- [ ] E08.1 Recipe inference and matrix — todo (needs E03, E05)
+- [ ] E08.2 Build and artifact storage — todo (needs E08.1)
+- [ ] E08.3 Promote gating — todo (needs E08.2)
+- [ ] E08.4 Mode execution and retirement — todo (needs E08.2)
+
+## E09 Read API, Endpoints and PATs — epic PR: —
+
+- [ ] E09.1 PAT store and scopes — todo (needs E02, E03, E04)
+- [ ] E09.2 Endpoint compile and validation — todo (needs E02, E03, E04)
+- [ ] E09.3 Param grammar and paging — todo (needs E09.2)
+- [ ] E09.4 Envelope and serialization — todo (needs E09.3)
+- [ ] E09.5 Route mux and auth — todo (needs E09.1, E09.4)
+- [ ] E09.6 Endpoint apply lifecycle — todo (needs E09.2, E09.5)
+- [ ] E09.7 Read pool and SQL safety — todo (needs E09.1, E09.5)
+- [ ] E09.8 Q and data routes — todo (needs E09.6, E09.7)
+- [ ] E09.9 NDJSON streaming — todo (needs E09.5, E09.8)
+- [ ] E09.10 Read parity closure — todo (needs E09.8)
+
+## E10 Destructive Operation Gates — epic PR: —
+
+- [ ] E10.1 Gate and blocker predicates — todo (needs E03, E05, E06)
+- [ ] E10.2 Confirmation flows — todo (needs E10.1)
+- [ ] E10.3 Remote tiering and failover — todo (needs E10.2)
+
+## E11 High Availability and Failover — epic PR: —
+
+- [ ] E11.1 Leader lock election — todo (needs E02, E05)
+- [ ] E11.2 Standby reads and rejection — todo (needs E11.1)
+- [ ] E11.3 Promotion and self demotion — todo (needs E11.1)
+- [ ] E11.4 Host prerequisites and live failover — todo (needs E11.3; conformance rows ride E13 step 9)
+
+## E12 Stats, Info and Inspect — epic PR: —
+
+- [ ] E12.1 Stats rollups — todo (needs E02, E05)
+- [ ] E12.2 Info inspect and show — todo (needs E12.1)
+
+## E14 Graph Views and Triage Surface — epic PR: — (builds BEFORE E13)
+
+- [ ] E14.1 Ref grammar and triage shows — todo (needs E05, E07, E09)
+- [ ] E14.2 Workload wiring panel — todo (needs E14.1)
+- [ ] E14.3 Rail renderer and golden files — todo (needs E05, E07, E09)
+- [ ] E14.4 Read routes and before cursor — todo (needs E14.1, E14.2)
+
+## E13 Golden Sample and Acceptance — epic PR: — (last; the spine)
+
+- [ ] E13.1 Golden workspace fixture — todo (needs E00; grows with all epics)
+- [ ] E13.2 Install and binary boot — todo (needs E13.1)
+- [ ] E13.3 Lane runs and failures — todo (needs E13.1, E13.2)
+- [ ] E13.4 Journal capture and wipe — todo (needs E13.3)
+- [ ] E13.5 Sealing and archival — todo (needs E13.4)
+- [ ] E13.6 Data provenance lineage — todo (needs E13.5)
+- [ ] E13.7 Endpoint reads and grants — todo (needs E13.1, E13.6)
+- [ ] E13.8 Failover and unattended closure — todo (needs all earlier E13)
