@@ -36,6 +36,7 @@ type Client struct {
 	writer   MetaWriteConn
 	reader   Reader
 	registry RegistryReader
+	ledger   AppliedHeadReader
 }
 
 // Connect opens the meta client from the admin-derived connection source: it
@@ -85,6 +86,7 @@ func Connect(ctx context.Context, src ConnSource) (*Client, error) {
 		writer:   &pgxWriteConn{conn: session},
 		reader:   newPgxReader(readPoolSeam),
 		registry: &pgxRegistryReader{pool: readPoolSeam},
+		ledger:   &pgxAppliedHeadReader{pool: readPoolSeam},
 	}, nil
 }
 
@@ -102,6 +104,10 @@ func (c *Client) Reader() Reader { return c.reader }
 // RegistryReader returns the plain-MVCC registry reader (the pool): the pipelines
 // and dependencies read seam the apply op rebuilds the dependency graph from.
 func (c *Client) RegistryReader() RegistryReader { return c.registry }
+
+// AppliedHeadReader returns the plain-MVCC applied-migration-head reader (the pool):
+// the meta migrations read seam provisioning builds its per-table ledger view from.
+func (c *Client) AppliedHeadReader() AppliedHeadReader { return c.ledger }
 
 // Close tears down the client: it closes the reader pool and the leader session. It
 // is safe to call after the lock has already released the session, so the daemon can
