@@ -2,9 +2,12 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sync"
 
@@ -245,11 +248,20 @@ func (o *controlOrchestrator) laneMembers(lane string) []string {
 // already-provisioned database plans empty, so provisioning is idempotent (nothing
 // re-created, nothing re-recorded).
 func (o *controlOrchestrator) provision(ctx context.Context, dryRun bool) error {
-	ws, err := declare.DiscoverWorkspace(o.workspace)
-	if err != nil {
-		return fmt.Errorf("declare apply: discover schemas: %w", err)
+	schemasDir := filepath.Join(o.workspace, "schemas")
+	if _, err := os.Stat(schemasDir); errors.Is(err, fs.ErrNotExist) {
+		return nil // no schemas/ tree: nothing to provision.
+	} else if err != nil {
+		return fmt.Errorf("declare apply: stat schemas tree: %w", err)
 	}
-	if len(ws.Schemas) == 0 {
+	// Provisioning reads only the schemas/ tree (pipeline-independent, specification
+	// section 5): it never validates the pipeline folders, so a schema apply provisions
+	// even while another pipeline in the workspace is mid-edit.
+	schemas, err := declare.ValidateSchemaTree(schemasDir)
+	if err != nil {
+		return fmt.Errorf("declare apply: read schemas: %w", err)
+	}
+	if len(schemas) == 0 {
 		return nil // no declared tables: nothing to provision.
 	}
 
@@ -257,8 +269,8 @@ func (o *controlOrchestrator) provision(ctx context.Context, dryRun bool) error 
 	if err != nil {
 		return fmt.Errorf("declare apply: read applied migration heads: %w", err)
 	}
-	ledgers := make(map[string]pg.TableLedger, len(ws.Schemas))
-	for _, dt := range ws.Schemas {
+	ledgers := make(map[string]pg.TableLedger, len(schemas))
+	for _, dt := range schemas {
 		disk, err := pg.LoadDiskMigrations(filepath.Join(dt.Dir, "migrations"))
 		if err != nil {
 			return fmt.Errorf("declare apply: load migrations for %s.%s: %w", dt.Schema, dt.Table, err)
@@ -271,7 +283,7 @@ func (o *controlOrchestrator) provision(ctx context.Context, dryRun bool) error 
 	if err != nil {
 		return fmt.Errorf("declare apply: read live view: %w", err)
 	}
-	plan, err := pg.PlanProvision(ws.Schemas, live, ledgers)
+	plan, err := pg.PlanProvision(schemas, live, ledgers)
 	if err != nil {
 		return fmt.Errorf("declare apply: plan provision: %w", err)
 	}
