@@ -192,6 +192,9 @@ func parseComposer(raw map[string]any, data []byte) (*Declaration, error) {
 	if err := checkKeys(raw, composerFields, composerFieldList); err != nil {
 		return nil, err
 	}
+	if _, err := requireNonEmptyString(raw, "lane"); err != nil {
+		return nil, err
+	}
 	if err := requireStringList(raw, "order"); err != nil {
 		return nil, err
 	}
@@ -265,6 +268,9 @@ func requireStringList(raw map[string]any, key string) error {
 	list, ok := v.([]any)
 	if !ok {
 		return fmt.Errorf("declare: field %q must be a string list", key)
+	}
+	if len(list) == 0 {
+		return fmt.Errorf("declare: field %q must not be empty", key)
 	}
 	for i, e := range list {
 		if _, ok := e.(string); !ok {

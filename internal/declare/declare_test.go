@@ -81,6 +81,34 @@ func TestEightFieldWhitelist(t *testing.T) {
 		if _, err := declare.ParseDeclaration([]byte("name: p\nrun: [python, main.py]\norder: [a, b]\n")); err == nil {
 			t.Error("declaration with both run and order accepted; expected rejection")
 		}
+
+		// Composer-shape parse guards (the composer analogue of the pipeline
+		// required-field rules): a composer carries a non-empty lane and a
+		// non-empty order; an empty order or a missing/blank lane is malformed.
+		composerReject := []struct {
+			name string
+			src  string
+		}{
+			{"empty-order", "lane: ingest\norder: []\n"},
+			{"missing-lane", "order: [a, b]\n"},
+			{"empty-lane", "lane: \"\"\norder: [a, b]\n"},
+			{"blank-lane", "lane: \"   \"\norder: [a, b]\n"},
+		}
+		for _, tc := range composerReject {
+			t.Run(tc.name, func(t *testing.T) {
+				if _, err := declare.ParseDeclaration([]byte(tc.src)); err == nil {
+					t.Errorf("malformed composer (%s) accepted; expected rejection", tc.name)
+				}
+			})
+		}
+		// Accept: a well-formed composer (non-empty lane and order).
+		comp, err := declare.ParseDeclaration([]byte("lane: ingest\norder: [a, b]\n"))
+		if err != nil {
+			t.Fatalf("well-formed composer rejected: %v", err)
+		}
+		if comp.Kind != declare.KindComposer || comp.Composer == nil {
+			t.Fatalf("composer parsed as %v, want a composer", comp.Kind)
+		}
 	})
 }
 

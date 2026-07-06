@@ -35,11 +35,11 @@ func ValidatePipelineFolder(dir string) (*PipelineFolder, error) {
 	hasDecl := false
 	for _, e := range entries {
 		name := e.Name()
+		if isHidden(name) {
+			continue // skip local tooling (.venv, .git, .DS_Store) at any type.
+		}
 		if e.IsDir() {
 			subdirs = append(subdirs, name)
-			continue
-		}
-		if isHidden(name) {
 			continue
 		}
 		if name == declFile {

@@ -67,6 +67,22 @@ func TestPipelineFolderShape(t *testing.T) {
 			t.Errorf("single-script folder rejected: %v", err)
 		}
 
+		// Accept: hidden tooling directories and files (.venv, .git, .DS_Store,
+		// ...) are skipped, never mistaken for internal stage structure.
+		withHidden := makePipelineFolder(t, "widgets", map[string]string{
+			"iris-declare.yaml": "name: widgets\nrun: [python, main.py]\n",
+			"main.py":           "print(1)\n",
+			".venv/":            "",
+			".git/":             "",
+			".DS_Store":         "junk\n",
+		})
+		pf2, err := declare.ValidatePipelineFolder(withHidden)
+		if err != nil {
+			t.Errorf("folder with hidden tooling entries rejected: %v", err)
+		} else if pf2.Script != "main.py" {
+			t.Errorf("Script = %q, want main.py", pf2.Script)
+		}
+
 		reject := []struct {
 			name  string
 			files map[string]string
