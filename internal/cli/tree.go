@@ -258,12 +258,12 @@ func (a *app) engineCmd() *cobra.Command {
 	}
 	uninstall := &cobra.Command{
 		Use: "uninstall", Short: "Full engine teardown (gated)",
-		Args: cobra.NoArgs, RunE: a.localStub("engine uninstall"),
+		Args: cobra.NoArgs, RunE: a.engineUninstall(),
 	}
 	addConfirmFlags(uninstall)
 	info := &cobra.Command{
 		Use: "info", Short: "Show engine and version info, role, listeners, uptime",
-		Args: cobra.NoArgs, RunE: a.daemonStub("engine info"),
+		Args: cobra.NoArgs, RunE: a.engineInfo(),
 	}
 	logs := &cobra.Command{
 		Use: "logs", Short: "Tail the daemon log",

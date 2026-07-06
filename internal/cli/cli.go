@@ -21,6 +21,9 @@ import (
 	"log/slog"
 
 	"github.com/spf13/cobra"
+
+	"github.com/MateusAMP2119/iris-engine-cli/internal/config"
+	"github.com/MateusAMP2119/iris-engine-cli/internal/daemon"
 )
 
 // The exit codes are the categories of specification section 8. Detail rides the
@@ -52,6 +55,11 @@ type app struct {
 	errOut   io.Writer
 	logger   *slog.Logger
 	jsonMode bool
+	// newKeyReader builds the engine-key reader `iris engine info` reads the public
+	// half through. It is nil in production (the handler falls back to
+	// daemon.NewEngineKeyReader) and injected by tests to drive info with no live
+	// meta.
+	newKeyReader func(config.Settings) daemon.EngineKeyReader
 }
 
 // newApp builds an app whose structured logs go to stderr at info level, keeping

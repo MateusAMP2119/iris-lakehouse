@@ -198,6 +198,17 @@ func JournalTable() Table {
 	}
 }
 
+// JournalTeardownDDL renders the statements that drop the data journal in full:
+// the engine uninstall teardown of the data database (specification sections 4 and
+// 12). It is a single cascading DROP TABLE, so the journal's partitions and any
+// triggers or rules that depend on it go with it rather than being orphaned; the
+// per-table capture triggers E03/E04 add to user tables extend this teardown when
+// they land. IF EXISTS keeps the teardown idempotent when the journal was already
+// dropped or never provisioned.
+func JournalTeardownDDL() []string {
+	return []string{"DROP TABLE IF EXISTS " + JournalTable().Qualified() + " CASCADE;"}
+}
+
 // EnsureJournal issues the embedded data_journal DDL create-if-missing through db:
 // the partitioned CREATE TABLE IF NOT EXISTS public.data_journal plus its
 // provenance index. Like the meta schema it is applied at provisioning and
