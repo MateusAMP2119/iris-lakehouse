@@ -253,8 +253,8 @@ func (a *app) engineCmd() *cobra.Command {
 		Args: cobra.NoArgs, RunE: a.daemonStub("engine stop"),
 	}
 	install := &cobra.Command{
-		Use: "install", Short: "Create meta and the journal, ensure tables, set up the socket",
-		Args: cobra.NoArgs, RunE: a.localStub("engine install"),
+		Use: "install", Short: "Download and place the managed Postgres, then create meta and set up the socket",
+		Args: cobra.NoArgs, RunE: a.engineInstall(),
 	}
 	uninstall := &cobra.Command{
 		Use: "uninstall", Short: "Full engine teardown (gated)",
