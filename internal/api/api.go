@@ -45,37 +45,68 @@ type ErrorBody struct {
 }
 
 // Health is the payload of GET /healthz: the daemon's liveness and its leadership
-// role. Role is "unknown" until leader election lands (E02.6), when GET /healthz
-// and GET /leader report leader/standby on both listeners.
+// role. Role is leader, standby, or unknown (before election resolves), reported on
+// both listeners so the CLI's daemon-reachability check and the conformance harness
+// can read the daemon's role.
 type Health struct {
 	// Status is "ok" when the daemon is serving.
 	Status string `json:"status"`
-	// Role is the leadership role: leader, standby, or unknown (until E02.6).
+	// Role is the leadership role: leader, standby, or unknown.
 	Role string `json:"role"`
 }
 
+// MuxOption configures the mux at construction.
+type MuxOption func(*mux)
+
+// WithRole wires the leadership role reporter the mux consults per request: it
+// reports the role on GET /healthz and gates mutations to the leader. A nil
+// reporter is ignored, keeping the safe default (unknown role, mutations rejected).
+func WithRole(r RoleReporter) MuxOption {
+	return func(m *mux) {
+		if r != nil {
+			m.role = r
+		}
+	}
+}
+
 // NewMux returns the single http.Handler both daemon listeners serve. It owns the
-// route roster; unknown routes and non-GET methods get the closed error envelope,
-// never the standard library's plain-text default.
-func NewMux() http.Handler {
-	return &mux{}
+// route roster; a standby rejects mutations with leader guidance, unknown routes
+// and disallowed methods get the closed error envelope, and GET /healthz reports
+// liveness and the leadership role. With no WithRole option the role is unknown, so
+// mutations are rejected until election confirms a leader.
+func NewMux(opts ...MuxOption) http.Handler {
+	m := &mux{role: unknownRole{}}
+	for _, o := range opts {
+		o(m)
+	}
+	return m
 }
 
 // mux is the daemon's route table. It is a hand-rolled matcher (rather than
 // http.ServeMux) so unknown routes and disallowed methods return the read-API
-// error envelope, not net/http's plain-text 404/405.
-type mux struct{}
+// error envelope, not net/http's plain-text 404/405. It consults role to gate
+// mutations to the leader (specification section 15).
+type mux struct {
+	role RoleReporter
+}
 
-// ServeHTTP dispatches a request to its route, or returns the closed-code error
-// envelope for an unknown route or a disallowed method.
+// ServeHTTP gates mutations to the leader, then dispatches a request to its route,
+// or returns the closed-code error envelope for an unknown route or a disallowed
+// method. A mutating request on any non-leader role is rejected with the not_leader
+// envelope and leader guidance before it ever reaches a route: standbys reject
+// mutations, reads work anywhere.
 func (m *mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !isSafeMethod(r.Method) && m.role.Role() != RoleLeader {
+		WriteNotLeader(w, m.role.LeaderHint())
+		return
+	}
 	switch r.URL.Path {
 	case "/healthz":
 		if r.Method != http.MethodGet {
 			WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET /healthz only")
 			return
 		}
-		WriteData(w, http.StatusOK, Health{Status: "ok", Role: "unknown"})
+		WriteData(w, http.StatusOK, Health{Status: "ok", Role: string(m.role.Role())})
 	default:
 		WriteError(w, http.StatusNotFound, "not_found", "no such route: "+r.URL.Path)
 	}
