@@ -26,7 +26,7 @@ Opus, never downgrade.
 - [x] E01.1 Module and package layout — done (PR #10: https://github.com/MateusAMP2119/iris-engine-cli/pull/10)
 - [ ] E01.2 Cobra tree and exit codes — in-progress (worktree .worktrees/E01.2)
 - [ ] E01.3 Config precedence — todo (needs E01.2)
-- [ ] E01.4 CI and lint wiring — in-progress (worktree .worktrees/E01.4)
+- [x] E01.4 CI and lint wiring — done (PR #11: https://github.com/MateusAMP2119/iris-engine-cli/pull/11)
 
 ## E02 Engine Install, Daemon and Leadership — epic PR: —
 
