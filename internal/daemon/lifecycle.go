@@ -33,6 +33,12 @@ const DaemonizedEnv = "IRIS_DAEMONIZED"
 // elapsed time; the backoff only keeps the poll from spinning.
 const detachReadyPollBackoff = 200 * time.Millisecond
 
+// killConfirmTimeout bounds how long StopDaemon waits, after a SIGKILL
+// escalation, to confirm the daemon has actually exited (and released its socket)
+// before it reaps the pidfile. SIGKILL is fire-and-forget, so this is a short
+// liveness poll, not a second grace period.
+const killConfirmTimeout = 2 * time.Second
+
 // ErrManagedNotInstalled is returned by Run when the engine runs in managed-
 // Postgres mode but the managed build has not been installed yet. `iris engine
 // start` maps it to a fail-fast with install guidance (specification section 2:
@@ -138,9 +144,36 @@ func StopDaemon(ctx context.Context, s config.Settings, pid int) error {
 		}
 		select {
 		case <-ctx.Done():
-			// Grace elapsed: force the daemon down, then reap the pidfile.
+			// Grace elapsed: force the daemon down with SIGKILL. Kill is
+			// fire-and-forget, so confirm the process has actually exited -- and thus
+			// released its socket -- before reaping the pidfile, rather than reporting
+			// a stopped daemon while it may still briefly hold the socket.
 			_ = proc.Kill()
+			killCtx, cancel := context.WithTimeout(context.Background(), killConfirmTimeout)
+			waitProcessGone(killCtx, pid)
+			cancel()
 			return RemovePIDFile(s)
+		case <-time.After(backoff):
+		}
+		if backoff < detachReadyPollBackoff {
+			backoff *= 2
+		}
+	}
+}
+
+// waitProcessGone polls until the process with pid is no longer alive or ctx is
+// done, so a caller can confirm a signalled process has actually exited before
+// acting on its absence. It is best-effort: a deadline that passes while the
+// process lingers returns anyway.
+func waitProcessGone(ctx context.Context, pid int) {
+	backoff := 10 * time.Millisecond
+	for {
+		if !processAlive(pid) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
 		case <-time.After(backoff):
 		}
 		if backoff < detachReadyPollBackoff {
@@ -151,6 +184,15 @@ func StopDaemon(ctx context.Context, s config.Settings, pid int) error {
 
 // processAlive reports whether a process with pid is still running, probed with
 // the null signal (signal 0 delivers nothing but validates the target exists).
+//
+// Limitation: this cannot distinguish the original daemon from an unrelated
+// process that has since been assigned the same pid (PID reuse), so a SIGKILL
+// escalation in StopDaemon could in principle reach a recycled pid. The window is
+// tiny -- StopDaemon signals within one bounded grace period of reading the
+// pidfile -- and cannot be eliminated without a pidfd (Linux) or equivalent
+// kernel process handle, which the standard library does not expose portably.
+// Accepted for the minimal stop; a pidfd-based handle can close it when the
+// platform surface allows.
 func processAlive(pid int) bool {
 	proc, err := os.FindProcess(pid)
 	if err != nil {
