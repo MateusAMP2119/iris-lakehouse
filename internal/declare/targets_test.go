@@ -1,6 +1,8 @@
 package declare_test
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,6 +94,36 @@ func TestResolveDeclarationFile(t *testing.T) {
 				t.Fatal("want an error for a nonexistent path")
 			}
 		})
+
+		t.Run("a non-NotExist stat error is surfaced, not reported as absence", func(t *testing.T) {
+			if os.Geteuid() == 0 {
+				t.Skip("root bypasses directory search-permission checks")
+			}
+			// A folder with no search (execute) permission: os.Stat of its
+			// candidate iris-declare.yaml fails with EACCES, not ENOENT. The
+			// resolver must surface that error rather than swallow it into the
+			// "folder has no declaration" message (which would be the inverse of
+			// the truth -- the declaration's presence is unknowable here).
+			locked := filepath.Join(t.TempDir(), "locked")
+			if err := os.Mkdir(locked, 0o755); err != nil {
+				t.Fatalf("mkdir %s: %v", locked, err)
+			}
+			if err := os.Chmod(locked, 0o000); err != nil {
+				t.Fatalf("chmod %s: %v", locked, err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+			_, err := declare.ResolveDeclarationFile(locked)
+			if err == nil {
+				t.Fatal("want an error when the candidate cannot be stat'd")
+			}
+			if !errors.Is(err, fs.ErrPermission) {
+				t.Errorf("error %v does not wrap the underlying permission error; a swallowed stat error misreports absence", err)
+			}
+			if strings.Contains(err.Error(), "has no") {
+				t.Errorf("permission failure misreported as absence: %q", err)
+			}
+		})
 	})
 }
 
@@ -125,6 +157,24 @@ func TestLoadDeclarationFile(t *testing.T) {
 
 			if _, _, err := declare.LoadDeclarationFile(p); err == nil {
 				t.Fatal("want a parse error to propagate")
+			}
+		})
+
+		t.Run("a folder-resolved parse error carries the resolved file path", func(t *testing.T) {
+			// ParseDeclaration formats with the constant filename, so a folder
+			// target's parse error would otherwise lose which file failed. The
+			// loader must carry the resolved path so a folder-resolved failure is
+			// diagnosable.
+			dir := t.TempDir()
+			p := filepath.Join(dir, "iris-declare.yaml")
+			writeDeclFile(t, p, "name: extract\n") // missing required run
+
+			_, _, err := declare.LoadDeclarationFile(dir)
+			if err == nil {
+				t.Fatal("want a parse error to propagate")
+			}
+			if !strings.Contains(err.Error(), p) {
+				t.Errorf("parse error %q does not carry the resolved path %q", err, p)
 			}
 		})
 

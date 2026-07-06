@@ -1,7 +1,9 @@
 package declare
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 )
@@ -26,10 +28,17 @@ func ResolveDeclarationFile(path string) (string, error) {
 		return path, nil
 	}
 	candidate := filepath.Join(path, declFile)
-	if _, err := os.Stat(candidate); err != nil {
+	switch _, err := os.Stat(candidate); {
+	case err == nil:
+		return candidate, nil
+	case errors.Is(err, fs.ErrNotExist):
 		return "", fmt.Errorf("declare: folder %s has no %s; apply/destroy target exactly one declaration file, never a workspace sweep", path, declFile)
+	default:
+		// A stat failure that is not simple absence (permission denied, I/O error)
+		// must be surfaced, never collapsed into "has no declaration" -- that would
+		// be the inverse of the truth, since the declaration's presence is unknown.
+		return "", fmt.Errorf("declare: stat %s: %w", candidate, err)
 	}
-	return candidate, nil
 }
 
 // LoadDeclarationFile resolves path per ResolveDeclarationFile, then reads and
@@ -47,7 +56,9 @@ func LoadDeclarationFile(path string) (resolved string, decl *Declaration, err e
 	}
 	decl, err = ParseDeclaration(data)
 	if err != nil {
-		return "", nil, err
+		// ParseDeclaration formats with the constant filename, so a folder-resolved
+		// target would otherwise lose which file failed; carry the resolved path.
+		return "", nil, fmt.Errorf("declare: %s: %w", resolved, err)
 	}
 	return resolved, decl, nil
 }
