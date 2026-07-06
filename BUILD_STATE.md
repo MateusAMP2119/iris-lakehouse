@@ -30,8 +30,8 @@ Opus, never downgrade.
 
 ## E02 Engine Install, Daemon and Leadership — epic PR: —
 
-- [ ] E02.1 Meta DDL and schema — in-progress (worktree .worktrees/E02.1)
-- [ ] E02.2 Admin DSN chain — todo (needs E02.1)
+- [x] E02.1 Meta DDL and schema — done (PR #15: https://github.com/MateusAMP2119/iris-engine-cli/pull/15)
+- [ ] E02.2 Admin DSN chain — in-progress (worktree .worktrees/E02.2)
 - [ ] E02.3 Managed Postgres subprocess — todo (needs E02.2)
 - [ ] E02.4 Install and uninstall — todo (needs E02.1, E02.2, E02.3)
 - [ ] E02.5 Listeners and daemon protocol — todo (needs E02.4)
