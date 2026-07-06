@@ -29,6 +29,23 @@ func CreateMetaDatabaseDDL() string {
 	return "CREATE DATABASE " + MetaDatabase + ";"
 }
 
+// MetaExistsQuery is the catalog probe that answers the create-if-missing guard:
+// it reports whether the dedicated meta database already exists in the cluster, so
+// bootstrap issues CreateMetaDatabaseDDL only when it does not (CREATE DATABASE has
+// no IF NOT EXISTS). It runs on the admin/maintenance connection, never on meta.
+const MetaExistsQuery = "SELECT 1 FROM pg_database WHERE datname = '" + MetaDatabase + "'"
+
+// DropMetaDatabaseDDL is the statement that drops the dedicated meta database in
+// full: the engine uninstall teardown (specification section 4). Dropping the
+// database takes every control table -- and so every captured provenance row,
+// endpoint, and access ledger entry -- with it. Like CREATE DATABASE it runs on
+// the admin/maintenance connection, never on a connection to meta itself. IF
+// EXISTS makes the teardown idempotent when meta was already dropped or never
+// created.
+func DropMetaDatabaseDDL() string {
+	return "DROP DATABASE IF EXISTS " + MetaDatabase + ";"
+}
+
 // Bootstrap creates the dedicated meta database through the cluster connection,
 // then ensures its schema through the meta connection: the one-time engine
 // install path (specification section 4, "iris engine install"). cluster runs the
