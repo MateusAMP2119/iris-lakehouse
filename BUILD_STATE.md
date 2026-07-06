@@ -23,10 +23,10 @@ Opus, never downgrade.
 
 ## E01 Repo Skeleton, CLI Frame and Config — epic PR: —
 
-- [ ] E01.1 Module and package layout — in-progress (worktree .worktrees/E01.1, branch issue/E01.1-module-layout)
-- [ ] E01.2 Cobra tree and exit codes — todo (needs E01.1)
+- [x] E01.1 Module and package layout — done (PR #10: https://github.com/MateusAMP2119/iris-engine-cli/pull/10)
+- [ ] E01.2 Cobra tree and exit codes — in-progress (worktree .worktrees/E01.2)
 - [ ] E01.3 Config precedence — todo (needs E01.2)
-- [ ] E01.4 CI and lint wiring — todo (needs E01.1)
+- [ ] E01.4 CI and lint wiring — in-progress (worktree .worktrees/E01.4)
 
 ## E02 Engine Install, Daemon and Leadership — epic PR: —
 
