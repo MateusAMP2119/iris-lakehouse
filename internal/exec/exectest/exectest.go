@@ -150,20 +150,26 @@ func (h *fakeHandle) PGID() int { return h.pgid }
 // Wait reports the run's terminal status once its output has finished streaming:
 // the scripted exit status for a non-blocking run, or a signaled termination
 // after Kill/cancel for a blocking one. A writer error seen while streaming is
-// surfaced here rather than from Start. Because Wait waits for streaming to
-// finish, the captured output is complete and safe to read after it returns.
+// surfaced here rather than from Start, alongside that recorded terminal status
+// (never a zero one). It mirrors the real runner's precedence: the error surfaces
+// only when the run otherwise exited cleanly (code 0, not signaled), because a
+// non-clean terminal status subsumes it just as os/exec's ExitError subsumes a
+// copy error. Because Wait waits for streaming to finish, the captured output is
+// complete and safe to read after it returns.
 func (h *fakeHandle) Wait() (exec.ExitStatus, error) {
 	if h.block {
 		<-h.done // Kill or ctx cancellation unblocks the run
 	}
 	<-h.streamed // streaming finished: output complete and streamErr stable
-	if h.streamErr != nil {
-		return exec.ExitStatus{}, h.streamErr
-	}
+
+	st := exec.ExitStatus{Code: h.exit}
 	if h.block {
-		return exec.ExitStatus{Code: -1, Signaled: true, Signal: syscall.SIGKILL}, nil
+		st = exec.ExitStatus{Code: -1, Signaled: true, Signal: syscall.SIGKILL}
 	}
-	return exec.ExitStatus{Code: h.exit}, nil
+	if h.streamErr != nil && st.Code == 0 && !st.Signaled {
+		return st, h.streamErr
+	}
+	return st, nil
 }
 
 // Kill unblocks a blocking run, modeling a process-group kill.

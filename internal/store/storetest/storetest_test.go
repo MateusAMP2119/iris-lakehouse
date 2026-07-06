@@ -106,13 +106,16 @@ func TestFakeRunLifecycle(t *testing.T) {
 	}
 
 	// reset: queued -> dead-lettered with a reason (single non-success terminal).
+	// The reason is the spec's closed dead_letters.reason enum token; a cancelled
+	// run maps to "stopped" (specification sections 4 and 8), never the prose
+	// "cancelled".
 	rc := created[1].ID
-	dl, err := s.SetRunState(ctx, rc, store.RunDeadLettered, store.WithReason("cancelled"))
+	dl, err := s.SetRunState(ctx, rc, store.RunDeadLettered, store.WithReason("stopped"))
 	if err != nil {
 		t.Fatalf("SetRunState dead-lettered: %v", err)
 	}
-	if dl.State != store.RunDeadLettered || dl.Reason != "cancelled" {
-		t.Errorf("dead-letter = (%q, %q), want (dead_lettered, cancelled)", dl.State, dl.Reason)
+	if dl.State != store.RunDeadLettered || dl.Reason != "stopped" {
+		t.Errorf("dead-letter = (%q, %q), want (dead_lettered, stopped)", dl.State, dl.Reason)
 	}
 
 	// GetRun round-trips a stored run by id.

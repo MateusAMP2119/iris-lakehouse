@@ -128,7 +128,9 @@ func TestDispatchShapedComposerOrderStreamCancel(t *testing.T) {
 			t.Fatalf("Wait(%s): %v", pipeline, err)
 		}
 		if st.Signaled {
-			if _, err := meta.SetRunState(ctx, run.ID, store.RunDeadLettered, store.WithReason("cancelled")); err != nil {
+			// A cancelled run dead-letters with the spec's reason token "stopped"
+			// (specification sections 4 and 8), never the prose "cancelled".
+			if _, err := meta.SetRunState(ctx, run.ID, store.RunDeadLettered, store.WithReason("stopped")); err != nil {
 				t.Fatalf("dead-letter: %v", err)
 			}
 		} else {
@@ -300,8 +302,9 @@ var errWrite = errors.New("exectest: write failed")
 func (errWriter) Write([]byte) (int, error) { return 0, errWrite }
 
 // TestFakeRunnerWriterErrorSurfacesFromWait proves a writer error during
-// streaming is reported from Wait, not Start, matching the real runner's seam:
-// the run is dispatched, then its output capture fails.
+// streaming is reported from Wait, not Start, and -- mirroring the real runner --
+// alongside the run's recorded terminal status rather than a zero one: a clean
+// run whose output sink fails reports exit 0 with the writer error.
 //
 // spec: S16/integration-fakes-interfaces
 func TestFakeRunnerWriterErrorSurfacesFromWait(t *testing.T) {
@@ -312,7 +315,34 @@ func TestFakeRunnerWriterErrorSurfacesFromWait(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start surfaced the writer error, want it deferred to Wait: %v", err)
 	}
-	if _, werr := h.Wait(); !errors.Is(werr, errWrite) {
+	st, werr := h.Wait()
+	if !errors.Is(werr, errWrite) {
 		t.Errorf("Wait error = %v, want the streaming writer error", werr)
+	}
+	if st.Code != 0 || st.Signaled {
+		t.Errorf("Wait status = %+v, want the recorded exit 0 alongside the error, not a zero fallback for a different reason", st)
+	}
+}
+
+// TestFakeRunnerWriterErrorSubsumedByNonZeroExit proves the fake mirrors the real
+// runner's precedence: when the run exits non-zero, its terminal status subsumes
+// the streaming-writer error (os/exec's ExitError subsumes a copy error), so Wait
+// reports the recorded non-zero status with no error rather than the writer error.
+//
+// spec: S16/integration-fakes-interfaces
+func TestFakeRunnerWriterErrorSubsumedByNonZeroExit(t *testing.T) {
+	r := exectest.New()
+	r.Script("failing", exectest.Outcome{Stdout: "data\n", Exit: 3})
+
+	h, err := r.Start(context.Background(), exec.Spec{Argv: []string{"failing"}, Stdout: errWriter{}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	st, werr := h.Wait()
+	if werr != nil {
+		t.Errorf("Wait error = %v, want nil: a non-zero exit subsumes the writer error", werr)
+	}
+	if st.Code != 3 || st.Signaled {
+		t.Errorf("Wait status = %+v, want the recorded exit 3", st)
 	}
 }
