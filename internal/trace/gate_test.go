@@ -310,10 +310,71 @@ func loadRepo(t *testing.T) (*spec.Manifest, []*trace.TestFile, trace.SpecLock, 
 	return m, files, lock, content
 }
 
-// TestTraceabilityGate is the first green build: the gate runs over the seeded
-// manifest in backlog-aware mode and is green, with the whole unclaimed backlog
-// surfaced as the gap list and every real claim (this task's four plus E00.1's
-// two) recognized end-to-end and excluded from it.
+// TestGateMath is the repo-state-independent proof of the gate's gap arithmetic:
+// a hand-built manifest with a known claim set -- extracted from fixture source
+// through the real ParseTestFile -> ClaimedIDs -> GapList pipeline -- must yield
+// exactly the expected unclaimed ids, in manifest order. The expected gaps are
+// hard-coded, not recomputed from ClaimedIDs, so an extraction regression that
+// over-matches (marking more contracts claimed than the source does) shrinks the
+// gap list and fails here loudly. The fixture plants two distractors -- an
+// id-shaped string in a non-subtest call and a Run on a local struct -- whose
+// contracts must therefore stay in the gap list.
+//
+// spec: S16/gate-fails-unclaimed-contract
+func TestGateMath(t *testing.T) {
+	m := &spec.Manifest{Contracts: []spec.Contract{
+		{ID: "S01/alpha", Anchor: "d#1", Tier: spec.TierUnit, Status: spec.StatusUnclaimed},
+		{ID: "S02/beta", Anchor: "d#2", Tier: spec.TierUnit, Status: spec.StatusUnclaimed},
+		{ID: "S03/gamma", Anchor: "d#3", Tier: spec.TierIntegration, Status: spec.StatusUnclaimed},
+		{ID: "S04/delta", Anchor: "d#4", Tier: spec.TierUnit, Status: spec.StatusUnclaimed},
+		{ID: "S05/epsilon", Anchor: "d#5", Tier: spec.TierUnit, Status: spec.StatusUnclaimed},
+		{ID: "S16/doctrine", Anchor: "d#16", Tier: spec.TierExempt, Status: spec.StatusExempt},
+	}}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("synthetic manifest invalid: %v", err)
+	}
+
+	// Two of the five testable contracts are claimed: S02 by annotation, S04 by a
+	// subtest. The fixture also plants distractors that must NOT claim: an
+	// id-shaped string argument (S05) and a Run on a local struct (S01).
+	files := mustParse(t, "math_test.go", `package s
+import "testing"
+
+type runner struct{}
+
+func (runner) Run(name string, fn func()) {}
+
+// spec: S02/beta
+func TestBeta(t *testing.T) {}
+
+func TestDelta(t *testing.T) {
+	t.Run("S04/delta", func(t *testing.T) {})
+	_ = decode("S05/epsilon")
+	var r runner
+	r.Run("S01/alpha", func() {})
+}
+`)
+
+	content := []byte("spec body")
+	lock := trace.SpecLock{SpecPath: "d", SHA256: trace.Fingerprint(content)}
+	rep := trace.Gate(m, files, lock, content, trace.Backlog)
+
+	if rep.Failed() {
+		t.Fatalf("backlog gate over the synthetic repo failed: %v", rep.Err())
+	}
+	// Exactly the three unclaimed testable ids, in manifest order: the exempt row
+	// is absent, the two claimed ids (S02, S04) are absent, and the two distractor
+	// ids (S01, S05) remain because their id-shaped strings were never real claims.
+	if want := []string{"S01/alpha", "S03/gamma", "S05/epsilon"}; !equalStrings(rep.Gaps, want) {
+		t.Errorf("gaps = %v, want %v", rep.Gaps, want)
+	}
+}
+
+// TestTraceabilityGate is the live smoke test: the gate runs over the seeded
+// manifest in backlog-aware mode and is green, with the real claims recognized
+// end-to-end and a known-unclaimed far-future contract still surfaced in the gap
+// list. The exact gap arithmetic is proven repo-state-independently by
+// TestGateMath; here we pin only anchors that do not decay as the backlog shrinks.
 //
 // spec: S16/gate-fails-unclaimed-contract
 // spec: S16/claims-via-subtest-or-annotation
@@ -324,38 +385,11 @@ func TestTraceabilityGate(t *testing.T) {
 	if rep.Failed() {
 		t.Fatalf("backlog-aware gate over the real repo failed: %v", rep.Err())
 	}
-
-	// The gap list is the structural invariant of the gate, not a snapshot of
-	// today's backlog size: it is exactly the testable (non-exempt) contracts that
-	// no test claims. Its size equals the count of testable contracts minus those
-	// claimed, each side computed independently from the manifest and the extracted
-	// claims -- so the check stays honest as later epics claim more contracts
-	// instead of inverting healthy progress into a merge-blocking failure.
 	claimed := trace.ClaimedIDs(files)
-	testable := m.Testable()
-	claimedTestable := 0
-	for _, c := range testable {
-		if claimed[c.ID] {
-			claimedTestable++
-		}
-	}
-	if want := len(testable) - claimedTestable; len(rep.Gaps) != want {
-		t.Errorf("gap list = %d contracts, want %d (testable %d - claimed testable %d)",
-			len(rep.Gaps), want, len(testable), claimedTestable)
-	}
-	// The gap list carries no exempt row and no claimed id.
-	for _, id := range rep.Gaps {
-		if c, ok := m.Find(id); ok && c.IsExempt() {
-			t.Errorf("exempt contract %s appeared in the gap list", id)
-		}
-		if claimed[id] {
-			t.Errorf("claimed contract %s appeared in the gap list", id)
-		}
-	}
 	t.Logf("traceability backlog: %d unclaimed non-exempt contracts", len(rep.Gaps))
 
 	// Claims are recognized end-to-end: the six contracts real tests claim are
-	// not in the gap list.
+	// recognized and excluded from the gap list.
 	for _, id := range []string{
 		"S16/manifest-row-schema",
 		"S16/exempt-needs-no-test",
@@ -370,6 +404,24 @@ func TestTraceabilityGate(t *testing.T) {
 		if contains(rep.Gaps, id) {
 			t.Errorf("contract %s is claimed but still appears in the gap list", id)
 		}
+	}
+
+	// A far-future contract that no test can legitimately claim yet must still be
+	// in the backlog -- the live guard against a claim-extraction regression that
+	// silently empties the gap list. S13 is the end-to-end acceptance scenario
+	// (Iris Epics, E13), the last epic; S13/scenario-passes-unattended is claimed
+	// only when E13's own task lands its conformance suite, which updates this
+	// anchor then. Until E13 it is a stable, non-decaying proof that the gate
+	// actually reports unclaimed contracts.
+	const futureAnchor = "S13/scenario-passes-unattended"
+	if _, ok := m.Find(futureAnchor); !ok {
+		t.Fatalf("anchor %s is gone from the manifest; pick another far-future unclaimed contract", futureAnchor)
+	}
+	if claimed[futureAnchor] {
+		t.Fatalf("anchor %s is now claimed; move TestTraceabilityGate to a still-unclaimed far-future contract", futureAnchor)
+	}
+	if !contains(rep.Gaps, futureAnchor) {
+		t.Errorf("unclaimed contract %s is missing from the gap list; the gate is under-reporting the backlog", futureAnchor)
 	}
 }
 
