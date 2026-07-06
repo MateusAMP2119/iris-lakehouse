@@ -167,6 +167,40 @@ func TestAdminDSNMemoryOnly(t *testing.T) {
 	})
 }
 
+// TestAdminDSNRedactsEveryVerb proves the memory-only guarantee holds under every
+// fmt verb, not just the string-like ones: String/GoString cover only %v/%s/%q and
+// %#v, so a numeric verb (%d, %o, %b) would otherwise fall through to struct
+// reflection and print the unexported connection string verbatim. AdminDSN and
+// ConnectionSource each implement fmt.Formatter, which preempts every formatting
+// path, so no verb can leak the DSN.
+//
+// spec: S02/admin-dsn-memory-only
+func TestAdminDSNRedactsEveryVerb(t *testing.T) {
+	const marker = "unguessablemarker9x7"
+	const fixtureDSN = "postgres://admin:" + marker + "@db.internal:5432/meta?sslmode=require"
+
+	admin, err := daemon.Resolve(config.Settings{PgDSN: fixtureDSN})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	values := map[string]any{"AdminDSN": admin, "ConnectionSource": admin.Source()}
+	verbs := []string{"%v", "%+v", "%#v", "%s", "%q", "%d", "%x", "%X", "%o", "%b"}
+	for typeName, val := range values {
+		for _, verb := range verbs {
+			out := fmt.Sprintf(verb, val)
+			if strings.Contains(out, marker) || strings.Contains(out, fixtureDSN) {
+				t.Errorf("%s formatted with %s leaked the DSN: %q", typeName, verb, out)
+			}
+			// Every verb still renders the redaction sentinel, never a fmt error
+			// verb (%!) or a raw struct dump.
+			if !strings.Contains(strings.ToUpper(out), "REDACTED") {
+				t.Errorf("%s formatted with %s = %q, want the REDACTED sentinel", typeName, verb, out)
+			}
+		}
+	}
+}
+
 // recordingDialer records the connection string of every Dial it receives without
 // opening a live connection. Its Dial signature satisfies both store.Dialer and
 // pg.Dialer, so one recorder can stand in for either seam.

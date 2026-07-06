@@ -80,10 +80,19 @@ func Resolve(cfg config.Settings) (AdminDSN, error) {
 	return AdminDSN{conn: cfg.PgDSN}, nil
 }
 
-// String implements fmt.Stringer, redacting the DSN. It is what %v and %s render.
+// Format implements fmt.Formatter, which fmt consults before every other
+// formatting path -- String, GoString, and, crucially, the struct reflection a
+// numeric verb (%d, %o, %b) would otherwise fall through to and print the
+// unexported field verbatim. It writes the redacted marker for every verb, so no
+// verb can render the raw DSN. String and GoString remain for direct, non-fmt
+// callers.
+func (AdminDSN) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(redacted)) }
+
+// String implements fmt.Stringer, redacting the DSN for direct String() callers.
 func (AdminDSN) String() string { return redacted }
 
-// GoString implements fmt.GoStringer, redacting the DSN under the %#v verb.
+// GoString implements fmt.GoStringer, redacting the DSN for direct GoString()
+// callers.
 func (AdminDSN) GoString() string { return redacted }
 
 // connString returns the raw admin connection string. It is unexported: only this
@@ -111,10 +120,18 @@ type ConnectionSource struct {
 // the connection layer uses; no formatting or encoding path reaches it.
 func (c ConnectionSource) ConnString() string { return c.conn }
 
-// String implements fmt.Stringer, redacting the connection string.
+// Format implements fmt.Formatter, redacting the connection string under every
+// verb (fmt consults it before String, GoString, or struct reflection), so
+// passing a source through the connection layer never risks a leaked DSN in a log
+// line regardless of the verb used.
+func (ConnectionSource) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(redacted)) }
+
+// String implements fmt.Stringer, redacting the connection string for direct
+// String() callers.
 func (ConnectionSource) String() string { return redacted }
 
-// GoString implements fmt.GoStringer, redacting the connection string under %#v.
+// GoString implements fmt.GoStringer, redacting the connection string for direct
+// GoString() callers.
 func (ConnectionSource) GoString() string { return redacted }
 
 // Connect opens the engine's database connections — meta through the store seam,
