@@ -79,7 +79,7 @@ func TestPGVersionMismatchFails(t *testing.T) {
 			// Never a silent auto-upgrade: the guard is read-only and must never
 			// rewrite the recorded version. Whatever we seeded stays byte-for-byte.
 			if tc.pgVersion != "" {
-				after, readErr := os.ReadFile(pgVersionPath)
+				after, readErr := os.ReadFile(pgVersionPath) //nolint:gosec // G304: pgVersionPath is a path under the test's own temp dir.
 				if readErr != nil {
 					t.Fatalf("re-read PG_VERSION: %v", readErr)
 				}

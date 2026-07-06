@@ -220,7 +220,7 @@ func TestManagedPGSubprocessLifecycle(t *testing.T) {
 // spec: S02/external-pg-identical-path
 func TestExternalPGIdenticalPath(t *testing.T) {
 	ctx := context.Background()
-	const userDSN = "postgres://user:secretpw@db.example.com:5432/postgres?sslmode=require"
+	const userDSN = "postgres://user:secretpw@db.example.com:5432/postgres?sslmode=require" //nolint:gosec // G101: synthetic external-mode test DSN, not a real credential.
 
 	settings := config.Resolve(
 		config.Defaults(t.TempDir()),
