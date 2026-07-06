@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 
 	"github.com/MateusAMP2119/iris-engine-cli/internal/pg"
@@ -86,7 +87,7 @@ func BootstrapEngine(ctx context.Context, deps InstallDeps) (InstallReport, erro
 	}
 	log := deps.Logger
 	if log == nil {
-		log = slog.New(slog.NewTextHandler(discardWriter{}, nil))
+		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 
 	var report InstallReport
@@ -157,9 +158,3 @@ func (d InstallDeps) validate() error {
 	}
 	return nil
 }
-
-// discardWriter is a no-op io.Writer for the fallback logger when a caller passes
-// no logger, so BootstrapEngine never dereferences a nil *slog.Logger.
-type discardWriter struct{}
-
-func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }

@@ -17,6 +17,19 @@ import (
 	"github.com/MateusAMP2119/iris-engine-cli/internal/store/storetest"
 )
 
+// seedFile writes body to path, first creating the file's parent directory, so
+// each fixture write is self-contained rather than relying on a sibling write to
+// have created the shared parent.
+func seedFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("seed dir for %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("seed %s: %v", path, err)
+	}
+}
+
 // teardownWorkspace seeds a throwaway workspace with the on-disk engine artifacts
 // uninstall must delete: an object store under objects_path holding artifact bytes
 // and an archived journal partition, a control socket file, and a service unit
@@ -28,23 +41,10 @@ func teardownWorkspace(t *testing.T) config.Settings {
 
 	// The object store: content-addressed artifact bytes plus an archived sealed
 	// partition, the two payload kinds uninstall removes with the store.
-	if err := os.MkdirAll(s.ObjectsPath, 0o700); err != nil {
-		t.Fatalf("seed object store: %v", err)
-	}
-	for name, body := range map[string]string{
-		"deadbeef.artifact":     "built binary bytes",
-		"c0ffee.partition.seal": "archived journal partition",
-	} {
-		if err := os.WriteFile(filepath.Join(s.ObjectsPath, name), []byte(body), 0o600); err != nil {
-			t.Fatalf("seed object %s: %v", name, err)
-		}
-	}
-	if err := os.WriteFile(s.Socket, []byte("socket"), 0o600); err != nil {
-		t.Fatalf("seed socket: %v", err)
-	}
-	if err := os.WriteFile(daemon.ServiceUnitPath(s), []byte("unit"), 0o600); err != nil {
-		t.Fatalf("seed service unit: %v", err)
-	}
+	seedFile(t, filepath.Join(s.ObjectsPath, "deadbeef.artifact"), "built binary bytes")
+	seedFile(t, filepath.Join(s.ObjectsPath, "c0ffee.partition.seal"), "archived journal partition")
+	seedFile(t, s.Socket, "socket")
+	seedFile(t, daemon.ServiceUnitPath(s), "unit")
 	return s
 }
 

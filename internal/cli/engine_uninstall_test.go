@@ -10,6 +10,19 @@ import (
 	"github.com/MateusAMP2119/iris-engine-cli/internal/daemon"
 )
 
+// seedFile writes body to path, first creating the file's parent directory, so
+// each fixture write is self-contained rather than relying on a sibling write to
+// have created the shared parent.
+func seedFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("seed dir for %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("seed %s: %v", path, err)
+	}
+}
+
 // seedEngineArtifacts creates, under the current workspace, the on-disk engine
 // artifacts an uninstall removes: an object store with a payload file, a control
 // socket file, and a service unit file. It returns the resolved settings.
@@ -20,18 +33,9 @@ func seedEngineArtifacts(t *testing.T) config.Settings {
 		t.Fatalf("getwd: %v", err)
 	}
 	s := config.Resolve(config.Defaults(ws), config.Layer{}, config.Layer{}, config.Layer{})
-	if err := os.MkdirAll(s.ObjectsPath, 0o700); err != nil {
-		t.Fatalf("seed object store: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(s.ObjectsPath, "deadbeef.artifact"), []byte("bytes"), 0o600); err != nil {
-		t.Fatalf("seed artifact: %v", err)
-	}
-	if err := os.WriteFile(s.Socket, []byte("socket"), 0o600); err != nil {
-		t.Fatalf("seed socket: %v", err)
-	}
-	if err := os.WriteFile(daemon.ServiceUnitPath(s), []byte("unit"), 0o600); err != nil {
-		t.Fatalf("seed service unit: %v", err)
-	}
+	seedFile(t, filepath.Join(s.ObjectsPath, "deadbeef.artifact"), "bytes")
+	seedFile(t, s.Socket, "socket")
+	seedFile(t, daemon.ServiceUnitPath(s), "unit")
 	return s
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -96,7 +97,7 @@ type UninstallReport struct {
 func UninstallEngine(ctx context.Context, deps UninstallDeps) (UninstallReport, error) {
 	log := deps.Logger
 	if log == nil {
-		log = slog.New(slog.NewTextHandler(discardWriter{}, nil))
+		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	var report UninstallReport
 
