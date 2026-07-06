@@ -49,12 +49,27 @@ type Claim struct {
 }
 
 // TestFunc is a single Go test function and the contract claims found within it
-// (its doc-comment and body annotations plus its id-named subtests).
+// (its doc-comment and body annotations plus its id-named subtests), together
+// with any near-miss `// spec:` annotations whose token is not a well-formed
+// contract id.
 type TestFunc struct {
-	Name   string
-	File   string
-	Line   int
-	Claims []Claim
+	Name        string
+	File        string
+	Line        int
+	Claims      []Claim
+	BadSpecTags []BadSpecTag
+}
+
+// BadSpecTag is a near-miss `// spec:` annotation: the reserved spec: marker
+// followed by a token that is not a well-formed contract id (e.g. a trailing
+// period, an uppercase slug, or a malformed shape). The gate reports it as a lint
+// violation rather than dropping it silently, so a mistyped claim can never leave
+// its intended contract in the backlog unnoticed.
+type BadSpecTag struct {
+	Token string
+	File  string
+	Line  int
+	Func  string
 }
 
 // TestFile is a parsed *_test.go file and the test functions it defines.
@@ -64,9 +79,11 @@ type TestFile struct {
 }
 
 // idShape matches a stable contract id (spec section plus lowercase slug),
-// mirroring the manifest's own rule. It is the sole discriminator for a claim:
-// a `// spec:` token or a subtest name counts only when it has this shape, so
-// ordinary subtest names and prose never register as claims.
+// mirroring the manifest's own rule. A claim registers only when its token has
+// this shape: a `// spec:` annotation, or a subtest name on a *testing.T
+// receiver. Ordinary subtest names and prose never register; a `// spec:` marker
+// with a non-id token is reported as a near-miss lint violation rather than
+// dropped.
 var idShape = regexp.MustCompile(`^S\d\d(\.\d+)?/[a-z0-9-]+$`)
 
 // specAnnotation matches the annotation body of a comment line, after its
@@ -96,15 +113,31 @@ func ParseTestFile(filename string, src []byte) (*TestFile, error) {
 			Line: fset.Position(fn.Pos()).Line,
 		}
 
+		// recordComment classifies one comment line: a well-formed `// spec: <id>`
+		// annotation becomes a claim, a spec marker with a non-id token becomes a
+		// near-miss lint violation, and anything else is ignored.
+		recordComment := func(c *ast.Comment) {
+			token, hasMarker, idShaped := classifyComment(c.Text)
+			if !hasMarker {
+				return
+			}
+			line := fset.Position(c.Pos()).Line
+			if idShaped {
+				tfn.Claims = append(tfn.Claims, Claim{
+					ID: token, Kind: KindAnnotation, File: filename,
+					Line: line, Func: fn.Name.Name,
+				})
+				return
+			}
+			tfn.BadSpecTags = append(tfn.BadSpecTags, BadSpecTag{
+				Token: token, File: filename, Line: line, Func: fn.Name.Name,
+			})
+		}
+
 		// Annotations on the doc comment, above the function.
 		if fn.Doc != nil {
 			for _, c := range fn.Doc.List {
-				if id, ok := annotationID(c.Text); ok {
-					tfn.Claims = append(tfn.Claims, Claim{
-						ID: id, Kind: KindAnnotation, File: filename,
-						Line: fset.Position(c.Pos()).Line, Func: fn.Name.Name,
-					})
-				}
+				recordComment(c)
 			}
 		}
 
@@ -115,17 +148,13 @@ func ParseTestFile(filename string, src []byte) (*TestFile, error) {
 					continue
 				}
 				for _, c := range grp.List {
-					if id, ok := annotationID(c.Text); ok {
-						tfn.Claims = append(tfn.Claims, Claim{
-							ID: id, Kind: KindAnnotation, File: filename,
-							Line: fset.Position(c.Pos()).Line, Func: fn.Name.Name,
-						})
-					}
+					recordComment(c)
 				}
 			}
-			// Subtests whose name is a contract id.
+			// Subtests whose name is a contract id, run on a *testing.T.
+			tnames := testingTNames(fn)
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				if id, pos, ok := subtestID(n); ok {
+				if id, pos, ok := subtestID(n, tnames); ok {
 					tfn.Claims = append(tfn.Claims, Claim{
 						ID: id, Kind: KindSubtest, File: filename,
 						Line: fset.Position(pos).Line, Func: fn.Name.Name,
@@ -193,32 +222,41 @@ func ClaimedIDs(files []*TestFile) map[string]bool {
 	return claimed
 }
 
-// annotationID extracts a `// spec: <id>` claim from a raw comment line's text.
-// It reports ok only when the stripped line begins with the spec: marker and the
-// token has contract-id shape, so a `spec:` word mid-sentence never registers.
-func annotationID(raw string) (string, bool) {
+// classifyComment inspects one raw comment line. hasMarker is true when the
+// comment is a `// spec:` annotation: its text, after the leading marker slashes
+// and surrounding space are stripped, begins with the reserved spec: marker (so a
+// `spec:` word mid-sentence never registers). When hasMarker is true, token is
+// the first whitespace-delimited word after the marker and idShaped reports
+// whether that token is a well-formed contract id. A well-formed annotation is a
+// claim; a marker with a non-id token is a near-miss the gate lints rather than
+// dropping silently.
+func classifyComment(raw string) (token string, hasMarker, idShaped bool) {
 	body := strings.TrimLeft(raw, "/*")
 	body = strings.TrimSpace(body)
 	m := specAnnotation.FindStringSubmatch(body)
 	if m == nil {
-		return "", false
+		return "", false, false
 	}
-	token := m[1]
-	if !idShape.MatchString(token) {
-		return "", false
-	}
-	return token, true
+	return m[1], true, idShape.MatchString(m[1])
 }
 
-// subtestID reports the contract id of a t.Run("<id>", ...) call when its first
-// argument is a string literal with contract-id shape.
-func subtestID(n ast.Node) (string, token.Pos, bool) {
+// subtestID reports the contract id of a t.Run("<id>", ...) call when its
+// receiver is an identifier bound to a *testing.T (per tnames) and its first
+// argument is a string literal with contract-id shape. Restricting the receiver
+// keeps a same-named Run method on some other value (e.g. a local struct's
+// s.Run) from registering a false claim that would silently drop a contract from
+// the gap list.
+func subtestID(n ast.Node, tnames map[string]bool) (string, token.Pos, bool) {
 	call, ok := n.(*ast.CallExpr)
 	if !ok {
 		return "", 0, false
 	}
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok || sel.Sel.Name != "Run" || len(call.Args) == 0 {
+		return "", 0, false
+	}
+	recv, ok := sel.X.(*ast.Ident)
+	if !ok || !tnames[recv.Name] {
 		return "", 0, false
 	}
 	lit, ok := call.Args[0].(*ast.BasicLit)
@@ -230,6 +268,50 @@ func subtestID(n ast.Node) (string, token.Pos, bool) {
 		return "", 0, false
 	}
 	return name, lit.Pos(), true
+}
+
+// testingTNames collects the identifier names bound to a *testing.T within fn:
+// the test function's own parameter plus every function-literal parameter of that
+// type (the subtest *testing.T that t.Run passes to each closure, whatever it is
+// named). subtestID honors a Run call only on one of these names.
+func testingTNames(fn *ast.FuncDecl) map[string]bool {
+	names := make(map[string]bool)
+	add := func(ft *ast.FuncType) {
+		if ft == nil || ft.Params == nil {
+			return
+		}
+		for _, p := range ft.Params.List {
+			if !isTestingTPtr(p.Type) {
+				continue
+			}
+			for _, id := range p.Names {
+				names[id.Name] = true
+			}
+		}
+	}
+	add(fn.Type)
+	if fn.Body != nil {
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			if fl, ok := n.(*ast.FuncLit); ok {
+				add(fl.Type)
+			}
+			return true
+		})
+	}
+	return names
+}
+
+// isTestingTPtr reports whether expr is a pointer to a T selector type, i.e.
+// *testing.T (matched loosely as *<pkg>.T, mirroring go test's own tolerance for
+// an aliased import). It marks both a test function's parameter and the
+// *testing.T a subtest closure receives.
+func isTestingTPtr(expr ast.Expr) bool {
+	star, ok := expr.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := star.X.(*ast.SelectorExpr)
+	return ok && sel.Sel.Name == "T"
 }
 
 // isTestFunc reports whether fn is a Go test function: a free function named
@@ -251,10 +333,5 @@ func isTestFunc(fn *ast.FuncDecl) bool {
 	if fn.Type.Params == nil || len(fn.Type.Params.List) != 1 {
 		return false
 	}
-	star, ok := fn.Type.Params.List[0].Type.(*ast.StarExpr)
-	if !ok {
-		return false
-	}
-	sel, ok := star.X.(*ast.SelectorExpr)
-	return ok && sel.Sel.Name == "T"
+	return isTestingTPtr(fn.Type.Params.List[0].Type)
 }

@@ -134,6 +134,44 @@ func TestifyLower(t *testing.T) {
 			// Test so go test would not run it either -- neither claims.
 			want: map[string]trace.ClaimKind{},
 		},
+		{
+			name: "struct receiver .Run with an id-shaped literal is not a claim",
+			src: `package sample
+
+import "testing"
+
+type runner struct{}
+
+func (runner) Run(name string, fn func()) {}
+
+func TestG(t *testing.T) {
+	var s runner
+	s.Run("S16/manifest-row-schema", func() {})
+}
+`,
+			// s is a local struct, not a *testing.T: its Run is not a subtest, so
+			// the id-shaped literal must not register a claim.
+			want: map[string]trace.ClaimKind{},
+		},
+		{
+			name: "nested t.Run with a renamed closure param still claims",
+			src: `package sample
+
+import "testing"
+
+func TestH(t *testing.T) {
+	t.Run("S16/manifest-row-schema", func(t2 *testing.T) {
+		t2.Run("S16/exempt-needs-no-test", func(t3 *testing.T) {})
+	})
+}
+`,
+			// The subtest *testing.T may be renamed by each closure; a Run on any
+			// identifier bound to a *testing.T still claims.
+			want: map[string]trace.ClaimKind{
+				"S16/manifest-row-schema":  trace.KindSubtest,
+				"S16/exempt-needs-no-test": trace.KindSubtest,
+			},
+		},
 	}
 
 	for _, tt := range tests {
