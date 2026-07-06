@@ -25,6 +25,7 @@ import (
 
 	"github.com/MateusAMP2119/iris-engine-cli/internal/config"
 	"github.com/MateusAMP2119/iris-engine-cli/internal/daemon"
+	"github.com/MateusAMP2119/iris-engine-cli/internal/declare"
 )
 
 // The exit codes are the categories of specification section 8. Detail rides the
@@ -66,6 +67,13 @@ type app struct {
 	// against the system trust store) and injected by tests to trust a self-signed
 	// test CA. A remote-control epic can promote it to a real --tls-ca flag.
 	daemonTLSConfig *tls.Config
+	// applyWarnings computes the advisory warnings `iris declare apply` surfaces for
+	// a parsed declaration -- cross-mode reads and the like (specification section 5).
+	// It is nil in production: the data-mode facts it needs live in meta, reachable
+	// only once apply runs against the daemon (E03.9/E03.10), so pre-daemon apply
+	// computes no local warnings and proceeds unchanged. Tests inject it to drive the
+	// --json warning surface, proving the warning structure rides the envelope.
+	applyWarnings func(*declare.Declaration) []declare.Warning
 }
 
 // newApp builds an app whose structured logs go to stderr at info level, keeping
