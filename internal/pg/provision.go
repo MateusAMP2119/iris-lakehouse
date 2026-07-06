@@ -81,16 +81,14 @@ func (v LiveView) hasCaptureTrigger(schema, table string) bool {
 }
 
 // TableLedger is the reconstructed migration-ledger view of one declared table
-// that provisioning diffs against live Postgres: the raw table.yaml bytes (the
-// create head's checksum when no migration files exist yet), the immutable
-// migration files present on disk under the table's migrations/ directory, and the
-// highest migration id already recorded applied in the meta migrations table.
-// E03.10 reconstructs it from the migrations/ files (LoadDiskMigrations) and a
-// meta read; the planner is pure over it.
+// that provisioning diffs against live Postgres: the immutable migration files
+// present on disk under the table's migrations/ directory and the highest migration
+// id already recorded applied in the meta migrations table. E03.10 reconstructs it
+// from the migrations/ files (LoadDiskMigrations) and a meta read; the planner is
+// pure over it. The create-head checksum for a table with no migrations comes from
+// the DECLARED table.yaml bytes (declare.DiscoveredTable.Raw), which are always
+// present, not from this diff view, which may be absent for a brand-new table.
 type TableLedger struct {
-	// Raw is the table.yaml bytes at the current head; its checksum pins the create
-	// head recorded when no migration files are on disk.
-	Raw []byte
 	// DiskMigrations are the migration files present on disk, one per additive
 	// migration; order is normalized to ascending migration id by the planner.
 	DiskMigrations []declare.MigrationFile
@@ -241,7 +239,7 @@ func PlanProvision(schemas []declare.DiscoveredTable, live LiveView, ledgers map
 		led := ledgers[key]
 		exists := live.hasTable(dt.Schema, dt.Table)
 
-		branch, err := SelectTableBranch(exists, dt.Spec, led)
+		branch, err := SelectTableBranch(exists, dt.Spec, dt.Raw, led)
 		if err != nil {
 			return ProvisionPlan{}, err
 		}
@@ -278,13 +276,14 @@ func emptyReplay(b TableBranch) bool {
 // branch: create-from-head when absent, pending-migration replay when present
 // (specification section 5). The two are mutually exclusive by construction: the
 // return is one TableBranch value, so a table can never take both paths. declared
-// is the table.yaml head; led is its reconstructed ledger.
-func SelectTableBranch(exists bool, declared *declare.Table, led TableLedger) (TableBranch, error) {
+// is the table.yaml head and raw its verbatim bytes (the create head's checksum
+// source); led is its reconstructed ledger.
+func SelectTableBranch(exists bool, declared *declare.Table, raw []byte, led TableLedger) (TableBranch, error) {
 	if declared == nil {
 		return nil, errors.New("pg: provision: nil declared table")
 	}
 	if !exists {
-		return createFromHead(declared, led)
+		return createFromHead(declared, raw, led)
 	}
 	return replayPending(declared, led)
 }
@@ -292,21 +291,33 @@ func SelectTableBranch(exists bool, declared *declare.Table, led TableLedger) (T
 // createFromHead renders the create-from-head branch: one CREATE TABLE from the
 // declared head and the ledger head to record. The head is the highest migration
 // id present on disk (with its own parent and checksum), or the 0001 create head
-// (checksummed over the current table.yaml) when no migration files exist.
-func createFromHead(declared *declare.Table, led TableLedger) (TableBranch, error) {
+// when no migration files exist. The 0001 head's checksum is taken from the
+// DECLARED table.yaml bytes (raw) -- the authoritative, always-present source --
+// so an absent reconstructed ledger never yields a checksum over nil bytes; empty
+// raw is an error rather than a permanently wrong head. A malformed migration id
+// on disk is a corrupt ledger and surfaces as an error, consistent with the replay
+// path, never a silent fallthrough to the 0001 head.
+func createFromHead(declared *declare.Table, raw []byte, led TableLedger) (TableBranch, error) {
 	ddl, err := RenderCreateTable(declared)
 	if err != nil {
 		return nil, err
 	}
 	head := MigrationHead{Schema: declared.Schema, Table: declared.Table}
-	if top, ok := highestMigration(led.DiskMigrations); ok {
+	top, ok, err := highestMigration(led.DiskMigrations)
+	if err != nil {
+		return nil, fmt.Errorf("pg: provision %s.%s: %w", declared.Schema, declared.Table, err)
+	}
+	if ok {
 		head.MigrationID = top.ID
 		head.Parent = top.Parent
 		head.Checksum = top.Checksum
 	} else {
+		if len(raw) == 0 {
+			return nil, fmt.Errorf("pg: provision %s.%s: create head checksum needs the declared table.yaml bytes, got none", declared.Schema, declared.Table)
+		}
 		head.MigrationID = createHeadID
 		head.Parent = ""
-		head.Checksum = declare.ChecksumTableYAML(led.Raw)
+		head.Checksum = declare.ChecksumTableYAML(raw)
 	}
 	return CreateFromHead{DDL: ddl, Head: head}, nil
 }
@@ -350,23 +361,26 @@ func replayPending(declared *declare.Table, led TableLedger) (TableBranch, error
 	return ReplayPending{Migrations: pending}, nil
 }
 
-// highestMigration returns the migration file with the greatest id, or ok=false
-// when the slice is empty. It is order-independent: it compares parsed sequences,
-// so an unsorted disk list still yields the true head.
-func highestMigration(migs []declare.MigrationFile) (declare.MigrationFile, bool) {
+// highestMigration returns the migration file with the greatest id, ok=false when
+// the slice is empty. It is order-independent: it compares parsed sequences, so an
+// unsorted disk list still yields the true head. A malformed (non-numeric) id is a
+// corrupt ledger and returns an error rather than being skipped -- the same
+// treatment replayPending gives the same input -- so the create path can never
+// silently drop a corrupt migration and fall through to the implicit 0001 head.
+func highestMigration(migs []declare.MigrationFile) (declare.MigrationFile, bool, error) {
 	var top declare.MigrationFile
 	var topSeq int
 	found := false
 	for _, m := range migs {
 		seq, err := parseSeq(m.ID)
 		if err != nil {
-			continue // a non-numeric id cannot be the head; replayPending surfaces it.
+			return declare.MigrationFile{}, false, err
 		}
 		if !found || seq > topSeq {
 			top, topSeq, found = m, seq, true
 		}
 	}
-	return top, found
+	return top, found, nil
 }
 
 // sortedMigrations returns a copy of migs in ascending id order, so replay runs

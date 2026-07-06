@@ -26,7 +26,8 @@ func emptyLive() pg.LiveView {
 
 // discoverGoldenSchemas discovers the golden sample workspace's schemas/ tree
 // (analytics.orders and raw.orders_staging), the pipeline-independent input to
-// provisioning.
+// provisioning. Each DiscoveredTable carries its verbatim table.yaml Raw bytes,
+// the authoritative source of the create-head checksum.
 func discoverGoldenSchemas(t *testing.T) []declare.DiscoveredTable {
 	t.Helper()
 	ws, err := declare.DiscoverWorkspace(fixtures.WorkspaceGolden())
@@ -39,18 +40,13 @@ func discoverGoldenSchemas(t *testing.T) []declare.DiscoveredTable {
 	return ws.Schemas
 }
 
-// rawLedgers builds a per-table ledger view whose only content is each table's
-// raw table.yaml bytes (no migration files on disk, no applied head): the state
-// of a freshly declared table whose head is table.yaml itself.
-func rawLedgers(t *testing.T, tables []declare.DiscoveredTable) map[string]pg.TableLedger {
-	t.Helper()
+// freshLedgers builds a per-table ledger view for freshly declared tables: no
+// migration files on disk and no applied head. The create-head checksum comes from
+// each DiscoveredTable's Raw bytes, not the ledger, so the map need not carry them.
+func freshLedgers(tables []declare.DiscoveredTable) map[string]pg.TableLedger {
 	ledgers := make(map[string]pg.TableLedger, len(tables))
 	for _, dt := range tables {
-		raw, err := os.ReadFile(filepath.Join(dt.Dir, "table.yaml")) //nolint:gosec // G304: dt.Dir is a checked-in fixture path, not user or network input.
-		if err != nil {
-			t.Fatalf("read table.yaml for %s.%s: %v", dt.Schema, dt.Table, err)
-		}
-		ledgers[dt.Schema+"."+dt.Table] = pg.TableLedger{Raw: raw}
+		ledgers[dt.Schema+"."+dt.Table] = pg.TableLedger{}
 	}
 	return ledgers
 }
@@ -65,7 +61,7 @@ func rawLedgers(t *testing.T, tables []declare.DiscoveredTable) map[string]pg.Ta
 func TestProvisionCreateIfMissing(t *testing.T) {
 	ctx := context.Background()
 	tables := discoverGoldenSchemas(t)
-	ledgers := rawLedgers(t, tables)
+	ledgers := freshLedgers(tables)
 
 	plan, err := pg.PlanProvision(tables, emptyLive(), ledgers)
 	if err != nil {
@@ -147,7 +143,6 @@ func TestProvisionAppliesPendingMigrations(t *testing.T) {
 	}
 	ledgers := map[string]pg.TableLedger{
 		"analytics.orders": {
-			Raw:            []byte(ordersWithStatusYAML),
 			DiskMigrations: disk,
 			AppliedHeadID:  "0001",
 		},
@@ -211,14 +206,13 @@ func TestProvisionOnePathPerTable(t *testing.T) {
 	// are non-trivial: the create path would still create-from-head (recording the
 	// 0002 head), the replay path would still replay the pending 0002.
 	withDisk := pg.TableLedger{
-		Raw: raw,
 		DiskMigrations: []declare.MigrationFile{{
 			ID: "0002", Parent: "0001", Op: "add_column",
 			Column:   declare.MigrationColumn{Name: "status", Type: "text", Default: "'pending'"},
 			Checksum: declare.ChecksumTableYAML(raw),
 		}},
 	}
-	noDisk := pg.TableLedger{Raw: raw}
+	noDisk := pg.TableLedger{}
 
 	cases := []struct {
 		name   string
@@ -229,12 +223,13 @@ func TestProvisionOnePathPerTable(t *testing.T) {
 		{"missing_no_migrations", false, noDisk, "create"},
 		{"missing_with_migrations", false, withDisk, "create"},
 		{"existing_no_migrations", true, noDisk, "replay"},
-		{"existing_with_pending", true, pg.TableLedger{Raw: raw, DiskMigrations: withDisk.DiskMigrations, AppliedHeadID: "0001"}, "replay"},
-		{"existing_all_applied", true, pg.TableLedger{Raw: raw, DiskMigrations: withDisk.DiskMigrations, AppliedHeadID: "0002"}, "replay"},
+		{"existing_with_pending", true, pg.TableLedger{DiskMigrations: withDisk.DiskMigrations, AppliedHeadID: "0001"}, "replay"},
+		{"existing_all_applied", true, pg.TableLedger{DiskMigrations: withDisk.DiskMigrations, AppliedHeadID: "0002"}, "replay"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			branch, err := pg.SelectTableBranch(tc.exists, declared, tc.led)
+			// raw is the declared table.yaml bytes, the create-head checksum source.
+			branch, err := pg.SelectTableBranch(tc.exists, declared, raw, tc.led)
 			if err != nil {
 				t.Fatalf("SelectTableBranch: %v", err)
 			}
@@ -271,8 +266,8 @@ func TestProvisionHeadCreateRecordsLedger(t *testing.T) {
 	t.Run("no_migrations_records_0001", func(t *testing.T) {
 		declared := parseTable(t, ordersWithStatusYAML)
 		raw := []byte(ordersWithStatusYAML)
-		tables := []declare.DiscoveredTable{{Schema: "analytics", Table: "orders", Spec: declared}}
-		ledgers := map[string]pg.TableLedger{"analytics.orders": {Raw: raw}}
+		tables := []declare.DiscoveredTable{{Schema: "analytics", Table: "orders", Spec: declared, Raw: raw}}
+		ledgers := map[string]pg.TableLedger{"analytics.orders": {}}
 
 		plan, err := pg.PlanProvision(tables, emptyLive(), ledgers)
 		if err != nil {
@@ -308,8 +303,8 @@ func TestProvisionHeadCreateRecordsLedger(t *testing.T) {
 			{ID: "0002", Parent: "0001", Op: "add_column", Column: declare.MigrationColumn{Name: "status", Type: "text"}, Checksum: "c2"},
 			{ID: "0003", Parent: "0002", Op: "add_column", Column: declare.MigrationColumn{Name: "note", Type: "text"}, Checksum: "c3"},
 		}
-		tables := []declare.DiscoveredTable{{Schema: "analytics", Table: "orders", Spec: declared, HasMigrations: true}}
-		ledgers := map[string]pg.TableLedger{"analytics.orders": {Raw: raw, DiskMigrations: disk}}
+		tables := []declare.DiscoveredTable{{Schema: "analytics", Table: "orders", Spec: declared, Raw: raw, HasMigrations: true}}
+		ledgers := map[string]pg.TableLedger{"analytics.orders": {DiskMigrations: disk}}
 
 		plan, err := pg.PlanProvision(tables, emptyLive(), ledgers)
 		if err != nil {
@@ -334,6 +329,67 @@ func TestProvisionHeadCreateRecordsLedger(t *testing.T) {
 			t.Errorf("head = %+v, want the highest present migration 0003 (parent 0002, checksum c3)", h)
 		}
 	})
+
+	t.Run("absent_ledger_entry_checksums_declared_yaml", func(t *testing.T) {
+		// The reconstructed-ledger map carries no entry for this table (a brand-new
+		// declared table whose ledger has never been read/reconstructed). The create
+		// head's checksum must still pin the DECLARED table.yaml bytes, never a zero
+		// ledger's nil Raw (whose sha256 of empty bytes is a permanently wrong head).
+		declared := parseTable(t, ordersWithStatusYAML)
+		raw := []byte(ordersWithStatusYAML)
+		tables := []declare.DiscoveredTable{{Schema: "analytics", Table: "orders", Spec: declared, Raw: raw}}
+		ledgers := map[string]pg.TableLedger{} // no entry for analytics.orders
+
+		plan, err := pg.PlanProvision(tables, emptyLive(), ledgers)
+		if err != nil {
+			t.Fatalf("PlanProvision: %v", err)
+		}
+		ledger := &recordingLedger{}
+		if err := plan.Apply(ctx, pgtest.New(), ledger); err != nil {
+			t.Fatalf("Apply: %v", err)
+		}
+		if len(ledger.heads) != 1 {
+			t.Fatalf("recorded %d heads, want 1", len(ledger.heads))
+		}
+		h := ledger.heads[0]
+		if h.MigrationID != "0001" || h.Parent != "" {
+			t.Errorf("head id/parent = %s/%q, want 0001/\"\" (the create head)", h.MigrationID, h.Parent)
+		}
+		if want := declare.ChecksumTableYAML(raw); h.Checksum != want {
+			t.Errorf("head checksum = %q, want %q (the declared table.yaml, not an absent ledger's nil bytes)", h.Checksum, want)
+		}
+	})
+
+	t.Run("empty_declared_bytes_error", func(t *testing.T) {
+		// A create-from-head with no migration files and no declared table.yaml bytes
+		// has no source for the create-head checksum: provisioning must error rather
+		// than checksum nil (the sha256 of empty bytes) into a permanently wrong head.
+		declared := parseTable(t, ordersWithStatusYAML)
+		tables := []declare.DiscoveredTable{{Schema: "analytics", Table: "orders", Spec: declared, Raw: nil}}
+		ledgers := map[string]pg.TableLedger{}
+
+		if _, err := pg.PlanProvision(tables, emptyLive(), ledgers); err == nil {
+			t.Fatal("PlanProvision accepted a create-from-head with empty declared table.yaml bytes; want an error")
+		}
+	})
+
+	t.Run("malformed_migration_id_on_create_errors", func(t *testing.T) {
+		// The create path's head is the highest migration id on disk. A malformed
+		// (non-numeric) id is a corrupt ledger: provisioning must error -- consistent
+		// with the replay path, which hard-errors on the same input -- never silently
+		// skip it and fall through to the implicit 0001 head.
+		declared := parseTable(t, ordersWithStatusYAML)
+		raw := []byte(ordersWithStatusYAML)
+		disk := []declare.MigrationFile{
+			{ID: "bogus", Parent: "0001", Op: "add_column", Column: declare.MigrationColumn{Name: "status", Type: "text"}, Checksum: "cx"},
+		}
+		tables := []declare.DiscoveredTable{{Schema: "analytics", Table: "orders", Spec: declared, Raw: raw, HasMigrations: true}}
+		ledgers := map[string]pg.TableLedger{"analytics.orders": {DiskMigrations: disk}}
+
+		if _, err := pg.PlanProvision(tables, emptyLive(), ledgers); err == nil {
+			t.Fatal("PlanProvision silently accepted a malformed migration id on the create path; want an error, never a fallthrough to 0001")
+		}
+	})
 }
 
 // TestProvisionIdempotent proves re-running provisioning against an
@@ -345,7 +401,7 @@ func TestProvisionHeadCreateRecordsLedger(t *testing.T) {
 func TestProvisionIdempotent(t *testing.T) {
 	ctx := context.Background()
 	tables := discoverGoldenSchemas(t)
-	ledgers := rawLedgers(t, tables)
+	ledgers := freshLedgers(tables)
 
 	// First provision against a fresh data database does real work.
 	first, err := pg.PlanProvision(tables, emptyLive(), ledgers)
@@ -410,8 +466,8 @@ columns:
     primary_key: true
 `
 	orphan := parseTable(t, orphanYAML)
-	tables := []declare.DiscoveredTable{{Schema: "analytics", Table: "orphan", Spec: orphan}}
-	ledgers := map[string]pg.TableLedger{"analytics.orphan": {Raw: []byte(orphanYAML)}}
+	tables := []declare.DiscoveredTable{{Schema: "analytics", Table: "orphan", Spec: orphan, Raw: []byte(orphanYAML)}}
+	ledgers := map[string]pg.TableLedger{"analytics.orphan": {}}
 
 	plan, err := pg.PlanProvision(tables, emptyLive(), ledgers)
 	if err != nil {
