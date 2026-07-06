@@ -138,12 +138,6 @@ func (a *app) noDaemon(cmd *cobra.Command, op string) error {
 	}
 }
 
-// notImplemented is the outcome of a local-lifecycle stub that does not dial a
-// daemon and is not wired yet: exit 4 (operation failed).
-func (a *app) notImplemented(what string) error {
-	return &fault{code: exitOpFailed, codeStr: "not_implemented", message: what + " is not implemented yet"}
-}
-
 // usage is a usage-error outcome (exit 2) raised by a handler, distinct from the
 // arg/flag errors cobra raises before a handler runs.
 func (a *app) usage(msg string) error {

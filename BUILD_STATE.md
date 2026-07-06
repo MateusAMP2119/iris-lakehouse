@@ -35,9 +35,9 @@ Opus, never downgrade.
 - [x] E02.3 Managed Postgres subprocess — done (PR #17: https://github.com/MateusAMP2119/iris-engine-cli/pull/17)
 - [x] E02.4 Install and uninstall — done (PR #18: https://github.com/MateusAMP2119/iris-engine-cli/pull/18)
 - [x] E02.5 Listeners and daemon protocol — done (PR #19: https://github.com/MateusAMP2119/iris-engine-cli/pull/19)
-- [ ] E02.6 Leader election single writer — in-progress (worktree .worktrees/E02.6)
-- [ ] E02.7 Crash reconciliation — todo (needs E02.6)
-- [ ] E02.8 Logging and service unit — todo (needs E02.5)
+- [x] E02.6 Leader election single writer — done (PR #20: https://github.com/MateusAMP2119/iris-engine-cli/pull/20)
+- [ ] E02.7 Crash reconciliation — in-progress (worktree .worktrees/E02.7)
+- [ ] E02.8 Logging and service unit — in-progress (worktree .worktrees/E02.8)
 
 ## E03 Declarations, Schemas and Apply — epic PR: —
 

@@ -121,9 +121,15 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 		"socket", srv.SocketPath(), "tcp", srv.TCPAddr(), "mode", modeLabel(s))
 	serveErr := srv.Serve(ctx)
 
-	// Serve returned because ctx was cancelled; wait for the candidate to release the
-	// leader lock (and demote) before the deferred connection teardown runs. A clean
-	// shutdown returns nil, so any non-nil error here is a genuine election fault.
+	// Serve returned because ctx was cancelled (SIGTERM/SIGINT): the listeners have
+	// drained and the socket is released. Record the graceful shutdown before the
+	// deferred managed-Postgres and connection teardown run, so daemon.log carries a
+	// shutdown line for either signal (specification section 2: graceful shutdown).
+	logger.Info("iris daemon shut down", "socket", srv.SocketPath())
+
+	// Wait for the candidate to release the leader lock (and demote) before the
+	// deferred connection teardown runs. A clean shutdown returns nil, so any non-nil
+	// error here is a genuine election fault.
 	if electErr := <-electDone; electErr != nil {
 		logger.Warn("iris daemon election ended with error", "err", electErr)
 	}

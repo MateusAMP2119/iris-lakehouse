@@ -125,12 +125,6 @@ func (a *app) daemonStub(op string) runE {
 	return func(cmd *cobra.Command, _ []string) error { return a.requireDaemon(cmd, op) }
 }
 
-// localStub is the handler of a local-lifecycle command that does not dial a
-// daemon and is not wired yet: it reports not-implemented (exit 4).
-func (a *app) localStub(what string) runE {
-	return func(_ *cobra.Command, _ []string) error { return a.notImplemented(what) }
-}
-
 // visibleChildNames returns the sorted names of a command's user-facing
 // subcommands, skipping hidden and cobra's built-in help/completion commands.
 func visibleChildNames(cmd *cobra.Command) []string {
@@ -320,12 +314,14 @@ func (a *app) engineCmd() *cobra.Command {
 
 	svcInstall := &cobra.Command{
 		Use: "install", Short: "Generate and install the platform service unit (systemd/launchd)",
-		Args: cobra.NoArgs, RunE: a.localStub("engine service install"),
+		Args: cobra.NoArgs, RunE: a.engineServiceInstall(),
 	}
+	svcInstall.Flags().String("path", "", "write the unit to this path instead of the workspace-local default")
 	svcUninstall := &cobra.Command{
 		Use: "uninstall", Short: "Remove the installed service unit",
-		Args: cobra.NoArgs, RunE: a.localStub("engine service uninstall"),
+		Args: cobra.NoArgs, RunE: a.engineServiceUninstall(),
 	}
+	svcUninstall.Flags().String("path", "", "remove the unit at this path instead of the workspace-local default")
 	service := a.group("service", "Manage the platform service unit",
 		daemonless(svcInstall), daemonless(svcUninstall))
 
