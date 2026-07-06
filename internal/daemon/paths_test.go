@@ -47,7 +47,7 @@ func TestIrisDirDefaultPaths(t *testing.T) {
 		// The daemon log lands at <workspace>/.iris/logs/daemon.log and is really
 		// created under that tree.
 		wantLog := filepath.Join(ws, ".iris", "logs", "daemon.log")
-		if got := DaemonLogPath(settings); got != wantLog {
+		if got := LogPath(settings); got != wantLog {
 			t.Errorf("daemon log path = %q, want %q", got, wantLog)
 		}
 		f, err := OpenDaemonLog(settings)

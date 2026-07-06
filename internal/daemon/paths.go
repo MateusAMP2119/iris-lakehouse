@@ -40,10 +40,9 @@ func LogsDir(s config.Settings) string {
 	return filepath.Join(irisDir(s), logsDirName)
 }
 
-// DaemonLogPath returns the daemon log path, <workspace>/.iris/logs/daemon.log:
-// where the detached daemon's stdout/stderr are redirected (specification
-// section 10).
-func DaemonLogPath(s config.Settings) string {
+// LogPath returns the daemon log path, <workspace>/.iris/logs/daemon.log: where
+// the detached daemon's stdout/stderr are redirected (specification section 10).
+func LogPath(s config.Settings) string {
 	return filepath.Join(LogsDir(s), daemonLogName)
 }
 
@@ -78,7 +77,7 @@ func OpenDaemonLog(s config.Settings) (*os.File, error) {
 	if err := EnsureLogsDir(s); err != nil {
 		return nil, err
 	}
-	path := DaemonLogPath(s)
+	path := LogPath(s)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, logFilePerm) //nolint:gosec // G304: path is the engine-owned daemon log under the workspace .iris tree, not user or network input.
 	if err != nil {
 		return nil, fmt.Errorf("daemon: open daemon log %s: %w", path, err)
