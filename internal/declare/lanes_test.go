@@ -116,6 +116,20 @@ func TestComposerLaneMatchesFolder(t *testing.T) {
 			}
 		})
 	}
+
+	// An empty lane and folder trivially "match" (both blank) but must still be
+	// rejected on entry, never written as an empty-keyed lanes roster row.
+	t.Run("empty lane and folder", func(t *testing.T) {
+		_, err := declare.ValidateComposerApply(declare.RegistryView{}, declare.ComposerApply{
+			Lane:          "",
+			Folder:        "",
+			Order:         []string{"a"},
+			MemberFolders: []string{"a"},
+		})
+		if err == nil {
+			t.Fatal("a composer with an empty lane and folder must be rejected, not written as an empty-keyed lane")
+		}
+	})
 }
 
 // TestComposerRequiredAtTwo proves apply rejects a lane reaching 2+ pipelines
@@ -248,6 +262,21 @@ func TestOrderEntriesContained(t *testing.T) {
 			t.Errorf("error %q should name the offending order entry", err)
 		}
 	})
+
+	t.Run("duplicate order entry", func(t *testing.T) {
+		_, err := declare.ValidateComposerApply(declare.RegistryView{}, declare.ComposerApply{
+			Lane:          "ingest",
+			Folder:        "ingest",
+			Order:         []string{"extract_orders", "extract_orders"},
+			MemberFolders: []string{"extract_orders", "load_orders"},
+		})
+		if err == nil {
+			t.Fatal("a pipeline listed twice in the order must be rejected; it may not run twice per pass")
+		}
+		if !strings.Contains(err.Error(), "extract_orders") {
+			t.Errorf("error %q should name the duplicated order entry", err)
+		}
+	})
 }
 
 // TestOutsideMemberRejected proves an inline lane: without folder containment is
@@ -351,6 +380,20 @@ func TestTwoPlusInterlock(t *testing.T) {
 		}
 		if eff.WritesLanes() {
 			t.Errorf("even joining a composed lane, a member apply writes no lanes: %+v", eff)
+		}
+	})
+
+	t.Run("own-lane colliding into a populated lane still hits the interlock", func(t *testing.T) {
+		// A lane-less pipeline is not a containment member of anything; if its
+		// implicit own-lane name collides with an already-populated lane, the apply
+		// still leaves that lane with 2+ members and must be rejected, never merged.
+		view := regView(map[string]declare.Membership{"first": member("collide", true)})
+		_, err := declare.ValidatePipelineApply(view, declare.PipelineApply{Pipeline: "collide"})
+		if err == nil {
+			t.Fatal("a lane-less pipeline colliding into a populated lane must be rejected, not silently merged")
+		}
+		if !strings.Contains(err.Error(), "collide") {
+			t.Errorf("error %q should name the colliding lane", err)
 		}
 	})
 }
