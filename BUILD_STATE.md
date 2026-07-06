@@ -28,7 +28,7 @@ Opus, never downgrade.
 - [x] E01.3 Config precedence — done (PR #13: https://github.com/MateusAMP2119/iris-engine-cli/pull/13)
 - [x] E01.4 CI and lint wiring — done (PR #11: https://github.com/MateusAMP2119/iris-engine-cli/pull/11)
 
-## E02 Engine Install, Daemon and Leadership — epic PR: —
+## E02 Engine Install, Daemon and Leadership — epic PR: #23 (merged)
 
 - [x] E02.1 Meta DDL and schema — done (PR #15: https://github.com/MateusAMP2119/iris-engine-cli/pull/15)
 - [x] E02.2 Admin DSN chain — done (PR #16: https://github.com/MateusAMP2119/iris-engine-cli/pull/16)
@@ -36,12 +36,12 @@ Opus, never downgrade.
 - [x] E02.4 Install and uninstall — done (PR #18: https://github.com/MateusAMP2119/iris-engine-cli/pull/18)
 - [x] E02.5 Listeners and daemon protocol — done (PR #19: https://github.com/MateusAMP2119/iris-engine-cli/pull/19)
 - [x] E02.6 Leader election single writer — done (PR #20: https://github.com/MateusAMP2119/iris-engine-cli/pull/20)
-- [ ] E02.7 Crash reconciliation — in-progress (worktree .worktrees/E02.7)
-- [ ] E02.8 Logging and service unit — in-progress (worktree .worktrees/E02.8)
+- [x] E02.7 Crash reconciliation — done (PR #22: https://github.com/MateusAMP2119/iris-engine-cli/pull/22)
+- [x] E02.8 Logging and service unit — done (PR #21: https://github.com/MateusAMP2119/iris-engine-cli/pull/21)
 
 ## E03 Declarations, Schemas and Apply — epic PR: —
 
-- [ ] E03.1 Declaration parsing and discovery — todo (needs E01)
+- [ ] E03.1 Declaration parsing and discovery — in-progress (worktree .worktrees/E03.1)
 - [ ] E03.2 Lane composer validation — todo (needs E03.1)
 - [ ] E03.3 Single file targets — todo (needs E03.1)
 - [ ] E03.4 Dependency graph validation — todo (needs E03.1)
