@@ -163,6 +163,14 @@ type SupervisorConfig struct {
 // Supervisor supervises one managed-Postgres subprocess lifecycle behind a seam.
 // The production implementation (embeddedpg.go) fetches a pinned, checksum-verified
 // Postgres and runs it as a child subprocess; a fake drives the integration tier.
+//
+// Error wrapping is the implementation's responsibility: each method returns a
+// descriptive, %w-wrapped error naming the failed operation and its managed-
+// Postgres context. The Manager surfaces those errors unchanged (Startup, Shutdown)
+// so exactly one layer owns the prefix and no message is double-wrapped; the Manager
+// wraps only its own operations (minting, port reservation, building the
+// supervisor). A fake used in tests should follow the same contract when it returns
+// a non-nil error.
 type Supervisor interface {
 	// EnsureInstalled downloads and places the pinned Postgres build and
 	// materializes the data directory if absent, without leaving a server running.
@@ -255,8 +263,10 @@ func (m *Manager) Startup(ctx context.Context) (AdminDSN, error) {
 	if err != nil {
 		return AdminDSN{}, fmt.Errorf("daemon: build managed Postgres supervisor: %w", err)
 	}
+	// Supervisor.Start already returns a descriptive, %w-wrapped error (see the
+	// interface contract), so surface it as-is rather than double-prefixing it.
 	if err := sup.Start(ctx); err != nil {
-		return AdminDSN{}, fmt.Errorf("daemon: start managed Postgres: %w", err)
+		return AdminDSN{}, err
 	}
 	m.sup = sup
 	return AdminDSN{conn: managedDSN(cfg)}, nil
@@ -264,16 +274,15 @@ func (m *Manager) Startup(ctx context.Context) (AdminDSN, error) {
 
 // Shutdown stops a managed-Postgres subprocess started by Startup. In external mode,
 // or before a managed Startup, it is a no-op: there is no local instance to stop.
+// Supervisor.Stop owns the descriptive error (see the interface contract), so
+// Shutdown surfaces it as-is rather than re-wrapping the same prefix.
 func (m *Manager) Shutdown() error {
 	if m.sup == nil {
 		return nil
 	}
-	err := m.sup.Stop()
+	sup := m.sup
 	m.sup = nil
-	if err != nil {
-		return fmt.Errorf("daemon: stop managed Postgres: %w", err)
-	}
-	return nil
+	return sup.Stop()
 }
 
 // managedConfig builds the SupervisorConfig for managed mode: the .iris/pg
