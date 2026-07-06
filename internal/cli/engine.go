@@ -249,14 +249,17 @@ func (a *app) engineStart() runE {
 		if detach && !daemonized {
 			return a.startDetached(cmd, settings)
 		}
-		return a.startForeground(cmd, settings)
+		return a.startForeground(cmd, settings, daemonized)
 	}
 }
 
 // startForeground runs the daemon attached in the current process, cancelling on
 // SIGTERM/SIGINT so a graceful shutdown follows. It blocks for the daemon's
-// lifetime; a clean signalled shutdown returns exit 0.
-func (a *app) startForeground(cmd *cobra.Command, settings config.Settings) error {
+// lifetime; a clean signalled shutdown returns exit 0. When daemonized (the
+// detached re-exec of `engine start -d`), the daemon's logs are structured JSON
+// routed through the size-rotated daemon.log; attached in the foreground they stay
+// human-readable on the CLI's stderr console (specification section 2).
+func (a *app) startForeground(cmd *cobra.Command, settings config.Settings, daemonized bool) error {
 	base := cmd.Context()
 	if base == nil {
 		base = context.Background()
@@ -264,9 +267,24 @@ func (a *app) startForeground(cmd *cobra.Command, settings config.Settings) erro
 	ctx, stop := signal.NotifyContext(base, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	a.logger.Info("iris engine starting (foreground)", "socket", settings.Socket, "mode", modeName(settings))
-	if err := daemon.Run(ctx, settings, a.logger); err != nil {
-		a.logger.Error("engine start failed", "err", err)
+	logger := a.logger
+	if daemonized {
+		l, closer, err := daemon.OpenDaemonLogger(settings)
+		if err != nil {
+			a.logger.Error("engine start failed", "err", err)
+			return &fault{
+				code:    exitOpFailed,
+				codeStr: "engine_start_failed",
+				message: fmt.Sprintf("engine start failed: %v", err),
+			}
+		}
+		defer func() { _ = closer.Close() }()
+		logger = l
+	}
+
+	logger.Info("iris engine starting", "socket", settings.Socket, "mode", modeName(settings))
+	if err := daemon.Run(ctx, settings, logger); err != nil {
+		logger.Error("engine start failed", "err", err)
 		return &fault{
 			code:    exitOpFailed,
 			codeStr: "engine_start_failed",
@@ -366,6 +384,88 @@ func (a *app) engineStop() runE {
 			return json.NewEncoder(a.out).Encode(dataEnvelope{Data: res})
 		}
 		fmt.Fprintf(a.out, "iris engine stopped (pid %d)\n", pid)
+		return nil
+	}
+}
+
+// serviceResult is the machine-readable outcome of `iris engine service
+// install`/`uninstall`: the action taken and the unit path it acted on. It carries
+// no secret.
+type serviceResult struct {
+	Status string `json:"status"`
+	Unit   string `json:"unit"`
+}
+
+// engineServiceInstall is the handler for `iris engine service install`: a
+// daemonless command that generates the host platform's service unit (systemd on
+// linux, launchd on darwin) wrapping the detached daemon and writes it on demand
+// (specification section 2: on demand, never auto-shipped). It writes to the
+// workspace-local ServiceUnitPath seam by default, or to --path when given, and is
+// the only command that installs a unit (no boot autostart is configured
+// elsewhere). It fails fast (exit 4) on any generation or write error.
+func (a *app) engineServiceInstall() runE {
+	return func(cmd *cobra.Command, _ []string) error {
+		settings := a.resolveTarget(cmd)
+		exe, err := os.Executable()
+		if err != nil {
+			return &fault{
+				code:    exitOpFailed,
+				codeStr: "service_install_failed",
+				message: fmt.Sprintf("engine service install failed: cannot locate the iris binary: %v", err),
+			}
+		}
+		unitPath, _ := cmd.Flags().GetString("path")
+		written, err := daemon.InstallServiceUnit(settings, exe, unitPath)
+		if err != nil {
+			a.logger.Error("engine service install failed", "err", err)
+			return &fault{
+				code:    exitOpFailed,
+				codeStr: "service_install_failed",
+				message: fmt.Sprintf("engine service install failed: %v", err),
+			}
+		}
+		a.logger.Info("engine service unit installed", "unit", written)
+		res := serviceResult{Status: "installed", Unit: written}
+		if jsonMode, _ := cmd.Flags().GetBool("json"); jsonMode {
+			return json.NewEncoder(a.out).Encode(dataEnvelope{Data: res})
+		}
+		fmt.Fprintf(a.out, "iris engine service unit installed at %s\n", written)
+		return nil
+	}
+}
+
+// engineServiceUninstall is the handler for `iris engine service uninstall`: a
+// daemonless command that removes the generated service unit at the workspace-local
+// ServiceUnitPath seam (or --path when given). Removing an absent unit is not an
+// error (idempotent). It fails fast (exit 4) on a hard removal error.
+func (a *app) engineServiceUninstall() runE {
+	return func(cmd *cobra.Command, _ []string) error {
+		settings := a.resolveTarget(cmd)
+		unitPath, _ := cmd.Flags().GetString("path")
+		if unitPath == "" {
+			unitPath = daemon.ServiceUnitPath(settings)
+		}
+		removed, err := daemon.UninstallServiceUnit(unitPath)
+		if err != nil {
+			a.logger.Error("engine service uninstall failed", "err", err)
+			return &fault{
+				code:    exitOpFailed,
+				codeStr: "service_uninstall_failed",
+				message: fmt.Sprintf("engine service uninstall failed: %v", err),
+			}
+		}
+		res := serviceResult{Status: "removed", Unit: unitPath}
+		if !removed {
+			res.Status = "absent"
+		}
+		if jsonMode, _ := cmd.Flags().GetBool("json"); jsonMode {
+			return json.NewEncoder(a.out).Encode(dataEnvelope{Data: res})
+		}
+		if removed {
+			fmt.Fprintf(a.out, "iris engine service unit removed from %s\n", unitPath)
+		} else {
+			fmt.Fprintln(a.out, "iris engine service unit: nothing to remove")
+		}
 		return nil
 	}
 }
