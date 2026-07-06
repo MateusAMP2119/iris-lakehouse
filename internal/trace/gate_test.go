@@ -161,6 +161,49 @@ func TestC(t *testing.T) {}
 	}
 }
 
+// TestLintMalformedAnnotation proves a near-miss // spec: annotation -- a spec
+// marker whose token is present but not a well-formed contract id (a trailing
+// period, an uppercase slug, a malformed shape) -- is surfaced as a lint
+// violation rather than silently dropped. Even when the same test carries another
+// valid claim (so its claim list is non-empty and the "claims no contract" rule
+// stays quiet), the near-miss must be reported so the contract it meant to claim
+// can never linger in the backlog unnoticed. The gate fails on it.
+//
+// spec: S16/test-without-contract-fails-lint
+func TestLintMalformedAnnotation(t *testing.T) {
+	m := smallManifest()
+	files := mustParse(t, "nearmiss_test.go", `package s
+import "testing"
+
+// spec: S02/admin-dsn-precedence
+// spec: S01/apply-never-builds.
+func TestNearMiss(t *testing.T) {}
+`)
+
+	// The valid S02 claim keeps the func's claim list non-empty, so only a
+	// dedicated malformed-annotation lint can surface the S01 near-miss.
+	errs := trace.Lint(m, files)
+	var found bool
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "S01/apply-never-builds.") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("malformed // spec: annotation not flagged by lint; got %v", errs)
+	}
+
+	content := []byte("body")
+	lock := trace.SpecLock{SpecPath: "d", SHA256: trace.Fingerprint(content)}
+	rep := trace.Gate(m, files, lock, content, trace.Backlog)
+	if !rep.Failed() {
+		t.Fatal("backlog gate: Failed() = false, want true from the malformed annotation")
+	}
+	if rep.Err() == nil || !strings.Contains(rep.Err().Error(), "S01/apply-never-builds.") {
+		t.Errorf("gate error = %v, want it to name the malformed token", rep.Err())
+	}
+}
+
 // TestSpecDelta proves the spec-delta mechanism as pure logic: a fingerprint
 // mismatch (the spec doc changed) fails verification, a match passes, and after
 // the lock is re-recorded -- the machine-visible proxy for the accompanying test
@@ -189,10 +232,17 @@ func TestSpecDelta(t *testing.T) {
 		t.Errorf("Verify(changed, re-locked) = %v, want nil", err)
 	}
 
-	// Fingerprint ignores CR so it is stable across line-ending churn but changes
-	// with real content.
+	// Fingerprint normalizes line endings only -- CRLF and a lone CR both to LF --
+	// so it is stable across line-ending churn yet a lone CR is still real content:
+	// "a\rb" must not collapse onto "ab".
 	if trace.Fingerprint([]byte("a\r\nb")) != trace.Fingerprint([]byte("a\nb")) {
-		t.Error("Fingerprint is sensitive to CR line endings, want it normalized")
+		t.Error("Fingerprint distinguishes CRLF from LF, want them normalized equal")
+	}
+	if trace.Fingerprint([]byte("a\rb")) != trace.Fingerprint([]byte("a\nb")) {
+		t.Error("Fingerprint does not normalize a lone CR to LF")
+	}
+	if trace.Fingerprint([]byte("a\rb")) == trace.Fingerprint([]byte("ab")) {
+		t.Error(`Fingerprint collapsed a lone CR to nothing; "a\rb" and "ab" must differ`)
 	}
 	if trace.Fingerprint(v1) == trace.Fingerprint(v2) {
 		t.Error("Fingerprint collided on two different specs")
@@ -275,15 +325,37 @@ func TestTraceabilityGate(t *testing.T) {
 		t.Fatalf("backlog-aware gate over the real repo failed: %v", rep.Err())
 	}
 
-	// The full red backlog is the deliverable: hundreds of unclaimed contracts.
-	if len(rep.Gaps) < 400 {
-		t.Errorf("gap list = %d contracts, want the big unclaimed backlog", len(rep.Gaps))
+	// The gap list is the structural invariant of the gate, not a snapshot of
+	// today's backlog size: it is exactly the testable (non-exempt) contracts that
+	// no test claims. Its size equals the count of testable contracts minus those
+	// claimed, each side computed independently from the manifest and the extracted
+	// claims -- so the check stays honest as later epics claim more contracts
+	// instead of inverting healthy progress into a merge-blocking failure.
+	claimed := trace.ClaimedIDs(files)
+	testable := m.Testable()
+	claimedTestable := 0
+	for _, c := range testable {
+		if claimed[c.ID] {
+			claimedTestable++
+		}
+	}
+	if want := len(testable) - claimedTestable; len(rep.Gaps) != want {
+		t.Errorf("gap list = %d contracts, want %d (testable %d - claimed testable %d)",
+			len(rep.Gaps), want, len(testable), claimedTestable)
+	}
+	// The gap list carries no exempt row and no claimed id.
+	for _, id := range rep.Gaps {
+		if c, ok := m.Find(id); ok && c.IsExempt() {
+			t.Errorf("exempt contract %s appeared in the gap list", id)
+		}
+		if claimed[id] {
+			t.Errorf("claimed contract %s appeared in the gap list", id)
+		}
 	}
 	t.Logf("traceability backlog: %d unclaimed non-exempt contracts", len(rep.Gaps))
 
 	// Claims are recognized end-to-end: the six contracts real tests claim are
 	// not in the gap list.
-	claimed := trace.ClaimedIDs(files)
 	for _, id := range []string{
 		"S16/manifest-row-schema",
 		"S16/exempt-needs-no-test",
