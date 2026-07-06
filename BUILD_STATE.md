@@ -6,13 +6,20 @@ Task briefs live in `docs/Tasks/`. Process epics E00 → E12, then E14, then E13
 
 Worktrees: `../iris-worktrees/EXX.Y` on branch `issue/EXX.Y-short-name`.
 
-## E00 Conformance Harness and Traceability Gate — epic PR: —
+## E00 Conformance Harness and Traceability Gate — epic PR: #6 (merged)
 
-- [ ] E00.1 Manifest seed and doctrine — todo
-- [ ] E00.2 Traceability gate — todo (needs E00.1)
-- [ ] E00.3 Golden files and fixtures — todo (needs E00.1)
-- [ ] E00.4 Fakes and process IO — todo (needs E00.3)
-- [ ] E00.5 Conformance runner and CI — todo (needs E00.2, E00.3)
+Post-epic deep review (multi-agent, orchestrator-run per user instruction) produced
+review-fix PRs #7 (CI/lint/conformance), #8 (gate hardening, 3 rounds), #9 (exec
+runner rebuilt on stdlib os/exec + WaitDelay, 3 rounds) — all reviewed to zero
+confirmed findings and merged. Standing rule: every PR gets the Opus pr-review
+workflow (.claude/workflows/pr-review.js) before merge; on stall, kill + restart on
+Opus, never downgrade.
+
+- [x] E00.1 Manifest seed and doctrine — done (PR #1: https://github.com/MateusAMP2119/iris-engine-cli/pull/1)
+- [x] E00.2 Traceability gate — done (PR #2: https://github.com/MateusAMP2119/iris-engine-cli/pull/2)
+- [x] E00.3 Golden files and fixtures — done (PR #3: https://github.com/MateusAMP2119/iris-engine-cli/pull/3)
+- [x] E00.4 Fakes and process IO — done (PR #5: https://github.com/MateusAMP2119/iris-engine-cli/pull/5)
+- [x] E00.5 Conformance runner and CI — done (PR #4: https://github.com/MateusAMP2119/iris-engine-cli/pull/4)
 
 ## E01 Repo Skeleton, CLI Frame and Config — epic PR: —
 
