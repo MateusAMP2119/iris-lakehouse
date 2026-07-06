@@ -6,17 +6,20 @@ pr="$1"
 
 # Wait for checks to register (gh prints "no checks reported" to stderr and exits 8).
 for _ in $(seq 1 40); do
-  if gh pr checks "$pr" 2>/dev/null | grep -q .; then break; fi
+  out=$(gh pr checks "$pr" 2>/dev/null || true)
+  if [ -n "$out" ]; then break; fi
   sleep 15
 done
-if ! gh pr checks "$pr" 2>/dev/null | grep -q .; then
+out=$(gh pr checks "$pr" 2>/dev/null || true)
+if [ -z "$out" ]; then
   echo "NO_CHECKS_REGISTERED after 10m" >&2
   exit 1
 fi
 
 # Wait for all checks to leave pending.
-while gh pr checks "$pr" 2>/dev/null | awk -F'\t' '{print $2}' | grep -q pending; do
-  sleep 20
+while true; do
+  out=$(gh pr checks "$pr" 2>/dev/null || true)
+  case "$out" in *pending*) sleep 20 ;; *) break ;; esac
 done
 
 bad=$(gh pr checks "$pr" | awk -F'\t' '$2!="pass"{print $1" -> "$2}')
