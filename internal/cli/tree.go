@@ -160,7 +160,7 @@ func (a *app) declareCmd() *cobra.Command {
 		Use:   "apply <path>",
 		Short: "Register and apply one iris-declare.yaml (pipeline or composer)",
 		Args:  cobra.ExactArgs(1),
-		RunE:  a.declareTargetStub("declare apply"),
+		RunE:  a.declareApply(),
 	}
 	apply.Flags().Bool("dry-run", false, "report what would change without touching anything")
 
