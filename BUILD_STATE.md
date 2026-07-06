@@ -21,12 +21,12 @@ Opus, never downgrade.
 - [x] E00.4 Fakes and process IO — done (PR #5: https://github.com/MateusAMP2119/iris-engine-cli/pull/5)
 - [x] E00.5 Conformance runner and CI — done (PR #4: https://github.com/MateusAMP2119/iris-engine-cli/pull/4)
 
-## E01 Repo Skeleton, CLI Frame and Config — epic PR: —
+## E01 Repo Skeleton, CLI Frame and Config — epic PR: #14 (merged)
 
-- [ ] E01.1 Module and package layout — todo (needs E00)
-- [ ] E01.2 Cobra tree and exit codes — todo (needs E01.1)
-- [ ] E01.3 Config precedence — todo (needs E01.2)
-- [ ] E01.4 CI and lint wiring — todo (needs E01.1)
+- [x] E01.1 Module and package layout — done (PR #10: https://github.com/MateusAMP2119/iris-engine-cli/pull/10)
+- [x] E01.2 Cobra tree and exit codes — done (PR #12: https://github.com/MateusAMP2119/iris-engine-cli/pull/12)
+- [x] E01.3 Config precedence — done (PR #13: https://github.com/MateusAMP2119/iris-engine-cli/pull/13)
+- [x] E01.4 CI and lint wiring — done (PR #11: https://github.com/MateusAMP2119/iris-engine-cli/pull/11)
 
 ## E02 Engine Install, Daemon and Leadership — epic PR: —
 
