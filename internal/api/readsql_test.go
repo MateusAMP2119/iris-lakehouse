@@ -146,11 +146,11 @@ func TestNoCallerSQL(t *testing.T) {
 		t.Run("a hostile identifier never reaches statement text", func(t *testing.T) {
 			ok := map[string]string{"id": "bigint"}
 			cases := []struct {
-				name                      string
-				schema, table             string
-				projection                []string
-				fields                    map[string]string
-				pk                        []string
+				name          string
+				schema, table string
+				projection    []string
+				fields        map[string]string
+				pk            []string
 			}{
 				{"schema with statement splice", "analytics; DROP TABLE meta.pats", "orders", []string{"id"}, ok, []string{"id"}},
 				{"quoted table", `orders"; --`, "orders", []string{"id"}, ok, []string{"id"}},
