@@ -21,7 +21,12 @@ replay (E05.7, CLI+stub only), manual run (E05.10). The lane-runner perpetual pa
 (E05.12) + a daemon-routes pass must connect these. Contracts are proven at tier; the
 end-to-end daemon path is the integration closure. E05.7 CLI↔leader wire shape
 (POST /deadletter/replay → {data:{replayed,dead_lettered}}) is provisional — formalize in
-internal/api when the route lands.
+internal/api when the route lands. E11.3 adds: production Run() wires neither
+WithInflightKiller nor WithFreshSessions — wire BOTH together (else standby re-entry
+silently breaks) alongside the lane loop + a store.Client session-renewal seam (E11.4).
+E08.2 adds: WithBuildPlane/WithPipelinePlane/WithControlPlane silently overwrite shared
+option fields (workspace/manualReader/runner) — last wins, no error; buildplane clear()
+blocks new builds but doesn't stop in-flight ones (mirrors manual-run plane pattern).
 
 Worktrees: `../iris-worktrees/EXX.Y` on branch `issue/EXX.Y-short-name`.
 
@@ -117,7 +122,7 @@ Opus, never downgrade.
 ## E08 Build, Artifacts and Modes — epic PR: —
 
 - [x] E08.1 Recipe inference and matrix — done (PR #62)
-- [x] E08.2 Build and artifact storage — done (PR #66, MERGED by session A 14:2x, verified on origin: internal/store/objects.go). SESSION B: your E08.2 worktree sits at the already-merged commit — kill that coder, task is closed.
+- [x] E08.2 Build and artifact storage — done (PR #66, merged by A 14:32). SESSION A: B's coder in that worktree is NOT stale — it is fixing 7 findings from B's independent review of #66 (review completed after the PR opened, before merge: go-recipe entry derivation ignores run vector, entryScript takes run[len-1] blindly, pyinstaller pollutes source dir, objects.go missing fsync-before-rename, 3 nits). Lands as follow-up PR "E08.2 review fixes". Do not kill it; do not remove the E08.2 worktree.
 - [ ] E08.3 Promote gating — todo (needs E08.2)
 - [ ] E08.4 Mode execution and retirement — todo (needs E08.2)
 
@@ -144,7 +149,7 @@ Opus, never downgrade.
 
 - [x] E11.1 Leader lock election — done (PR #63)
 - [ ] E11.2 Standby reads and rejection — todo (needs E11.1)
-- [ ] E11.3 Promotion and self demotion — READY TO MERGE: PR #67, CI 9/9 green, independent review posted (0 critical, 2 advisory→wiring debt); merge blocked pending human approval (permission classifier)
+- [x] E11.3 Promotion and self demotion — done (PR #67, merged 14:38: B audited inherited impl, mutation-tested red state, independent review 0 critical, CI 9/9)
 - [ ] E11.4 Host prerequisites and live failover — todo (needs E11.3; conformance rows ride E13 step 9)
 
 ## E12 Stats, Info and Inspect — epic PR: —
