@@ -10,6 +10,7 @@ import (
 
 	"github.com/MateusAMP2119/iris-engine-cli/internal/api"
 	"github.com/MateusAMP2119/iris-engine-cli/internal/dispatch"
+	"github.com/MateusAMP2119/iris-engine-cli/internal/exec"
 	"github.com/MateusAMP2119/iris-engine-cli/internal/store"
 )
 
@@ -61,6 +62,13 @@ type Candidate struct {
 	registry   store.RegistryReader
 	appliedHds store.AppliedHeadReader
 	data       dataPlane
+
+	// Manual-run wiring, installed on winning leadership and cleared on demotion so the
+	// api mux's POST /pipeline/run reaches the single meta writer and the exec seam only
+	// while this daemon leads (specification section 8). Nil pipelines skips it.
+	pipelines    *pipelinePlane
+	manualReader store.ManualReader
+	runner       exec.Runner
 }
 
 // CandidateOption configures a Candidate at construction.
@@ -101,6 +109,23 @@ func WithControlPlane(cp *controlPlane, workspace string, reg store.RegistryRead
 		c.registry = reg
 		c.appliedHds = heads
 		c.data = data
+	}
+}
+
+// WithPipelinePlane wires the leader-side manual-run plane: on winning leadership the
+// candidate builds the manual-run orchestrator over the single dispatcher (the sole meta
+// writer), the meta read seams, and the process runner, and installs it into pp before
+// reporting the leader role, clearing it on demotion. workspace is the leader's workspace
+// tree (pipeline folders resolve against it); manual is the plain-MVCC manual-run reader;
+// runner starts subprocesses. A nil pp leaves the candidate without a manual-run plane
+// (the shape tests use).
+func WithPipelinePlane(pp *pipelinePlane, workspace string, reg store.RegistryReader, manual store.ManualReader, runner exec.Runner) CandidateOption {
+	return func(c *Candidate) {
+		c.pipelines = pp
+		c.workspace = workspace
+		c.registry = reg
+		c.manualReader = manual
+		c.runner = runner
 	}
 }
 
@@ -192,6 +217,17 @@ func (c *Candidate) lead(ctx context.Context) error {
 		)
 		c.control.install(orch)
 		defer c.control.clear()
+	}
+
+	// Install the leader-side manual-run orchestrator over the single dispatcher, the
+	// meta read seams, and the process runner before reporting the leader role, so a
+	// POST /pipeline/run that passes the mux's leader gate always finds an installed
+	// orchestrator; clear it on demotion so a run racing a lost lock faults rather than
+	// minting off-path.
+	if c.pipelines != nil {
+		mo := newManualOrchestrator(c.workspace, d, c.registry, c.manualReader, c.runner, c.logger)
+		c.pipelines.install(mo)
+		defer c.pipelines.clear()
 	}
 
 	// Reconciliation is done: release the dispatch-ready latch (the E05 lane
