@@ -120,8 +120,8 @@ func RenderPromotionFlip(runIDs []int64) string {
 		lits[i] = fmt.Sprintf("%d", id)
 	}
 	return fmt.Sprintf(
-		"UPDATE public.data_journal SET undo = 'promoted' WHERE undo = 'open' AND run_id IN (%s);",
-		strings.Join(lits, ", "))
+		"UPDATE %s SET undo = 'promoted' WHERE undo = 'open' AND run_id IN (%s);",
+		JournalTable().Qualified(), strings.Join(lits, ", "))
 }
 
 // ExecutePromotionFlip issues the live promotion flip through the data-database
