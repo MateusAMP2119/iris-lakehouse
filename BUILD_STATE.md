@@ -91,7 +91,7 @@ Opus, never downgrade.
 - [x] E05.9 Retention and pruning — done (PR #54)
 - [x] E05.10 Manual pipeline run — done (PR #49)
 - [x] E05.11 Doctrines and scope — done (verification-only: all 5 exempt rows seeded by E00.1, gate-accounted; no PR needed)
-- [ ] E05.12 Lane runner pass semantics — todo (needs E05.1, E05.4, E05.5)
+- [x] E05.12 Lane runner pass semantics — done (PR #59)
 
 ## E06 Write Capture, Wipe and Promotion — epic PR: —
 
