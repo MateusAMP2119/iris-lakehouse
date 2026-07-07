@@ -53,7 +53,7 @@ func TestExternalDataDatabaseAdminOwned(t *testing.T) {
 		cluster := embeddedpostgres.NewDatabase(embeddedpostgres.DefaultConfig().
 			Version(embeddedpostgres.V18).
 			Username(superuser).Password(superpw).Database("postgres").
-			Port(uint32(port)).
+			Port(port).
 			DataPath(dataDir).RuntimePath(runtimeDir).
 			StartTimeout(90 * time.Second))
 		if err := cluster.Start(); err != nil {
@@ -117,14 +117,24 @@ func TestExternalDataDatabaseAdminOwned(t *testing.T) {
 	})
 }
 
-// freePort returns a currently-free TCP port for the throwaway cluster to bind. The
-// brief close-then-reuse window is acceptable for a single local test process.
-func freePort(t *testing.T) int {
+// freePort returns a currently-free TCP port for the throwaway cluster to bind, typed
+// as the uint32 embedded-postgres's Port expects. The brief close-then-reuse window is
+// acceptable for a single local test process. A TCP port is always in [1, 65535]; the
+// explicit bounds check makes the narrowing conversion provably safe (and guards a
+// hypothetical port 0 the ephemeral bind should never return).
+func freePort(t *testing.T) uint32 {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("reserve a free port: %v", err)
 	}
 	defer func() { _ = l.Close() }()
-	return l.Addr().(*net.TCPAddr).Port
+	port := l.Addr().(*net.TCPAddr).Port
+	if port < 1 || port > 65535 {
+		t.Fatalf("reserved TCP port %d is out of range [1, 65535]", port)
+	}
+	//nolint:gosec // G115: a net.Listen TCP port is always in [0,65535], and the bounds
+	// check above proves port is in [1,65535], well within uint32; gosec's flow analysis
+	// does not recognize the guard, so the conversion is annotated at the call site.
+	return uint32(port)
 }
