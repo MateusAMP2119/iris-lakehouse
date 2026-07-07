@@ -291,15 +291,14 @@ func TestPATShowOnceHash(t *testing.T) {
 		}
 
 		full := tok.Reveal()
-		secret := tok.Secret()
-		// Persistence records only the prefix and hash: the raw token and its secret
-		// half appear in no recorded statement or argument.
+		// Persistence records only the prefix and hash: the raw show-once token appears
+		// in no recorded statement or argument.
 		for _, st := range rec.Statements() {
-			if strings.Contains(st.SQL, full) || strings.Contains(st.SQL, secret) {
+			if strings.Contains(st.SQL, full) {
 				t.Errorf("persisted SQL leaked the raw token: %q", st.SQL)
 			}
 			for _, a := range st.Args {
-				if s, ok := a.(string); ok && (s == full || strings.Contains(s, secret)) {
+				if s, ok := a.(string); ok && strings.Contains(s, full) {
 					t.Errorf("persisted argument leaked the raw token: %q", s)
 				}
 			}

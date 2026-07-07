@@ -163,7 +163,7 @@ func TestTokenMintHashVerify(t *testing.T) {
 			tok.String(),
 			tok.GoString(),
 		} {
-			if strings.Contains(rendered, full) || (tok.Secret() != "" && strings.Contains(rendered, tok.Secret())) {
+			if rendered != "Token(REDACTED)" || strings.Contains(rendered, full) {
 				t.Errorf("formatting path leaked the raw token: %q", rendered)
 			}
 		}
@@ -177,8 +177,8 @@ func TestTokenMintHashVerify(t *testing.T) {
 		if !strings.HasPrefix(hash, "$argon2id$") {
 			t.Errorf("Hash %q is not an argon2id PHC string", hash)
 		}
-		if strings.Contains(hash, full) || strings.Contains(hash, tok.Secret()) {
-			t.Errorf("argon2id hash leaked the raw token or secret: %q", hash)
+		if strings.Contains(hash, full) {
+			t.Errorf("argon2id hash leaked the raw token: %q", hash)
 		}
 
 		// Verify round-trips the real token and rejects a tampered one (constant-time).

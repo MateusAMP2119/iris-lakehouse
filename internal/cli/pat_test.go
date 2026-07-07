@@ -16,6 +16,12 @@ import (
 // spec: S07/pat-scope-subset-validation
 func TestPATCreateScopeValidation(t *testing.T) {
 	t.Run("S07/pat-scope-subset-validation", func(t *testing.T) {
+		// Isolate ambient IRIS_* config so a developer's exported socket/host cannot
+		// redirect the resolved dial target: the --socket flag is the only target.
+		t.Setenv("IRIS_SOCKET", "")
+		t.Setenv("IRIS_HOST", "")
+		t.Setenv("IRIS_TOKEN", "")
+
 		sock := shortSocket(t) // nothing listening: a valid request lands on no-daemon.
 
 		cases := []struct {

@@ -161,10 +161,6 @@ func (t Token) Reveal() string {
 	return tokenMarker + t.id + tokenSep + t.secret
 }
 
-// Secret returns the token's secret half. Like Reveal it is a deliberate exit for
-// the raw material (used to hash the token); it never appears in a formatting path.
-func (t Token) Secret() string { return t.secret }
-
 // IsZero reports whether the token is the zero value (no id or secret).
 func (t Token) IsZero() bool { return t.id == "" && t.secret == "" }
 
