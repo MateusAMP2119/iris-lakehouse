@@ -168,7 +168,7 @@ func (a *app) declareCmd() *cobra.Command {
 		Use:   "destroy <path>",
 		Short: "Tear down one declaration: its pipeline, role, grants, and un-promoted data",
 		Args:  cobra.ExactArgs(1),
-		RunE:  a.declareTargetStub("declare destroy"),
+		RunE:  a.declareDestroy(),
 	}
 	destroy.Flags().Bool("dry-run", false, "report what would be torn down without touching anything")
 	addConfirmFlags(destroy)
