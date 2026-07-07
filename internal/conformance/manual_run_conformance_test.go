@@ -22,7 +22,7 @@ func writePipelineDecl(t *testing.T, ws, name, decl string) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("create pipeline folder %s: %v", dir, err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "iris-declare.yaml"), []byte(decl), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "iris-declare.yaml"), []byte(decl), 0o644); err != nil { //nolint:gosec // G306: workspace declaration file, world-readable by design.
 		t.Fatalf("write declaration for %s: %v", name, err)
 	}
 }

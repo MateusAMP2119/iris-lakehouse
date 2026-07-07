@@ -50,7 +50,7 @@ func (a *app) pipelineRun() runE {
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
 		}()
-		return a.classifyPipelineRun(cmd, resp, args[0])
+		return a.classifyPipelineRun(cmd, resp)
 	}
 }
 
@@ -58,7 +58,7 @@ func (a *app) pipelineRun() runE {
 // the manual-run business outcome in its state field: queued or succeeded is success,
 // ineligible is exit 4 with the gate reason, dead-lettered is exit 5. A not_leader status
 // is exit 6 naming the leader; every other status is operation-failed (exit 4).
-func (a *app) classifyPipelineRun(cmd *cobra.Command, resp *http.Response, pipeline string) error {
+func (a *app) classifyPipelineRun(cmd *cobra.Command, resp *http.Response) error {
 	switch resp.StatusCode {
 	case http.StatusOK:
 		var env struct {
