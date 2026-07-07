@@ -10,6 +10,8 @@ SCHEMA-FK DEBT (E05.9 flag, resolve when live prune path wired): run_inputs.upst
 
 GRANT DEBT (E04.3/E04.4 follow-up): for capture to fire, pipeline roles need USAGE ON SCHEMA iris + EXECUTE ON iris.capture() (E06.2 conformance grants them explicitly; journal write itself runs as owner via SECURITY DEFINER). Add the iris-schema execute grant to grant-reconcile. Also E06.2 flags: data-PAT/pipeline reaching iris.capture() needs those grants.
 
+REVIEW PAUSE (user request): after E05.12 + E06.4 + E09.3 merge, STOP spawning — hand off to user for review. Do not start new tasks until user resumes.
+
 DAEMON WIRING DEBT (track, close in E05.12 + a daemon-routes pass): several control-plane
 routes are defined CLI-side + proven at unit/integration/stub-conformance tier but NOT
 wired into the live daemon perpetual loop yet: apply/destroy (E03.10, wired), deadletter
@@ -96,7 +98,7 @@ Opus, never downgrade.
 - [x] E06.1 Journal DDL and partitioning — done (PR #48)
 - [x] E06.2 Capture trigger emission — done (PR #52)
 - [x] E06.3 Run attribution — done (PR #55)
-- [ ] E06.4 Payload tiers and modes — todo (needs E06.2, E06.3)
+- [x] E06.4 Payload tiers and modes — done (PR #58)
 - [ ] E06.5 Wipe replay and conflicts — todo (needs E06.1)
 - [ ] E06.6 Promotion — todo (needs E06.5)
 - [ ] E06.7 Live wipe closure — todo (needs E06.5, E06.6)
@@ -120,8 +122,8 @@ Opus, never downgrade.
 ## E09 Read API, Endpoints and PATs — epic PR: —
 
 - [x] E09.1 PAT store and scopes — done (PR #53)
-- [ ] E09.2 Endpoint compile and validation — todo (needs E02, E03, E04)
-- [ ] E09.3 Param grammar and paging — todo (needs E09.2)
+- [x] E09.2 Endpoint compile and validation — done (PR #56)
+- [x] E09.3 Param grammar and paging — done (PR #57)
 - [ ] E09.4 Envelope and serialization — todo (needs E09.3)
 - [ ] E09.5 Route mux and auth — todo (needs E09.1, E09.4)
 - [ ] E09.6 Endpoint apply lifecycle — todo (needs E09.2, E09.5)
