@@ -41,7 +41,7 @@ Opus, never downgrade.
 - [x] E02.7 Crash reconciliation — done (PR #22: https://github.com/MateusAMP2119/iris-engine-cli/pull/22)
 - [x] E02.8 Logging and service unit — done (PR #21: https://github.com/MateusAMP2119/iris-engine-cli/pull/21)
 
-## E03 Declarations, Schemas and Apply — epic PR: #36 (Greptile done: 7 findings / 5 real bugs — epic-fix queued behind E04.2 due to API instability; findings in job tmp/epic-e03-findings.md)
+## E03 Declarations, Schemas and Apply — epic PR: #36 (Greptile 7 findings; epic-fix in-progress worktree .worktrees/epicE03fix; merge to master after)
 
 - [x] E03.1 Declaration parsing and discovery — done (PR #24: https://github.com/MateusAMP2119/iris-engine-cli/pull/24)
 - [x] E03.2 Lane composer validation — done (PR #27: https://github.com/MateusAMP2119/iris-engine-cli/pull/27)
@@ -57,16 +57,16 @@ Opus, never downgrade.
 ## E04 Roles, Grants and Credentials — epic PR: —
 
 - [x] E04.1 Access declaration validation — done (PR #34: https://github.com/MateusAMP2119/iris-engine-cli/pull/34; Sonnet)
-- [ ] E04.2 Role and credential lifecycle — in-progress (worktree .worktrees/E04.2, Opus)
+- [x] E04.2 Role and credential lifecycle — done (PR #37: https://github.com/MateusAMP2119/iris-engine-cli/pull/37)
 - [ ] E04.3 Grant reconcile and drift — todo (needs E04.1, E04.2)
 - [ ] E04.4 Connection injection and enforcement — todo (needs E04.2, E04.3)
 
 ## E05 Dispatcher, Lanes and Dead Letters — epic PR: —
 
-- [ ] E05.1 Exec seam — todo (killed on API instability, no work lost; requeue at concurrency 1)
+- [ ] E05.1 Exec seam — in-progress (worktree .worktrees/E05.1, Opus)
 - [ ] E05.2 Run environment — todo (needs E05.1)
 - [ ] E05.3 Run records and states — todo (needs E05.1)
-- [ ] E05.4 Lane model and walk — todo (killed on API instability, no work lost; requeue)
+- [x] E05.4 Lane model and walk — done (PR #38: https://github.com/MateusAMP2119/iris-engine-cli/pull/38)
 - [ ] E05.5 Gate and consumption — todo (needs E05.3, E05.4)
 - [ ] E05.6 Failure propagation — todo (needs E05.5)
 - [ ] E05.7 Dead letter replay — todo (needs E05.6)
