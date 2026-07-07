@@ -77,12 +77,18 @@ func RenderCreateTable(t *declare.Table) (string, error) {
 // migration file's recorded column definition; emitting it during sync is
 // E03.7's, this is only the deterministic rendering. A column whose YAML type is
 // outside the closed set returns an error.
+//
+// The ADD COLUMN carries IF NOT EXISTS (Postgres 9.6+) so it is idempotent: the
+// data ALTER runs before the meta migration head is recorded, so a head-record
+// failure leaves the column present with the head unrecorded, and the next apply
+// replays the same migration. Without IF NOT EXISTS that replay aborts "column
+// already exists" and the state is unrecoverable; with it the replay is a no-op.
 func RenderAddColumn(schema, table string, col declare.MigrationColumn) (string, error) {
 	def, err := declare.ResolveType(col.Type)
 	if err != nil {
 		return "", fmt.Errorf("pg: render ADD COLUMN %s.%s.%s: %w", schema, table, col.Name, err)
 	}
-	stmt := fmt.Sprintf("ALTER TABLE %s.%s ADD COLUMN %s %s",
+	stmt := fmt.Sprintf("ALTER TABLE %s.%s ADD COLUMN IF NOT EXISTS %s %s",
 		quoteIdentifier(schema), quoteIdentifier(table), quoteIdentifier(col.Name), def)
 	if col.Default != "" {
 		stmt += " DEFAULT " + col.Default

@@ -384,8 +384,8 @@ func TestSchemaDriftMissingColumnAutofix(t *testing.T) {
 	if len(plan.Fixes) != 1 || plan.Fixes[0].Subject != declare.SubjectColumn {
 		t.Fatalf("plan fixes = %+v, want one additive column fix", plan.Fixes)
 	}
-	if !strings.Contains(plan.Fixes[0].DDL, `ADD COLUMN "status"`) {
-		t.Errorf("fix DDL = %q, want an ADD COLUMN status", plan.Fixes[0].DDL)
+	if !strings.Contains(plan.Fixes[0].DDL, `ADD COLUMN IF NOT EXISTS "status"`) {
+		t.Errorf("fix DDL = %q, want an idempotent ADD COLUMN status", plan.Fixes[0].DDL)
 	}
 
 	// Applying the fix runs the ALTER but writes no migration file and records no

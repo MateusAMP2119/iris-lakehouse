@@ -37,12 +37,23 @@ func RenderCaptureTriggers(schema, table string) []string {
 // renderCaptureTrigger renders one per-operation capture trigger: op is the SQL
 // event (INSERT/UPDATE/DELETE), tag the short operation tag embedded in the trigger
 // name, and referencing the transition-table clause for that operation.
+//
+// The statement is a DROP TRIGGER IF EXISTS ... ON ...; CREATE TRIGGER ... two-step
+// so it is idempotent on every Postgres version (CREATE OR REPLACE TRIGGER is 14+
+// only). A partial prior provisioning run may leave one or more of the three
+// triggers installed; a plain CREATE TRIGGER re-apply then fails "trigger already
+// exists" and makes no progress. The leading drop is safe: the capture seam is a
+// no-op stub until E06.2, so dropping and re-creating the binding loses nothing.
+// Both statements carry no bound arguments, so a no-argument Exec runs them over
+// the simple query protocol, which executes the two commands in one round trip.
 func renderCaptureTrigger(schema, table, tag, op, referencing string) string {
 	name := fmt.Sprintf("iris_capture_%s_%s_%s", tag, schema, table)
 	return fmt.Sprintf(
-		"CREATE TRIGGER %s\n"+
+		"DROP TRIGGER IF EXISTS %s ON %s.%s;\n"+
+			"CREATE TRIGGER %s\n"+
 			"    AFTER %s ON %s.%s\n"+
 			"    REFERENCING %s\n"+
 			"    FOR EACH STATEMENT EXECUTE FUNCTION iris.capture();",
+		quoteIdentifier(name), quoteIdentifier(schema), quoteIdentifier(table),
 		quoteIdentifier(name), op, quoteIdentifier(schema), quoteIdentifier(table), referencing)
 }
