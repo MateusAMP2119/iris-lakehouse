@@ -6,6 +6,8 @@ Task briefs live in `docs/Tasks/`. Process epics E00 → E12, then E14, then E13
 
 Worktrees: `../iris-worktrees/EXX.Y` on branch `issue/EXX.Y-short-name`.
 
+RECONCILED 2026-07-07 07:xx: PRs #27 (E03.2 lanes) + #33 (test flake fix) had silently NOT merged despite chains reporting success (API-instability window) — merged into development by hand (commits 6afe150, e131edd); development green, daemon race-clean x3. AUDIT LESSON: verify each merge landed (grep a signature file on origin/development) before marking done; don't trust merge-when-green.sh exit alone.
+
 ## E00 Conformance Harness and Traceability Gate — epic PR: #6 (merged)
 
 Post-epic deep review (multi-agent, orchestrator-run per user instruction) produced
@@ -61,10 +63,10 @@ Opus, never downgrade.
 
 ## E05 Dispatcher, Lanes and Dead Letters — epic PR: —
 
-- [ ] E05.1 Exec seam — in-progress (worktree .worktrees/E05.1, Opus)
+- [ ] E05.1 Exec seam — todo (killed on API instability, no work lost; requeue at concurrency 1)
 - [ ] E05.2 Run environment — todo (needs E05.1)
 - [ ] E05.3 Run records and states — todo (needs E05.1)
-- [ ] E05.4 Lane model and walk — in-progress (worktree .worktrees/E05.4, Opus)
+- [ ] E05.4 Lane model and walk — todo (killed on API instability, no work lost; requeue)
 - [ ] E05.5 Gate and consumption — todo (needs E05.3, E05.4)
 - [ ] E05.6 Failure propagation — todo (needs E05.5)
 - [ ] E05.7 Dead letter replay — todo (needs E05.6)
