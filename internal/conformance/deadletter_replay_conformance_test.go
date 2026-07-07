@@ -39,7 +39,7 @@ func replayLeaderStub(t *testing.T, socket string, status int, body any) {
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(body)
 	})
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

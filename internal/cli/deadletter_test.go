@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // startReplayStub stands up an in-process daemon over a unix socket that answers POST
@@ -32,7 +33,7 @@ func startReplayStub(t *testing.T, sock string, status int, body any) {
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(body)
 	})
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 }
