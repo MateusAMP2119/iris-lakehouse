@@ -8,7 +8,11 @@ FLAKE RESOLVED 2026-07-07: TestHungRunHoldsLane scheduling race fixed in PR #64 
 
 RESOLVED 2026-07-07: shutdownfix (linux CI pidfile timeout) landed as PR #51; KNOWN CI-RED note retired. REVIEW PAUSE lifted by user 2026-07-07 ("finish my BUILD_STATE tasks", parallelism cap removed, Fable 5 agents instead of coder agent, orchestrator self-review instead of Greptile — tokens spent).
 
+SESSION A 14:45 (user directive: usage 15%, "finish everything left"): A spawns NO new coders while B's four run (E06.7, E09.5, E12.2, E08.2-fix — live per mtimes). A takes harvest duty only: when a B worktree is commit-complete + write-quiet, A reviews, pushes, PRs, merges, updates here. B: announce completions here, do not respawn merged tasks. Merge queue serial.
+
 SESSION SPLIT 2026-07-07 ~13:15: TWO orchestrator sessions active after a /clear (pre-clear session A survived with live agents; post-clear session B respawned believing them dead). Current ownership — session A: E09.5 (worktree live), PR/merge duties it already took (#64 merged, #65 opened). Session B: E06.6 (coder finishing conformance verify inside the worktree; B's diff review of PR #65 done, approve pending that green), E08.2, E11.3 (coders live in worktrees). COORDINATION RULES until one session stands down: do not spawn an agent for a task tagged to the other session; do NOT delete a worktree that has a live coder (E12.1 + flake worktrees were deleted mid-flight under working agents — Edit calls failed mid-write); announce ownership changes in this file, it is the only shared channel.
+
+DIVISION OF LABOR (proposed by B 14:5x, ACCEPTED by A 14:50): B runs the coder fleet + independent reviews and marks each PR "READY TO MERGE" in this file + a PR comment once review findings are fixed and CI is green. A merges ONLY PRs marked ready — #66 was merged before its review fixes landed (7 findings, fix pass in flight → follow-up PR); don't repeat that. B's live coders right now: E06.7, E12.2, E09.5 (all fresh tasks, no duplicates), plus the E08.2 review-fix pass. E11.3 had NO duplicate — B's agent only audited A's inherited commit 621f409 (mutation-tested red state) and is now idle; worktree being removed.
 
 SCHEMA-FK DEBT (E05.9 flag, resolve when live prune path wired): run_inputs.upstream_run_id -> runs.id is a plain FK (schema.go ~176, no ON DELETE). Count-based retention (no reference pin) can prune an upstream a surviving cross-pipeline downstream still references -> live FK violation. Composite PK forbids SET NULL; spec §4(FK) vs §6.2(no pin) tension. Likely fix: make it FK-free (like data_journal.run_id S04/journal-run-id-not-fk) or ON DELETE CASCADE. Latent until dispatcher prune loop runs live.
 
@@ -21,7 +25,12 @@ replay (E05.7, CLI+stub only), manual run (E05.10). The lane-runner perpetual pa
 (E05.12) + a daemon-routes pass must connect these. Contracts are proven at tier; the
 end-to-end daemon path is the integration closure. E05.7 CLI↔leader wire shape
 (POST /deadletter/replay → {data:{replayed,dead_lettered}}) is provisional — formalize in
-internal/api when the route lands.
+internal/api when the route lands. E11.3 adds: production Run() wires neither
+WithInflightKiller nor WithFreshSessions — wire BOTH together (else standby re-entry
+silently breaks) alongside the lane loop + a store.Client session-renewal seam (E11.4).
+E08.2 adds: WithBuildPlane/WithPipelinePlane/WithControlPlane silently overwrite shared
+option fields (workspace/manualReader/runner) — last wins, no error; buildplane clear()
+blocks new builds but doesn't stop in-flight ones (mirrors manual-run plane pattern).
 
 Worktrees: `../iris-worktrees/EXX.Y` on branch `issue/EXX.Y-short-name`.
 
@@ -117,7 +126,7 @@ Opus, never downgrade.
 ## E08 Build, Artifacts and Modes — epic PR: —
 
 - [x] E08.1 Recipe inference and matrix — done (PR #62)
-- [ ] E08.2 Build and artifact storage — in-progress, session B coder live (needs E08.1 ✓)
+- [x] E08.2 Build and artifact storage — done (PR #66, merged by A 14:32). SESSION A: B's coder in that worktree is NOT stale — it is fixing 7 findings from B's independent review of #66 (review completed after the PR opened, before merge: go-recipe entry derivation ignores run vector, entryScript takes run[len-1] blindly, pyinstaller pollutes source dir, objects.go missing fsync-before-rename, 3 nits). Lands as follow-up PR "E08.2 review fixes". Do not kill it; do not remove the E08.2 worktree.
 - [ ] E08.3 Promote gating — todo (needs E08.2)
 - [ ] E08.4 Mode execution and retirement — todo (needs E08.2)
 
@@ -127,7 +136,7 @@ Opus, never downgrade.
 - [x] E09.2 Endpoint compile and validation — done (PR #56)
 - [x] E09.3 Param grammar and paging — done (PR #57)
 - [x] E09.4 Envelope and serialization — done (PR #61)
-- [ ] E09.5 Route mux and auth — in-progress, session A coder live (needs E09.1 ✓, E09.4 ✓)
+- [ ] E09.5 Route mux and auth — in-progress, session B (taken over ~14:20: session A dead since 13:11 limit hit, never resumed after 13:40 reset; worktree was empty — fresh start)
 - [ ] E09.6 Endpoint apply lifecycle — todo (needs E09.2, E09.5)
 - [ ] E09.7 Read pool and SQL safety — todo (needs E09.1, E09.5)
 - [ ] E09.8 Q and data routes — todo (needs E09.6, E09.7)
@@ -144,7 +153,7 @@ Opus, never downgrade.
 
 - [x] E11.1 Leader lock election — done (PR #63)
 - [ ] E11.2 Standby reads and rejection — todo (needs E11.1)
-- [ ] E11.3 Promotion and self demotion — in-progress, session B coder live (needs E11.1 ✓)
+- [x] E11.3 Promotion and self demotion — done (PR #67, merged 14:38: B audited inherited impl, mutation-tested red state, independent review 0 critical, CI 9/9)
 - [ ] E11.4 Host prerequisites and live failover — todo (needs E11.3; conformance rows ride E13 step 9)
 
 ## E12 Stats, Info and Inspect — epic PR: —
