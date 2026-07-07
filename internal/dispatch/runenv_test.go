@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/MateusAMP2119/iris-engine-cli/internal/dispatch"
@@ -223,19 +224,8 @@ func TestResolveRunEnvEnvFileFreshPerRun(t *testing.T) {
 			t.Fatal("resolve over a malformed env_file returned nil error")
 		}
 		msg := err.Error()
-		if !contains(msg, path) || !contains(msg, ":2") {
+		if !strings.Contains(msg, path) || !strings.Contains(msg, ":2") {
 			t.Errorf("error = %q, want it to name %s and line 2", msg, path)
 		}
 	})
-}
-
-// contains reports whether s contains sub (small local helper to avoid importing
-// strings for a single check).
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return len(sub) == 0
 }
