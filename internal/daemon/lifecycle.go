@@ -15,6 +15,7 @@ import (
 	"github.com/MateusAMP2119/iris-engine-cli/internal/api"
 	"github.com/MateusAMP2119/iris-engine-cli/internal/config"
 	"github.com/MateusAMP2119/iris-engine-cli/internal/dispatch"
+	"github.com/MateusAMP2119/iris-engine-cli/internal/exec"
 	"github.com/MateusAMP2119/iris-engine-cli/internal/pg"
 	"github.com/MateusAMP2119/iris-engine-cli/internal/store"
 )
@@ -117,7 +118,10 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// orchestrator.
 	role := api.NewRoleState()
 	control := newControlPlane()
-	srv := NewServer(s, api.NewMux(api.WithRole(role), api.WithControl(control)), WithServerLogger(logger))
+	// The pipeline plane serves iris pipeline list from the reader pool (any node) and,
+	// once this daemon leads, POST /pipeline/run through the single writer and exec seam.
+	pipelines := newPipelinePlane(client.PipelineLister(), logger)
+	srv := NewServer(s, api.NewMux(api.WithRole(role), api.WithControl(control), api.WithPipelines(pipelines)), WithServerLogger(logger))
 	if err := srv.Start(ctx); err != nil {
 		return err
 	}
@@ -135,7 +139,8 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// through the single writer (specification section 2 crash recovery).
 	cand := NewCandidate(client.Lock(), role, client.WriteConn(), logger,
 		WithReconciliation(client.Reader(), dispatch.RealGroupKiller(), dispatch.SingleHostMatcher()),
-		WithControlPlane(control, workspace, client.RegistryReader(), client.AppliedHeadReader(), data))
+		WithControlPlane(control, workspace, client.RegistryReader(), client.AppliedHeadReader(), data),
+		WithPipelinePlane(pipelines, workspace, client.RegistryReader(), client.ManualReader(), exec.NewOSRunner()))
 	electDone := make(chan error, 1)
 	go func() { electDone <- cand.Serve(ctx) }()
 
