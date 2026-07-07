@@ -66,7 +66,7 @@ Opus, never downgrade.
 - [ ] E05.1 Exec seam — in-progress (worktree .worktrees/E05.1, Opus)
 - [ ] E05.2 Run environment — todo (needs E05.1)
 - [ ] E05.3 Run records and states — todo (needs E05.1)
-- [ ] E05.4 Lane model and walk — in-progress (worktree .worktrees/E05.4, Opus)
+- [x] E05.4 Lane model and walk — done (PR #38: https://github.com/MateusAMP2119/iris-engine-cli/pull/38)
 - [ ] E05.5 Gate and consumption — todo (needs E05.3, E05.4)
 - [ ] E05.6 Failure propagation — todo (needs E05.5)
 - [ ] E05.7 Dead letter replay — todo (needs E05.6)
