@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -45,23 +46,64 @@ var (
 	_ LiveViewReader = (*Client)(nil)
 )
 
-// Connect opens the data-database client from the admin-derived connection source:
-// a pgx pool on the data database (the admin DSN's own database, where the declared
-// tables and the journal live -- not the meta control database). On error it opens
-// nothing to leak.
+// Connect opens the data-database client from the admin-derived connection source. It
+// mirrors how store opens meta: it ensures the dedicated data database exists (CREATE
+// DATABASE if missing, on the admin/maintenance connection, race-tolerant), then opens
+// a pgx pool on that data database -- never on the admin DSN's own database, which in
+// external mode the cluster superuser owns and the engine's non-superuser admin cannot
+// provision into. The engine-created data database is admin-owned, so provisioning's
+// CREATE SCHEMA/TABLE succeeds. On error it opens nothing to leak.
 func Connect(ctx context.Context, src ConnSource) (*Client, error) {
 	if src == nil {
 		return nil, errors.New("pg: nil connection source")
 	}
-	cfg, err := pgxpool.ParseConfig(src.ConnString())
+	adminDSN := src.ConnString()
+	if err := ensureDataDatabase(ctx, adminDSN); err != nil {
+		return nil, err
+	}
+	cfg, err := pgxpool.ParseConfig(adminDSN)
 	if err != nil {
 		return nil, fmt.Errorf("pg: parse data-database DSN: %w", err)
 	}
+	// Point the pool at the engine-owned data database, not the admin DSN's own
+	// (maintenance) database.
+	cfg.ConnConfig.Database = DataDatabase
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("pg: open data-database pool: %w", err)
 	}
 	return &Client{pool: pool}, nil
+}
+
+// ensureDataDatabase creates the dedicated data database if it does not yet exist, on
+// the admin/maintenance connection (the admin DSN points at a connectable maintenance
+// database, e.g. the cluster default, never at data, which may not exist yet). The
+// admin's CREATEDB right makes the admin the owner, so provisioning can create schemas
+// in it. The probe + create is idempotent and race-tolerant (ensureDataDatabaseOn),
+// mirroring store.ensureMetaDatabase.
+func ensureDataDatabase(ctx context.Context, adminDSN string) error {
+	conn, err := pgx.Connect(ctx, adminDSN)
+	if err != nil {
+		return fmt.Errorf("pg: open admin/maintenance connection: %w", err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+
+	exists := func(ctx context.Context) (bool, error) {
+		var one int
+		qerr := conn.QueryRow(ctx, DataExistsQuery).Scan(&one)
+		if errors.Is(qerr, pgx.ErrNoRows) {
+			return false, nil
+		}
+		if qerr != nil {
+			return false, qerr
+		}
+		return true, nil
+	}
+	create := func(ctx context.Context) error {
+		_, cerr := conn.Exec(ctx, CreateDataDatabaseDDL())
+		return cerr
+	}
+	return ensureDataDatabaseOn(ctx, exists, create)
 }
 
 // Exec issues one DDL statement against the data database through the pool. It

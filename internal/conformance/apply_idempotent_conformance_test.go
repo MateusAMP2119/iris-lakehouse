@@ -16,6 +16,7 @@ import (
 
 	"github.com/MateusAMP2119/iris-engine-cli/internal/daemon"
 	"github.com/MateusAMP2119/iris-engine-cli/internal/fixtures"
+	"github.com/MateusAMP2119/iris-engine-cli/internal/pg"
 )
 
 // TestApplyRepeatNoop drives the real iris binary end to end against a running daemon
@@ -234,15 +235,21 @@ func connectPG(t *testing.T, dsn string) *pgx.Conn {
 	return conn
 }
 
-// dataDSN returns a connection string an independent client uses to read the data
-// database of the running daemon (the schemas and journal the provisioner writes),
-// distinct from metaDSN which targets the meta control database. External mode uses
-// IRIS_PG_DSN directly (its default database is the data database); managed mode
-// reconstructs the local managed-Postgres DSN to the default 'postgres' database.
+// dataDSN returns a connection string an independent client uses to read the engine's
+// data database (the schemas and journal the provisioner writes), distinct from metaDSN
+// which targets the meta control database. Both modes target the engine-created data
+// database (pg.DataDatabase), not the admin DSN's own database: external mode points
+// IRIS_PG_DSN's connection at it; managed mode reconstructs the local managed-Postgres
+// DSN to it.
 func dataDSN(t *testing.T, ws string) string {
 	t.Helper()
 	if ext := os.Getenv("IRIS_PG_DSN"); ext != "" {
-		return ext
+		cfg, err := pgx.ParseConfig(ext)
+		if err != nil {
+			t.Fatalf("parse IRIS_PG_DSN: %v", err)
+		}
+		cfg.Database = pg.DataDatabase
+		return pgxConnString(cfg)
 	}
 	pgDir := filepath.Join(ws, ".iris", "pg")
 	port := readPostmasterPort(t, filepath.Join(pgDir, "data", "postmaster.pid"))
@@ -251,6 +258,6 @@ func dataDSN(t *testing.T, ws string) string {
 		t.Fatalf("read managed superuser credential: %v", err)
 	}
 	pw := strings.TrimSpace(string(pwBytes))
-	return fmt.Sprintf("postgres://%s:%s@localhost:%s/postgres?sslmode=disable",
-		daemon.ManagedSuperuser, pw, port)
+	return fmt.Sprintf("postgres://%s:%s@localhost:%s/%s?sslmode=disable",
+		daemon.ManagedSuperuser, pw, port, pg.DataDatabase)
 }
