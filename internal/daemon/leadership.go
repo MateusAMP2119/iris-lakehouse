@@ -97,6 +97,13 @@ type Candidate struct {
 	// ends Serve instead of re-entering standby (the election-only wiring tests use).
 	inflight InflightKiller
 	fresh    func() (store.LeaderLock, store.MetaWriteConn)
+
+	// passCounter is the leader-held per-lane loop pass counter (specification
+	// section 11): the lane loop increments it per completed pass, and the candidate
+	// resets it at the start of each leadership term so counts never carry across a
+	// leader change (a restart resets it by construction -- it is process memory).
+	// Nil leaves pass counting unwired.
+	passCounter *dispatch.PassCounter
 }
 
 // InflightKiller kills every in-flight run's process group, the self-demotion kill
@@ -202,6 +209,17 @@ func WithLaneLoop(build func(dispatch.Submitter) *dispatch.Loop) CandidateOption
 	return func(c *Candidate) { c.laneLoopBuild = build }
 }
 
+// WithPassCounter wires the leader-held per-lane pass counter: the candidate
+// resets it when it wins a leadership term, so `iris engine stats` never reports
+// a previous term's pass counts after a leader change (specification section 11:
+// "a leader-held runtime counter, reset on restart and leader change"; the
+// restart half is structural -- the counter is process memory). The lane loop's
+// build composes the counter's Hook into the loop (dispatch.WithOnPass); this
+// option owns only the term reset. A nil counter is ignored.
+func WithPassCounter(pc *dispatch.PassCounter) CandidateOption {
+	return func(c *Candidate) { c.passCounter = pc }
+}
+
 // NewCandidate builds a leadership candidate over the leader lock, the role state
 // its listeners consult, and the leader's meta write connection (which the
 // dispatcher wraps in the single Writer on winning). A nil logger discards output.
@@ -270,6 +288,13 @@ func (c *Candidate) Serve(ctx context.Context) error {
 // whether leadership ended by session loss (a demotion, which Serve may follow with
 // a fresh-session standby re-entry) as opposed to a shutdown or a startup fault.
 func (c *Candidate) lead(ctx context.Context) (demoted bool, err error) {
+	// A new leadership term starts at zero passes: reset the leader-held pass
+	// counter before any lane can complete a pass, so a re-elected leader never
+	// resumes a previous term's counts (specification section 11).
+	if c.passCounter != nil {
+		c.passCounter.Reset()
+	}
+
 	d := dispatch.New(c.writeConn)
 	d.Start(ctx)
 	defer d.Stop()
