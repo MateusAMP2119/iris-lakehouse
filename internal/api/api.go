@@ -75,7 +75,7 @@ func WithRole(r RoleReporter) MuxOption {
 // liveness and the leadership role. With no WithRole option the role is unknown, so
 // mutations are rejected until election confirms a leader.
 func NewMux(opts ...MuxOption) http.Handler {
-	m := &mux{role: unknownRole{}, control: noControl{}}
+	m := &mux{role: unknownRole{}, control: noControl{}, pipelines: noPipelines{}}
 	for _, o := range opts {
 		o(m)
 	}
@@ -88,8 +88,9 @@ func NewMux(opts ...MuxOption) http.Handler {
 // mutations to the leader (specification section 15) and routes the control-plane
 // mutations to the injected ControlHandler.
 type mux struct {
-	role    RoleReporter
-	control ControlHandler
+	role      RoleReporter
+	control   ControlHandler
+	pipelines PipelineHandler
 }
 
 // ServeHTTP gates mutations to the leader, then dispatches a request to its route,
@@ -113,6 +114,10 @@ func (m *mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.serveApply(w, r)
 	case "/destroy":
 		m.serveDestroy(w, r)
+	case "/pipeline/run":
+		m.servePipelineRun(w, r)
+	case "/pipeline/list":
+		m.servePipelineList(w, r)
 	default:
 		WriteError(w, http.StatusNotFound, "not_found", "no such route: "+r.URL.Path)
 	}

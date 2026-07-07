@@ -37,6 +37,8 @@ type Client struct {
 	reader   Reader
 	registry RegistryReader
 	ledger   AppliedHeadReader
+	pipes    PipelineLister
+	manual   ManualReader
 }
 
 // Connect opens the meta client from the admin-derived connection source: it
@@ -87,6 +89,8 @@ func Connect(ctx context.Context, src ConnSource) (*Client, error) {
 		reader:   newPgxReader(readPoolSeam),
 		registry: &pgxRegistryReader{pool: readPoolSeam},
 		ledger:   &pgxAppliedHeadReader{pool: readPoolSeam},
+		pipes:    newPgxPipelineLister(readPoolSeam),
+		manual:   newPgxManualReader(readPoolSeam),
 	}, nil
 }
 
@@ -108,6 +112,15 @@ func (c *Client) RegistryReader() RegistryReader { return c.registry }
 // AppliedHeadReader returns the plain-MVCC applied-migration-head reader (the pool):
 // the meta migrations read seam provisioning builds its per-table ledger view from.
 func (c *Client) AppliedHeadReader() AppliedHeadReader { return c.ledger }
+
+// PipelineLister returns the plain-MVCC pipeline-list reader (the pool): the iris
+// pipeline list read seam (active-run default and --all every-registered views).
+func (c *Client) PipelineLister() PipelineLister { return c.pipes }
+
+// ManualReader returns the plain-MVCC manual-run reader (the pool): the pipeline run
+// target, latest-run, run_inputs consumed, and lane-roster reads the manual `iris
+// pipeline run` op composes.
+func (c *Client) ManualReader() ManualReader { return c.manual }
 
 // Close tears down the client: it closes the reader pool and the leader session. It
 // is safe to call after the lock has already released the session, so the daemon can
