@@ -144,7 +144,7 @@ Opus, never downgrade.
 
 - [x] E11.1 Leader lock election — done (PR #63)
 - [ ] E11.2 Standby reads and rejection — todo (needs E11.1)
-- [ ] E11.3 Promotion and self demotion — in-progress, session B coder live (needs E11.1 ✓)
+- [ ] E11.3 Promotion and self demotion — READY TO MERGE: PR #67, CI 9/9 green, independent review posted (0 critical, 2 advisory→wiring debt); merge blocked pending human approval (permission classifier)
 - [ ] E11.4 Host prerequisites and live failover — todo (needs E11.3; conformance rows ride E13 step 9)
 
 ## E12 Stats, Info and Inspect — epic PR: —
