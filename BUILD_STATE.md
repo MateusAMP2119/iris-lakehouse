@@ -39,7 +39,7 @@ Opus, never downgrade.
 - [x] E02.7 Crash reconciliation — done (PR #22: https://github.com/MateusAMP2119/iris-engine-cli/pull/22)
 - [x] E02.8 Logging and service unit — done (PR #21: https://github.com/MateusAMP2119/iris-engine-cli/pull/21)
 
-## E03 Declarations, Schemas and Apply — epic PR: —
+## E03 Declarations, Schemas and Apply — epic PR: #36 (Greptile review pending)
 
 - [x] E03.1 Declaration parsing and discovery — done (PR #24: https://github.com/MateusAMP2119/iris-engine-cli/pull/24)
 - [x] E03.2 Lane composer validation — done (PR #27: https://github.com/MateusAMP2119/iris-engine-cli/pull/27)
@@ -50,21 +50,21 @@ Opus, never downgrade.
 - [x] E03.7 Migration ledger sync — done (PR #31: https://github.com/MateusAMP2119/iris-engine-cli/pull/31)
 - [x] E03.8 Idempotent provisioning — done (PR #32: https://github.com/MateusAMP2119/iris-engine-cli/pull/32)
 - [x] E03.9 Registry persistence in meta — done (PR #29: https://github.com/MateusAMP2119/iris-engine-cli/pull/29)
-- [ ] E03.10 Apply destroy closure — in-progress (worktree .worktrees/E03.10, Opus)
+- [x] E03.10 Apply destroy closure — done (PR #35: https://github.com/MateusAMP2119/iris-engine-cli/pull/35)
 
 ## E04 Roles, Grants and Credentials — epic PR: —
 
 - [x] E04.1 Access declaration validation — done (PR #34: https://github.com/MateusAMP2119/iris-engine-cli/pull/34; Sonnet)
-- [ ] E04.2 Role and credential lifecycle — parked (worktree ready; waits on E03.10 — store.Writer overlap)
+- [ ] E04.2 Role and credential lifecycle — in-progress (worktree .worktrees/E04.2, Opus)
 - [ ] E04.3 Grant reconcile and drift — todo (needs E04.1, E04.2)
 - [ ] E04.4 Connection injection and enforcement — todo (needs E04.2, E04.3)
 
 ## E05 Dispatcher, Lanes and Dead Letters — epic PR: —
 
-- [ ] E05.1 Exec seam — todo (needs E02, E03)
+- [ ] E05.1 Exec seam — in-progress (worktree .worktrees/E05.1, Opus)
 - [ ] E05.2 Run environment — todo (needs E05.1)
 - [ ] E05.3 Run records and states — todo (needs E05.1)
-- [ ] E05.4 Lane model and walk — todo (needs E02, E03)
+- [ ] E05.4 Lane model and walk — in-progress (worktree .worktrees/E05.4, Opus)
 - [ ] E05.5 Gate and consumption — todo (needs E05.3, E05.4)
 - [ ] E05.6 Failure propagation — todo (needs E05.5)
 - [ ] E05.7 Dead letter replay — todo (needs E05.6)
