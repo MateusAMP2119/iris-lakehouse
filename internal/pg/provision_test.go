@@ -184,8 +184,8 @@ func TestProvisionAppliesPendingMigrations(t *testing.T) {
 	if strings.Contains(stmts[0], "CREATE TABLE") {
 		t.Errorf("provisioning recreated the existing table: %q", stmts[0])
 	}
-	if !strings.Contains(stmts[0], `ADD COLUMN "status"`) {
-		t.Errorf("statement = %q, want an ADD COLUMN status ALTER", stmts[0])
+	if !strings.Contains(stmts[0], `ADD COLUMN IF NOT EXISTS "status"`) {
+		t.Errorf("statement = %q, want an idempotent ADD COLUMN status ALTER", stmts[0])
 	}
 	if len(ledger.heads) != 1 || ledger.heads[0].MigrationID != "0002" || ledger.heads[0].Parent != "0001" {
 		t.Errorf("recorded heads = %+v, want the replayed 0002 head chained to 0001", ledger.heads)

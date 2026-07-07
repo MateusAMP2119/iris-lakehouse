@@ -1,5 +1,5 @@
 -- migration: schemas/analytics/orders/migrations/0002_add_status.yaml
-ALTER TABLE "analytics"."orders" ADD COLUMN "status" text DEFAULT 'pending';
+ALTER TABLE "analytics"."orders" ADD COLUMN IF NOT EXISTS "status" text DEFAULT 'pending';
 
 # schemas/analytics/orders/migrations/0002_add_status.yaml
 id: "0002"
