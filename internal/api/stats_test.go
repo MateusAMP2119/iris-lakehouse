@@ -75,7 +75,7 @@ func walkStatsType(t *testing.T, typ reflect.Type, path string, walked *[]string
 		return
 	}
 	switch typ.Kind() {
-	case reflect.Ptr, reflect.Slice, reflect.Array:
+	case reflect.Pointer, reflect.Slice, reflect.Array:
 		walkStatsType(t, typ.Elem(), path, walked)
 	case reflect.Map:
 		walkStatsType(t, typ.Key(), path+"[key]", walked)
