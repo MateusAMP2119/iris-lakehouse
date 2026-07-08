@@ -45,6 +45,7 @@ func fullPrunableRun() store.PrunableRun {
 // "[]", never "null".
 //
 // spec: S04/run-summary-construction
+// spec: S14/pin-survives-pruning
 func TestBuildRunSummaryCopiesRunFields(t *testing.T) {
 	tests := []struct {
 		name string

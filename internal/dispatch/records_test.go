@@ -83,6 +83,7 @@ func TestStampDispatchRecordsSnapshotLSN(t *testing.T) {
 // ceiling stamped at terminal come from distinct, ordered reads.
 //
 // spec: S04/run-journal-window
+// spec: S14/pin-recorded-dispatch-terminal
 func TestStampJournalWindow(t *testing.T) {
 	rec := storetest.NewWriteRecorder()
 	w := store.NewWriter(rec)
