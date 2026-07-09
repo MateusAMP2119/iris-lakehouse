@@ -18,6 +18,7 @@
 //	    load_orders/             depends_on extract_orders; reads staging, writes analytics.orders
 //	      iris-declare.yaml
 //	      main.py
+//	      secrets.env            (env_file referenced by declaration; must exist for runs)
 //	  schemas/
 //	    raw/orders_staging/table.yaml
 //	    analytics/orders/table.yaml

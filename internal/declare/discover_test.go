@@ -96,8 +96,13 @@ func TestSampleWorkspaceShape(t *testing.T) {
 		for _, s := range ws.Schemas {
 			tbls[s.Schema+"."+s.Table] = true
 		}
-		if !tbls["raw.orders_staging"] || !tbls["analytics.orders"] {
-			t.Errorf("tables = %v, want raw.orders_staging + analytics.orders", tbls)
+		for _, tc := range []struct{ want string }{
+			{"raw.orders_staging"},
+			{"analytics.orders"},
+		} {
+			if !tbls[tc.want] {
+				t.Errorf("missing table %q", tc.want)
+			}
 		}
 
 		// Three single-script pipelines in one ingest lane, composed by
