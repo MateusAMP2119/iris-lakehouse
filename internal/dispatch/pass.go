@@ -116,12 +116,15 @@ type PostPass interface {
 // snapshot pin and declaration checksum are filled by the run-start adapter, never here.
 // It carries no replayed_from and no reference to any prior run, so a loop run is always
 // fresh -- never a retry (specification sections 1, 6.3).
-func freshRunRecord(pipeline string, d Decision) store.RunRecord {
-	return store.RunRecord{
+// If artifactHash is non-nil it is recorded (built run); nil for dev.
+func freshRunRecord(pipeline string, d Decision, artifactHash *string) store.RunRecord {
+	rec := store.RunRecord{
 		Pipeline:               pipeline,
 		Cause:                  store.CauseLoop,
 		ConsumedUpstreamRunIDs: d.Consume,
 	}
+	rec.ArtifactHash = artifactHash
+	return rec
 }
 
 // PlanFreshRuns computes the fresh cause=loop runs a lane pass starts, in composer
@@ -150,7 +153,7 @@ func PlanFreshRuns(members []string, decide map[string]Decision) []store.RunReco
 		if d.Poisoned || !d.Run {
 			continue // poisoned propagates post-pass; a closed gate mints no run.
 		}
-		runs = append(runs, freshRunRecord(pipeline, d))
+		runs = append(runs, freshRunRecord(pipeline, d, nil))
 	}
 	return runs
 }
@@ -235,7 +238,7 @@ func (l *Loop) runLanePass(ctx context.Context, lane Lane) (PassReport, error) {
 			// a failed run is isolated and never gates the walk, and it is never
 			// retried -- the next pass starts a fresh run only if the gate re-opens.
 			report.Started = append(report.Started, pipeline)
-			if _, err := l.runner.StartFresh(ctx, freshRunRecord(pipeline, d)); err != nil {
+			if _, err := l.runner.StartFresh(ctx, freshRunRecord(pipeline, d, nil)); err != nil {
 				return report, fmt.Errorf("dispatch: lane %q start %q: %w", lane.Name, pipeline, err)
 			}
 		default:

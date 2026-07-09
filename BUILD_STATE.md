@@ -122,14 +122,14 @@ Opus, never downgrade.
 - [x] E07.3 Seal and compaction — done (PR #79: https://github.com/MateusAMP2119/iris-engine-cli/pull/79)
 - [x] E07.4 Checkpoint chain and engine key — done (PR #82: https://github.com/MateusAMP2119/iris-engine-cli/pull/82)
 - [x] E07.5 Object store and export — done (PR #86: https://github.com/MateusAMP2119/iris-engine-cli/pull/86)
-- [x] E07.6 Archived reads and destroy closure — done (2efc2d2: https://github.com/MateusAMP2119/iris-engine-cli/commit/2efc2d21d470aec0e600205438d102f943458aa6 + priors; S14/provenance-spans-archive-boundary, missing-object, offline-chain, provenance-cli-readout, S12/destroy-*; tests green for archive spans + destroy summaries + CLI readout)
+- [x] E07.6 Archived reads and destroy closure — done (PR #90: https://github.com/MateusAMP2119/iris-engine-cli/pull/90)
 
 ## E08 Build, Artifacts and Modes — epic PR: — (complete on development; awaiting epic checkpoint PR to master)
 
 - [x] E08.1 Recipe inference and matrix — done (PR #62: https://github.com/MateusAMP2119/iris-engine-cli/pull/62)
 - [x] E08.2 Build and artifact storage — done (PR #66: https://github.com/MateusAMP2119/iris-engine-cli/pull/66, merged by A 14:32). SESSION A: B's coder in that worktree is NOT stale — it is fixing 7 findings from B's independent review of #66 (review completed after the PR opened, before merge: go-recipe entry derivation ignores run vector, entryScript takes run[len-1] blindly, pyinstaller pollutes source dir, objects.go missing fsync-before-rename, 3 nits). Lands as follow-up PR "E08.2 review fixes". Do not kill it; do not remove the E08.2 worktree.
 - [x] E08.3 Promote gating — done (PR #76: https://github.com/MateusAMP2119/iris-engine-cli/pull/76)
-- [x] E08.4 Mode execution and retirement — done (eacffd4: https://github.com/MateusAMP2119/iris-engine-cli/commit/eacffd40118980b7270357da1c73fc6fc7f9ea6a + priors; S01/both-modes-fully-wired, mode-selects-exec-target, S03/built-mode-ignores-run, S04/artifact-retirement-post-prune; tests green in buildplane/prune)
+- [x] E08.4 Mode execution and retirement — done (PR #91: https://github.com/MateusAMP2119/iris-engine-cli/pull/91)
 
 ## E09 Read API, Endpoints and PATs — epic PR: — (complete on development; awaiting epic checkpoint PR to master)
 

@@ -136,10 +136,14 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// objects_path, the content hash through the single writer into artifacts.
 	builds := newBuildPlane(logger)
 	workload := NewWorkloadPlane(client.ShowReader(), logger)
+<<<<<<< HEAD
 	// provenance wired with placeholder (unwired behavior) until live reader
 	// (journal stamps from data + lineage from meta) lands; the read parity
 	// contracts are proven with explicit fakes in integration and conformance.
 	prov := placeholderProvenance{}
+=======
+	prov := NewProvenancePlane(logger)
+>>>>>>> origin/development
 	srv := NewServer(s, api.NewMux(api.WithRole(role), api.WithControl(control), api.WithPipelines(pipelines), api.WithBuild(builds), api.WithWorkloadShow(workload), api.WithProvenance(prov)), WithServerLogger(logger))
 	if err := srv.Start(ctx); err != nil {
 		return err
