@@ -44,14 +44,15 @@ type installResult struct {
 }
 
 // engineInstall is the handler for `iris engine install`: a daemonless lifecycle
-// command (it dials no daemon) that performs the full engine bootstrap
-// (specification section 4). Through the one Manager code path it brings up Postgres
-// for the configured mode -- downloading and placing the pinned, checksum-verified
-// managed Postgres under <workspace>/.iris/pg and starting it, or resolving the
-// external admin DSN -- then creates meta alongside the data database, ensures the
-// control tables and the partitioned journal, stores the freshly minted engine key,
-// and sets up the control socket. In managed mode the local instance is stopped again
-// once the bootstrap completes. It fails fast (operation failed, exit 4) on any error.
+// command (it dials no daemon) that performs the engine bootstrap (specification
+// section 4). Through the one Manager code path it brings up Postgres for the
+// configured mode -- downloading and placing the pinned, checksum-verified managed
+// Postgres under <workspace>/.iris/pg and starting it, or resolving the external
+// admin DSN -- then creates meta alongside the data database, ensures the control
+// tables and the partitioned journal, and sets up the control socket. In managed mode
+// the local instance is stopped again once the bootstrap completes. It fails fast
+// (operation failed, exit 4) on any error. (The engine-key leg is deferred: see
+// daemon.InstallEngine.)
 func (a *app) engineInstall() runE {
 	return func(cmd *cobra.Command, _ []string) error {
 		settings := a.resolveTarget(cmd)
