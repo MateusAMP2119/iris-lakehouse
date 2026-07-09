@@ -246,6 +246,11 @@ func (a *app) deadletterDrain() runE {
 		if run == "" && pipeline == "" && !all {
 			return a.usage("deadletter drain requires <run>, --pipeline <name>, or --all")
 		}
+		if run != "" {
+			if _, _, perr := parseRunRef(run); perr != nil {
+				return a.usage(fmt.Sprintf("bad run ref %q: %v", run, perr))
+			}
+		}
 		return a.postDrain(cmd, drainScope{Run: run, Pipeline: pipeline, All: all})
 	}
 }
