@@ -152,22 +152,31 @@ func TestDataProvenanceLineage(t *testing.T) {
 		// Once wired, stdout must carry the full lineage: writing run, pipeline,
 		// hashes, and at least one consumed upstream. The exact envelope shape
 		// is defined by the provenance readout; assert presence of core fields.
+		// The flat provenance result carries the authoring run in author.run_id
+		// (with authored=true) and the run's facts as top-level fields.
 		var env struct {
 			Data struct {
-				Row      map[string]any   `json:"row"`
-				Stamps   []map[string]any `json:"stamps"`
-				Author   map[string]any   `json:"author"`
-				Facts    map[string]any   `json:"facts"`
-				Ancestry []map[string]any `json:"ancestry"`
+				Schema       string           `json:"schema"`
+				Table        string           `json:"table"`
+				PK           string           `json:"pk"`
+				Stamps       []map[string]any `json:"stamps"`
+				Author       map[string]any   `json:"author"`
+				Authored     bool             `json:"authored"`
+				Pipeline     string           `json:"pipeline"`
+				ArtifactHash *string          `json:"artifact_hash"`
+				Ancestry     []map[string]any `json:"ancestry"`
 			} `json:"data"`
 		}
 		res.DecodeJSON(t, &env)
 
-		if env.Data.Facts == nil || env.Data.Facts["run_id"] == nil {
-			t.Fatalf("full lineage did not report facts with run_id; got facts=%v", env.Data.Facts)
+		if !env.Data.Authored || env.Data.Author == nil || env.Data.Author["run_id"] == nil {
+			t.Fatalf("full lineage did not report an authoring run; got authored=%v author=%v", env.Data.Authored, env.Data.Author)
 		}
-		if env.Data.Facts["pipeline"] != "load_orders" {
-			t.Errorf("full lineage pipeline = %v, want load_orders", env.Data.Facts["pipeline"])
+		if env.Data.Pipeline != "load_orders" {
+			t.Errorf("full lineage pipeline = %v, want load_orders", env.Data.Pipeline)
+		}
+		if env.Data.ArtifactHash == nil || *env.Data.ArtifactHash == "" {
+			t.Errorf("full lineage reported no artifact hash; want the writing run's binary hash")
 		}
 		if len(env.Data.Ancestry) == 0 {
 			t.Errorf("full lineage reported no ancestry (consumed upstream); want at least the extract_orders edge")
@@ -194,19 +203,26 @@ func TestDataProvenanceLineage(t *testing.T) {
 
 		var env struct {
 			Data struct {
-				Facts    map[string]any   `json:"facts"`
-				Ancestry []map[string]any `json:"ancestry"`
+				Author              map[string]any   `json:"author"`
+				Authored            bool             `json:"authored"`
+				FromSummary         bool             `json:"from_summary"`
+				DeclarationChecksum string           `json:"declaration_checksum"`
+				Ancestry            []map[string]any `json:"ancestry"`
 			} `json:"data"`
 		}
 		res.DecodeJSON(t, &env)
 
-		if env.Data.Facts == nil || env.Data.Facts["run_id"] == nil {
-			t.Fatalf("post-prune provenance did not resolve facts; got facts=%v", env.Data.Facts)
+		if !env.Data.Authored || env.Data.Author == nil || env.Data.Author["run_id"] == nil {
+			t.Fatalf("post-prune provenance did not resolve an authoring run; got authored=%v author=%v", env.Data.Authored, env.Data.Author)
 		}
-		// The summary path should be visible (FromSummary or equivalent); at minimum
-		// the declaration and binary hashes must survive.
-		if env.Data.Facts["declaration_checksum"] != "sha256-decl-author" {
-			t.Errorf("post-prune declaration_checksum = %v, want exact pre-prune value", env.Data.Facts["declaration_checksum"])
+		// The summary fallback path must be visible: the live run row is gone,
+		// so the facts must come from the archival summary.
+		if !env.Data.FromSummary {
+			t.Errorf("post-prune from_summary = false; the run row was pruned so facts must resolve from the archival summary")
+		}
+		// At minimum the declaration and binary hashes must survive the prune.
+		if env.Data.DeclarationChecksum != "sha256-decl-author" {
+			t.Errorf("post-prune declaration_checksum = %v, want exact pre-prune value", env.Data.DeclarationChecksum)
 		}
 		if len(env.Data.Ancestry) == 0 {
 			t.Errorf("post-prune ancestry empty; summary's consumed_upstream_run_ids must supply it")
@@ -235,8 +251,9 @@ func TestDataProvenanceLineage(t *testing.T) {
 
 		var env struct {
 			Data struct {
-				Stamps []map[string]any `json:"stamps"`
-				Facts  map[string]any   `json:"facts"`
+				Stamps   []map[string]any `json:"stamps"`
+				Author   map[string]any   `json:"author"`
+				Authored bool             `json:"authored"`
 			} `json:"data"`
 		}
 		res.DecodeJSON(t, &env)
@@ -244,8 +261,8 @@ func TestDataProvenanceLineage(t *testing.T) {
 		if len(env.Data.Stamps) == 0 {
 			t.Fatalf("archived-partition provenance returned no stamps")
 		}
-		if env.Data.Facts == nil || env.Data.Facts["run_id"] == nil {
-			t.Fatalf("archived-partition provenance did not resolve run facts")
+		if !env.Data.Authored || env.Data.Author == nil || env.Data.Author["run_id"] == nil {
+			t.Fatalf("archived-partition provenance did not resolve an authoring run")
 		}
 	})
 }
