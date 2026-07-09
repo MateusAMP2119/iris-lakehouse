@@ -154,6 +154,7 @@ func (c *Client) Query(ctx context.Context, sql string, args ...any) (interface 
 }
 
 // CompactJournalRange nulls released pre-images and folds dups (conformance helper).
+// Performed in one transaction so compaction is atomic (multi-statement state change).
 func (c *Client) CompactJournalRange(ctx context.Context, from, to int64) error {
 	if from <= 0 {
 		from = 0
@@ -162,9 +163,22 @@ func (c *Client) CompactJournalRange(ctx context.Context, from, to int64) error 
 	if to > 0 {
 		toExpr = fmt.Sprintf("%d", to)
 	}
+	tx, err := c.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("pg: begin compact tx: %w", err)
+	}
+	defer tx.Rollback(ctx) // safe no-op after commit
+
 	// Null all pre in the sealed range (past undo for sealed history) and fold dups.
-	_ = c.Exec(ctx, fmt.Sprintf(`UPDATE public.data_journal SET pre_image=NULL WHERE id>=%d AND id<%s`, from, toExpr))
-	_ = c.Exec(ctx, fmt.Sprintf(`DELETE FROM public.data_journal j USING (SELECT "schema","table",row_pk,run_id,max(id) k FROM public.data_journal WHERE id>=%d AND id<%s GROUP BY "schema","table",row_pk,run_id) kx WHERE j."schema"=kx."schema" AND j."table"=kx."table" AND j.row_pk=kx.row_pk AND j.run_id=kx.run_id AND j.id>=%d AND j.id<%s AND j.id<>kx.k`, from, toExpr, from, toExpr))
+	if _, err := tx.Exec(ctx, fmt.Sprintf(`UPDATE public.data_journal SET pre_image=NULL WHERE id>=%d AND id<%s`, from, toExpr)); err != nil {
+		return fmt.Errorf("pg: compact null preimages: %w", err)
+	}
+	if _, err := tx.Exec(ctx, fmt.Sprintf(`DELETE FROM public.data_journal j USING (SELECT "schema","table",row_pk,run_id,max(id) k FROM public.data_journal WHERE id>=%d AND id<%s GROUP BY "schema","table",row_pk,run_id) kx WHERE j."schema"=kx."schema" AND j."table"=kx."table" AND j.row_pk=kx.row_pk AND j.run_id=kx.run_id AND j.id>=%d AND j.id<%s AND j.id<>kx.k`, from, toExpr, from, toExpr)); err != nil {
+		return fmt.Errorf("pg: compact fold dups: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("pg: commit compact: %w", err)
+	}
 	return nil
 }
 
