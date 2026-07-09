@@ -102,7 +102,7 @@ Opus, never downgrade.
 - [x] E05.8 Dead letter drain — done (PR #50: https://github.com/MateusAMP2119/iris-engine-cli/pull/50)
 - [x] E05.9 Retention and pruning — done (PR #54: https://github.com/MateusAMP2119/iris-engine-cli/pull/54)
 - [x] E05.10 Manual pipeline run — done (PR #49: https://github.com/MateusAMP2119/iris-engine-cli/pull/49)
-- [x] E05.11 Doctrines and scope — done (verification-only: all 5 exempt rows seeded by E00.1, gate-accounted; no PR needed)
+- [x] E05.11 Doctrines and scope — done (exempt: verification-only; no dedicated PR)
 - [x] E05.12 Lane runner pass semantics — done (PR #59: https://github.com/MateusAMP2119/iris-engine-cli/pull/59)
 
 ## E06 Write Capture, Wipe and Promotion — epic PR: — (complete on development; awaiting epic checkpoint PR to master)
@@ -112,13 +112,13 @@ Opus, never downgrade.
 - [x] E06.3 Run attribution — done (PR #55: https://github.com/MateusAMP2119/iris-engine-cli/pull/55)
 - [x] E06.4 Payload tiers and modes — done (PR #58: https://github.com/MateusAMP2119/iris-engine-cli/pull/58)
 - [x] E06.5 Wipe replay and conflicts — done (PR #60: https://github.com/MateusAMP2119/iris-engine-cli/pull/60)
-- [x] E06.6 Promotion — done (PR #65: https://github.com/MateusAMP2119/iris-engine-cli/pull/65; B's coder authored + full local conformance green + B diff review; A merged, CI 9/9)
-- [x] E06.7 Live wipe closure — done (PR #73: https://github.com/MateusAMP2119/iris-engine-cli/pull/73; S14 capture-overhead leg reshaped w/ profiling evidence, 1.25x gate deferred to E13.8 — see PR)
+- [x] E06.6 Promotion — done (PR #65: https://github.com/MateusAMP2119/iris-engine-cli/pull/65)
+- [x] E06.7 Live wipe closure — done (PR #73: https://github.com/MateusAMP2119/iris-engine-cli/pull/73)
 
 ## E07 Provenance, Journal Lifecycle and Object Store — epic PR: — (complete on development; awaiting epic checkpoint PR to master)
 
 - [x] E07.1 Provenance walk — done (PR #74: https://github.com/MateusAMP2119/iris-engine-cli/pull/74)
-- [x] E07.2 Snapshot pin — done (PR #78: https://github.com/MateusAMP2119/iris-engine-cli/pull/78; finalize/verify S14/pin-* ; tests + gate green)
+- [x] E07.2 Snapshot pin — done (PR #78: https://github.com/MateusAMP2119/iris-engine-cli/pull/78)
 - [x] E07.3 Seal and compaction — done (PR #79: https://github.com/MateusAMP2119/iris-engine-cli/pull/79)
 - [x] E07.4 Checkpoint chain and engine key — done (PR #82: https://github.com/MateusAMP2119/iris-engine-cli/pull/82)
 - [x] E07.5 Object store and export — done (cda1807: https://github.com/MateusAMP2119/iris-engine-cli/commit/cda18071ea2e1b34899078bd1604071c1e038acd + priors; S14/archive-*, S14/object-store-*, S10/objects-store-hash-keyed; real FS tests, roundtrip, export-then-drop, immutable; tests green)
