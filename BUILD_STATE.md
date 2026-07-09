@@ -148,7 +148,7 @@ Opus, never downgrade.
 
 - [x] E10.1 Gate and blocker predicates — done (PR #75: https://github.com/MateusAMP2119/iris-engine-cli/pull/75)
 - [x] E10.2 Confirmation flows — done (PR #80: https://github.com/MateusAMP2119/iris-engine-cli/pull/80)
-- [x] E10.3 Remote tiering and failover — done (563e7ac: https://github.com/MateusAMP2119/iris-engine-cli/commit/563e7acbfffab74ea6c272a7de4d5ccaa64958bf + 89e0c59; API destructive confirm/PAT/leader, failover no-resume destructive; related tests green)
+- [x] E10.3 Remote tiering and failover — done (PR #87: https://github.com/MateusAMP2119/iris-engine-cli/pull/87)
 
 ## E11 High Availability and Failover — epic PR: — (complete on development; awaiting epic checkpoint PR to master)
 
