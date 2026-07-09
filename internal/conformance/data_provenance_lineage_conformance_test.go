@@ -109,17 +109,29 @@ func TestDataProvenanceLineage(t *testing.T) {
 		ON CONFLICT (name) DO NOTHING
 	`)
 
+	// Fabricate artifact rows so runs FK is satisfied (hash is FK to artifacts).
+	if _, err := metaConn.Exec(context.Background(), `
+		INSERT INTO artifacts (hash, pipeline, size_bytes, recorded_at)
+		VALUES ('sha256-bin-author', 'load_orders', 123, '2026-07-09T00:00:00Z'),
+		       ('sha256-bin-up', 'extract_orders', 123, '2026-07-09T00:00:00Z')
+		ON CONFLICT (hash) DO NOTHING
+	`); err != nil {
+		t.Fatalf("fabricate artifacts: %v", err)
+	}
+
 	// Author run (succeeded, with hashes and pin for full report).
 	_, _ = metaConn.Exec(context.Background(), `
-		INSERT INTO runs (id, pipeline, state, cause, artifact_hash, declaration_checksum, snapshot_lsn, journal_floor, journal_ceiling)
-		VALUES ($1, 'load_orders', 'succeeded', 'loop', 'sha256-bin-author', 'sha256-decl-author', '0/ABC', 100, 200)
+		INSERT INTO runs (id, pipeline, state, cause, artifact_hash, declaration_checksum, snapshot_lsn, journal_floor, journal_ceiling, recorded_at)
+		OVERRIDING SYSTEM VALUE
+		VALUES ($1, 'load_orders', 'succeeded', 'loop', 'sha256-bin-author', 'sha256-decl-author', '0/ABC', 100, 200, '2026-07-09T00:00:00Z')
 		ON CONFLICT (id) DO UPDATE SET pipeline = EXCLUDED.pipeline, state = EXCLUDED.state
 	`, authorRunID)
 
 	// Upstream run.
 	_, _ = metaConn.Exec(context.Background(), `
-		INSERT INTO runs (id, pipeline, state, cause, artifact_hash, declaration_checksum, snapshot_lsn, journal_floor, journal_ceiling)
-		VALUES ($1, 'extract_orders', 'succeeded', 'loop', 'sha256-bin-up', 'sha256-decl-up', '0/AAA', 90, 95)
+		INSERT INTO runs (id, pipeline, state, cause, artifact_hash, declaration_checksum, snapshot_lsn, journal_floor, journal_ceiling, recorded_at)
+		OVERRIDING SYSTEM VALUE
+		VALUES ($1, 'extract_orders', 'succeeded', 'loop', 'sha256-bin-up', 'sha256-decl-up', '0/AAA', 90, 95, '2026-07-09T00:00:00Z')
 		ON CONFLICT (id) DO UPDATE SET pipeline = EXCLUDED.pipeline, state = EXCLUDED.state
 	`, upstreamRunID)
 
@@ -169,8 +181,8 @@ func TestDataProvenanceLineage(t *testing.T) {
 		_, _ = metaConn.Exec(context.Background(), `DELETE FROM run_inputs WHERE run_id = $1`, authorRunID)
 		_, _ = metaConn.Exec(context.Background(), `DELETE FROM runs WHERE id = $1`, authorRunID)
 		_, _ = metaConn.Exec(context.Background(), `
-			INSERT INTO run_summaries (run_id, pipeline, state, artifact_hash, declaration_checksum, consumed_upstream_run_ids, snapshot_lsn, journal_floor, journal_ceiling)
-			VALUES ($1, 'load_orders', 'succeeded', 'sha256-bin-author', 'sha256-decl-author', '[424241]'::jsonb, '0/ABC', 100, 200)
+			INSERT INTO run_summaries (run_id, pipeline, state, artifact_hash, declaration_checksum, consumed_upstream_run_ids, snapshot_lsn, journal_floor, journal_ceiling, recorded_at)
+			VALUES ($1, 'load_orders', 'succeeded', 'sha256-bin-author', 'sha256-decl-author', '[424241]'::jsonb, '0/ABC', 100, 200, '2026-07-09T00:00:00Z')
 			ON CONFLICT (run_id) DO NOTHING
 		`, authorRunID)
 
