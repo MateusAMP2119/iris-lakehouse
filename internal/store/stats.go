@@ -2,6 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"sort"
 )
@@ -321,3 +324,69 @@ func pipelineRollups(runs []Run, pipelines []string) []PipelineRollup {
 	}
 	return out
 }
+
+// CheckpointRow is the full row model for journal_checkpoints used by chain
+// logic, sealing, and insert (specification sections 4 and 14). The slim
+// Checkpoint is the stats projection only.
+type CheckpointRow struct {
+	Seq          int64
+	IDFrom       int64
+	IDTo         int64
+	Digest       []byte
+	ParentDigest []byte
+	Signature    []byte
+	Location     string
+	RecordedAt   string
+}
+
+// ComputeDigest is the pure unit hash over compacted rows (or their byte
+// representations) in id order. Uses stdlib sha256. This is the digest stored
+// in a checkpoint (S14/checkpoint-digest-chain, S04/checkpoint-per-sealed-partition).
+func ComputeDigest(compacted [][]byte) []byte {
+	h := sha256.New()
+	for _, p := range compacted {
+		var lbuf [8]byte
+		binary.BigEndian.PutUint64(lbuf[:], uint64(len(p)))
+		h.Write(lbuf[:])
+		h.Write(p)
+	}
+	return h.Sum(nil)
+}
+
+// ParentFor returns the parent_digest value to use for a new checkpoint
+// following prev (nil for the first checkpoint in the chain).
+func ParentFor(prev *CheckpointRow) []byte {
+	if prev == nil || len(prev.Digest) == 0 {
+		return nil
+	}
+	d := make([]byte, len(prev.Digest))
+	copy(d, prev.Digest)
+	return d
+}
+
+// ValidateChain checks the parent_digest links (and signatures if pub != nil).
+// A break (tamper, loss, bad sig) returns error visibly. Pure unit logic
+// (S14/chain-detects-tamper, S04/checkpoint-parent-chain).
+func ValidateChain(cps []CheckpointRow, pub ed25519.PublicKey) error {
+	for i := 1; i < len(cps); i++ {
+		if !bytesEqual(cps[i].ParentDigest, cps[i-1].Digest) {
+			return fmt.Errorf("checkpoint parent chain broken at seq %d (parent %x != prev %x)", cps[i].Seq, cps[i].ParentDigest, cps[i-1].Digest)
+		}
+	}
+	if len(pub) == ed25519.PublicKeySize && len(cps) > 0 {
+		for _, cp := range cps {
+			if len(cp.Signature) > 0 && !ed25519.Verify(pub, cp.Digest, cp.Signature) {
+				return fmt.Errorf("checkpoint signature invalid at seq %d", cp.Seq)
+			}
+		}
+	}
+	return nil
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
+	return string(a) == string(b)
+}
+
