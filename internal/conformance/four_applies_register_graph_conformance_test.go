@@ -60,8 +60,8 @@ func TestFourAppliesRegisterGraph(t *testing.T) {
 			t.Fatalf("pipelines not all registered after four applies:\n%s", meta)
 		}
 		// Dependency edge from load_orders depends_on extract_orders must be present.
-		if !strings.Contains(meta, "load_orders") || !strings.Contains(meta, "extract_orders") {
-			// already checked names; be explicit for the edge table
+		if !strings.Contains(meta, "load_orders | extract_orders") {
+			t.Errorf("dependency edge load_orders -> extract_orders not in registry:\n%s", meta)
 		}
 		// lanes row from the composer apply
 		if !strings.Contains(meta, "ingest") {
