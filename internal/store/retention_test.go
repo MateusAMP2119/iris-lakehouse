@@ -301,3 +301,30 @@ func TestPruneRunCascadesInputsAndLog(t *testing.T) {
 		t.Errorf("run log %s still present after prune (stat err = %v), want it deleted", logPath, err)
 	}
 }
+
+// TestPinSurvivesPruning proves that BuildRunSummary copies all three snapshot
+// pin values (snapshot_lsn, journal_floor, journal_ceiling) into the archival
+// run_summary. This keeps the pin queryable after the run row is pruned
+// (the provenance walk's summary fallback depends on it). It is pure logic,
+// no I/O: the unit tier for the pin-survives contract.
+//
+// spec: S14/pin-survives-pruning
+func TestPinSurvivesPruning(t *testing.T) {
+	t.Run("S14/pin-survives-pruning", func(t *testing.T) {
+		run := fullPrunableRun()
+		// Ensure the input carries the pin (the test fixture does).
+		if run.SnapshotLSN == nil || run.JournalFloor == nil || run.JournalCeiling == nil {
+			t.Fatal("fixture PrunableRun must carry all three pin values for this contract")
+		}
+		sum := store.BuildRunSummary(run)
+		if sum.SnapshotLSN == nil || *sum.SnapshotLSN != *run.SnapshotLSN {
+			t.Errorf("summary snapshot_lsn = %v, want %v (pin must survive into summary)", sum.SnapshotLSN, run.SnapshotLSN)
+		}
+		if sum.JournalFloor == nil || *sum.JournalFloor != *run.JournalFloor {
+			t.Errorf("summary journal_floor = %v, want %v (pin must survive into summary)", sum.JournalFloor, run.JournalFloor)
+		}
+		if sum.JournalCeiling == nil || *sum.JournalCeiling != *run.JournalCeiling {
+			t.Errorf("summary journal_ceiling = %v, want %v (pin must survive into summary)", sum.JournalCeiling, run.JournalCeiling)
+		}
+	})
+}
