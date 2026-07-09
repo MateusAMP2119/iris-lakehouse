@@ -96,6 +96,7 @@ func NewMux(opts ...MuxOption) http.Handler {
 		inspect:      noInspect{},
 		pipelineShow: noPipelineShow{},
 		workloadShow: noWorkloadShow{},
+		provenance:   noProvenance{},
 	}
 	for _, o := range opts {
 		o(m)
