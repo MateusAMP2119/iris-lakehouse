@@ -166,8 +166,8 @@ func (d InstallDeps) validate() error {
 		return errors.New("daemon: install requires a data connection")
 	case d.Socket == nil:
 		return errors.New("daemon: install requires a socket preparer")
-	// Key is optional: BootstrapEngine mints a fresh ed25519 key if not supplied
-	// (the key used to sign checkpoints is minted at engine install time).
+		// Key is optional: BootstrapEngine mints a fresh ed25519 key if not supplied
+		// (the key used to sign checkpoints is minted at engine install time).
 	}
 	return nil
 }
