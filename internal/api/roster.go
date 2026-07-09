@@ -79,11 +79,16 @@ func (m *mux) serveRoster(w http.ResponseWriter, r *http.Request) bool {
 		default:
 			return false
 		}
-	case "lanes", "dependencies", "workload":
+	case "lanes", "dependencies":
 		if len(segs) != 1 {
 			return false
 		}
 		serveUnwiredRead(w, r, segs[0])
+	case "workload":
+		if len(segs) != 1 {
+			return false
+		}
+		m.serveWorkload(w, r)
 	case "leader":
 		if len(segs) != 1 {
 			return false
@@ -94,7 +99,7 @@ func (m *mux) serveRoster(w http.ResponseWriter, r *http.Request) bool {
 		if len(segs) != 4 {
 			return false
 		}
-		serveUnwiredRead(w, r, "provenance")
+		m.serveProvenance(w, r, segs[1], segs[2], segs[3])
 	case "data":
 		// /data/{schema}/{table}: the raw ad-hoc table read (dataroute.go),
 		// executing through the shared read pool as the calling PAT's role.

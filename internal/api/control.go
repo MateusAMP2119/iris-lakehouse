@@ -33,6 +33,9 @@ type ControlRequest struct {
 	// Confirm is the explicit confirmation a destructive op requires over the API
 	// (specification section 12: control PAT plus an explicit confirm field).
 	Confirm bool `json:"confirm,omitempty"`
+	// Force requests that soft-blocks be overridden (in-flight runs on scope are
+	// cancelled and dead-lettered stopped).
+	Force bool `json:"force,omitempty"`
 }
 
 // ControlResult is the success payload of a control mutation: what the leader did,
@@ -131,6 +134,19 @@ func (m *mux) serveControl(w http.ResponseWriter, r *http.Request, op func(conte
 		WriteError(w, http.StatusBadRequest, CodeBadRequest, "malformed control request body: "+err.Error())
 		return
 	}
+	// Destructive ops over the API (here: /destroy) require a control PAT
+	// (enforced by scope) plus an explicit confirm body field (specification
+	// section 12). The confirm gate runs after decode but before the handler,
+	// so a !Confirm destroy never reaches the control plane and is rejected
+	// as an operation failure.
+	if r.URL.Path == "/destroy" {
+		if !req.Confirm {
+			WriteError(w, http.StatusUnprocessableEntity, CodeOpFailed, "confirm required for destructive operation")
+			return
+		}
+		// debug marker: if we reach here with Confirm, we will proceed
+		_ = req.Confirm
+	}
 	res, err := op(r.Context(), req)
 	if err != nil {
 		if errors.Is(err, ErrControlUnavailable) {
@@ -141,4 +157,37 @@ func (m *mux) serveControl(w http.ResponseWriter, r *http.Request, op func(conte
 		return
 	}
 	WriteData(w, http.StatusOK, res)
+}
+
+// drainReq is the body for POST /deadletter/drain; Confirm is required for the
+// destructive op over the API (specification section 12).
+type drainReq struct {
+	Run      string `json:"run,omitempty"`
+	Pipeline string `json:"pipeline,omitempty"`
+	All      bool   `json:"all,omitempty"`
+	Confirm  bool   `json:"confirm"`
+}
+
+// serveDeadletterDrain handles POST /deadletter/drain: destructive, so like
+// /destroy it requires an explicit confirm body field from a control PAT.
+// Until the real drain handler is wired this returns operation_failed, but the
+// confirm and leader gates are exercised.
+func (m *mux) serveDeadletterDrain(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST "+r.URL.Path+" only")
+		return
+	}
+	var req drainReq
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		WriteError(w, http.StatusBadRequest, CodeBadRequest, "malformed drain request body: "+err.Error())
+		return
+	}
+	if !req.Confirm {
+		WriteError(w, http.StatusUnprocessableEntity, CodeOpFailed, "confirm required for destructive operation")
+		return
+	}
+	// No real drain handler wired yet at this layer; surface the gate behavior.
+	WriteError(w, http.StatusUnprocessableEntity, CodeOpFailed, "deadletter drain not wired")
 }

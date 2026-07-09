@@ -83,6 +83,11 @@ func (a *app) deadletterReplay() runE {
 		if run == "" && pipeline == "" && !all {
 			return a.usage("deadletter replay requires <run>, --pipeline <name>, or --all")
 		}
+		if run != "" {
+			if _, _, perr := parseRunRef(run); perr != nil {
+				return a.usage(fmt.Sprintf("bad run ref %q: %v", run, perr))
+			}
+		}
 		return a.postReplay(cmd, replayScope{Run: run, Pipeline: pipeline, All: all})
 	}
 }
@@ -215,6 +220,9 @@ type drainScope struct {
 	Pipeline string `json:"pipeline,omitempty"`
 	// All scopes to every outstanding entry (--all).
 	All bool `json:"all,omitempty"`
+	// Confirm is the explicit confirmation field required for destructive ops
+	// over the API (specification section 12); the CLI sets it after its local gate.
+	Confirm bool `json:"confirm,omitempty"`
 }
 
 // drainOutcome is the leader's reply: the dead-lettered runs whose worklist entries
@@ -227,8 +235,9 @@ type drainOutcome struct {
 
 // deadletterDrain is the handler for `iris deadletter drain`. It requires an
 // explicit scope (bare is a usage error, exit 2 -- specification sections 6.2, 8,
-// and 12: nothing defaults to --all), then POSTs the scope to the leader's drain
-// route and maps the outcome to a section-8 exit category.
+// and 12: nothing defaults to --all), enforces the confirmation gate for this
+// dev-loop destructive op (y/N or --yes/--force), then POSTs the scope to the
+// leader's drain route.
 func (a *app) deadletterDrain() runE {
 	return func(cmd *cobra.Command, args []string) error {
 		all, _ := cmd.Flags().GetBool("all")
@@ -241,7 +250,32 @@ func (a *app) deadletterDrain() runE {
 		if run == "" && pipeline == "" && !all {
 			return a.usage("deadletter drain requires <run>, --pipeline <name>, or --all")
 		}
-		return a.postDrain(cmd, drainScope{Run: run, Pipeline: pipeline, All: all})
+		if run != "" {
+			if _, _, perr := parseRunRef(run); perr != nil {
+				return a.usage(fmt.Sprintf("bad run ref %q: %v", run, perr))
+			}
+		}
+		// Confirmation gate for dev-loop op (y/N prompt via seam or --yes/--force).
+		scopeName := "all dead-letter entries"
+		if pipeline != "" {
+			scopeName = "pipeline " + pipeline
+		} else if run != "" {
+			scopeName = "run " + run
+		}
+		confirmed, cerr := a.confirmOrFlags(cmd, scopeName, false)
+		if cerr != nil {
+			return cerr
+		}
+		yes, _ := cmd.Flags().GetBool("yes")
+		force, _ := cmd.Flags().GetBool("force")
+		if !confirmed && !yes && !force {
+			return &fault{
+				code:    exitOpFailed,
+				codeStr: "confirmation_required",
+				message: "deadletter drain is destructive; re-run with --yes or --force, or confirm interactively",
+			}
+		}
+		return a.postDrain(cmd, drainScope{Run: run, Pipeline: pipeline, All: all, Confirm: true})
 	}
 }
 

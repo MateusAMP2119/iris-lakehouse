@@ -129,3 +129,45 @@ func findCeilingStmt(t *testing.T, rec *storetest.WriteRecorder) storetest.Recor
 	}
 	return hits[0]
 }
+
+// TestPinRecordedDispatchTerminal proves that at dispatch a run records the
+// data database LSN as snapshot_lsn and the journal high id as journal_floor,
+// and at terminal transition records the journal high id again as journal_ceiling.
+// The test uses fakes for the data-database reads (LSN and journal watermark)
+// and a recording meta writer, exercising the dispatch/store seam with no live
+// Postgres: the integration tier for the snapshot pin contract.
+//
+// spec: S14/pin-recorded-dispatch-terminal
+func TestPinRecordedDispatchTerminal(t *testing.T) {
+	t.Run("S14/pin-recorded-dispatch-terminal", func(t *testing.T) {
+		rec := storetest.NewWriteRecorder()
+		w := store.NewWriter(rec)
+		lsn := fakeLSNReader{lsn: "0/DEAD BEEF"}
+		jh := &fakeJournalHigh{values: []int64{81, 95}}
+
+		if err := dispatch.StampDispatch(context.Background(), w, lsn, jh, dispatchRecord()); err != nil {
+			t.Fatalf("StampDispatch: %v", err)
+		}
+		tx := rec.Transactions()[0][0]
+		if got := tx.Args[argSnapshotLSN]; got != "0/DEAD BEEF" {
+			t.Errorf("snapshot_lsn = %v, want LSN read at dispatch", got)
+		}
+		if got := tx.Args[argJournalLow]; got != int64(81) {
+			t.Errorf("journal_floor = %v, want journal high id at dispatch", got)
+		}
+
+		if err := dispatch.StampTerminal(context.Background(), w, jh, "42"); err != nil {
+			t.Fatalf("StampTerminal: %v", err)
+		}
+		ceiling := findCeilingStmt(t, rec)
+		var found bool
+		for _, a := range ceiling.Args {
+			if a == int64(95) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("journal_ceiling statement did not receive terminal id 95 (args %v)", ceiling.Args)
+		}
+	})
+}

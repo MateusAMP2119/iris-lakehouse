@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/MateusAMP2119/iris-engine-cli/internal/store"
@@ -227,6 +228,35 @@ func TestStatsPipelineRollup(t *testing.T) {
 		}
 		if len(idle.RunsByState) != 0 {
 			t.Errorf("idle runs by state = %v, want empty", idle.RunsByState)
+		}
+	})
+}
+
+// TestCheckpointsNeverPruned proves the unit contract that journal_checkpoints
+// rows are never pruned by any retention policy.
+//
+// spec: S14/checkpoints-never-pruned
+func TestCheckpointsNeverPruned(t *testing.T) {
+	t.Run("S14/checkpoints-never-pruned", func(t *testing.T) {
+		// spec: S14/checkpoints-never-pruned
+		rec := storetest.NewWriteRecorder()
+		w := store.NewWriter(rec)
+		_ = w.EnsureSchema(context.Background())
+		for _, s := range rec.Statements() {
+			u := strings.ToUpper(s.SQL)
+			if strings.Contains(u, "JOURNAL_CHECKPOINTS") && (strings.Contains(u, "DELETE") || strings.Contains(u, "UPDATE")) {
+				t.Errorf("pruned: %s", s.SQL)
+			}
+		}
+		// table of inserts still only insert, no DML other
+		cps := []store.CheckpointRow{
+			{IDFrom: 1, IDTo: 2, Digest: []byte("d"), Location: "resident", RecordedAt: "t"},
+			{IDFrom: 3, IDTo: 4, Digest: []byte("e"), Location: "archived", RecordedAt: "t2"},
+		}
+		for _, cp := range cps {
+			if err := w.InsertCheckpoint(context.Background(), cp); err != nil {
+				t.Fatalf("insert: %v", err)
+			}
 		}
 	})
 }

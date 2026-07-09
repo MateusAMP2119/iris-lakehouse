@@ -94,6 +94,8 @@ func NewMux(opts ...MuxOption) http.Handler {
 		info:         noInfo{},
 		inspect:      noInspect{},
 		pipelineShow: noPipelineShow{},
+		workloadShow: noWorkloadShow{},
+		provenance:   noProvenance{},
 	}
 	for _, o := range opts {
 		o(m)
@@ -116,6 +118,8 @@ type mux struct {
 	info         InfoHandler
 	inspect      InspectHandler
 	pipelineShow PipelineShowHandler
+	workloadShow WorkloadShowHandler
+	provenance   ProvenanceHandler
 	// endpoints and qreader are the /q serving seams (endpoint.go): the live
 	// compiled-shape source and the read executor. Both default nil (unwired):
 	// /q then answers the internal-fault envelope, per the noStats doctrine.
@@ -151,6 +155,8 @@ func (m *mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.serveApply(w, r)
 	case "/destroy":
 		m.serveDestroy(w, r)
+	case "/deadletter/drain":
+		m.serveDeadletterDrain(w, r)
 	case "/pipeline/build":
 		m.servePipelineBuild(w, r)
 	case "/pipeline/promote":

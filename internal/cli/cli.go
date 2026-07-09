@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -79,6 +80,13 @@ type app struct {
 	// terminal --json envelope carries them as a warnings array, and human output
 	// prints them to stderr. Set per invocation, so the app holds no global state.
 	warnings []declare.Warning
+	// confirm is the E10.2 confirmation seam for interactive prompts (typed-name
+	// for teardowns, y/N for dev-loop ops). When non-nil it is consulted when
+	// neither --yes nor --force was supplied. The name is the target of the
+	// operation (pipeline name, or "engine" for uninstall); isTeardown chooses
+	// the prompt style. Tests inject it to simulate TTY answers without a real
+	// terminal.
+	confirm func(name string, isTeardown bool) (bool, error)
 }
 
 // newApp builds an app whose structured logs go to stderr at info level, keeping
@@ -155,6 +163,36 @@ func (a *app) noDaemon(cmd *cobra.Command, op string) error {
 // arg/flag errors cobra raises before a handler runs.
 func (a *app) usage(msg string) error {
 	return &fault{code: exitUsage, codeStr: "usage", message: msg}
+}
+
+// parseRunRef parses a <run> token per S08/run-ref-grammar (unit contract):
+// a bare pipeline name stands for its latest run; <name>~n stands for the nth
+// prior run of that pipeline (n>=0; ~0 is latest). Git ^ and .. forms are
+// rejected as false cognates. The parse is pure; resolution of the (name, prior)
+// to a concrete run id is the caller's I/O (latest run + offset by id desc).
+func parseRunRef(s string) (pipeline string, prior int, err error) {
+	if s == "" {
+		return "", 0, fmt.Errorf("empty run ref")
+	}
+	if strings.Contains(s, "^") || strings.Contains(s, "..") {
+		return "", 0, fmt.Errorf("git reachability forms ^ and .. are not run refs: %s", s)
+	}
+	if idx := strings.Index(s, "~"); idx >= 0 {
+		name := s[:idx]
+		if name == "" {
+			return "", 0, fmt.Errorf("run ref must have pipeline name before ~: %s", s)
+		}
+		nstr := s[idx+1:]
+		if nstr == "" {
+			return "", 0, fmt.Errorf("~ requires a number: %s", s)
+		}
+		var n int
+		if _, scanErr := fmt.Sscanf(nstr, "%d", &n); scanErr != nil || n < 0 || fmt.Sprintf("%d", n) != nstr {
+			return "", 0, fmt.Errorf("~n requires non-negative integer n: %s", s)
+		}
+		return name, n, nil
+	}
+	return s, 0, nil
 }
 
 // errEnvelope is the --json error document: the read-API error envelope shape of
@@ -259,4 +297,52 @@ func (a *app) describeJSON(root *cobra.Command) error {
 	}
 	_ = json.NewEncoder(a.out).Encode(dataEnvelope{Data: desc})
 	return nil
+}
+
+// workloadWipe is the handler for `iris workload wipe`. It is a gated dev-loop
+// destructive operation (specification section 12). It requires explicit
+// confirmation (--yes/--force or interactive y/N) before proceeding to the
+// daemon. The real execution (and soft-block/force wiring) lives behind the
+// daemon; here we enforce the confirmation surface and forward scope + flags.
+func (a *app) workloadWipe() runE {
+	return func(cmd *cobra.Command, args []string) error {
+		var pipeline string
+		if len(args) == 1 {
+			pipeline = args[0]
+		}
+		name := pipeline
+		if name == "" {
+			name = "the engine"
+		}
+		confirmed, err := a.confirmOrFlags(cmd, name, false)
+		if err != nil {
+			return err
+		}
+		yes, _ := cmd.Flags().GetBool("yes")
+		force, _ := cmd.Flags().GetBool("force")
+		if !confirmed && !yes && !force {
+			return &fault{
+				code:    exitOpFailed,
+				codeStr: "confirmation_required",
+				message: "workload wipe is destructive; re-run with --yes or --force, or confirm interactively",
+			}
+		}
+		// Confirmed (flag or seam); reach the daemon surface (or fail no-daemon/not-impl).
+		return a.requireDaemon(cmd, "workload wipe")
+	}
+}
+
+// confirmOrFlags returns true if --yes or --force is set, or if the injected
+// confirm seam (for tests or interactive TTY) approves. isTeardown selects
+// prompt flavor for the seam.
+func (a *app) confirmOrFlags(cmd *cobra.Command, name string, isTeardown bool) (bool, error) {
+	yes, _ := cmd.Flags().GetBool("yes")
+	force, _ := cmd.Flags().GetBool("force")
+	if yes || force {
+		return true, nil
+	}
+	if a.confirm != nil {
+		return a.confirm(name, isTeardown)
+	}
+	return false, nil
 }

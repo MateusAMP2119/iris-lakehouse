@@ -162,3 +162,47 @@ func (w *Writer) RecordMigrationHead(ctx context.Context, head MigrationHead) er
 	}
 	return nil
 }
+
+// insertCheckpointSQL inserts one journal_checkpoints row. It is insert-only by
+// design (specification section 4): callers never UPDATE or DELETE from the table;
+// retention and prune paths never touch it (S04/checkpoints-insert-only,
+// S14/checkpoints-never-pruned).
+const insertCheckpointSQL = `INSERT INTO journal_checkpoints (id_from, id_to, digest, parent_digest, signature, location, recorded_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7)`
+
+// InsertCheckpoint records a sealed partition checkpoint (one row per seal).
+// Digest is the hash over compacted rows; parent_digest chains; signature is
+// engine-key ed25519 over the digest. Location is "resident" or "archived".
+// This is the write leg of the checkpoint chain.
+func (w *Writer) InsertCheckpoint(ctx context.Context, row CheckpointRow) error {
+	var parent any
+	if len(row.ParentDigest) > 0 {
+		parent = row.ParentDigest
+	}
+	if err := w.conn.Exec(ctx, insertCheckpointSQL,
+		row.IDFrom, row.IDTo, row.Digest, parent, row.Signature, row.Location, row.RecordedAt); err != nil {
+		return fmt.Errorf("store: writer insert checkpoint [%d-%d]: %w", row.IDFrom, row.IDTo, err)
+	}
+	return nil
+}
+
+const archiveCheckpointSQL = `UPDATE journal_checkpoints SET location = 'archived' WHERE digest = $1`
+
+// ArchiveCheckpoint flips the location of the checkpoint identified by its
+// digest from "resident" to "archived" after the partition has been exported
+// to the object store and dropped. It is a single statement; callers perform
+// the surrounding steps (export, re-validate, drop) in the order required by
+// the archive-then-drop flow.
+func (w *Writer) ArchiveCheckpoint(ctx context.Context, digest []byte) error {
+	if err := w.conn.Exec(ctx, archiveCheckpointSQL, digest); err != nil {
+		return fmt.Errorf("store: writer archive checkpoint %x: %w", digest, err)
+	}
+	return nil
+}
+
+// Archive implements the MetaFlipper seam for the archive export flow. It
+// delegates to ArchiveCheckpoint with a background context; the call is
+// a small metadata update after the heavy export and drop have completed.
+func (w *Writer) Archive(digest []byte) error {
+	return w.ArchiveCheckpoint(context.Background(), digest)
+}
