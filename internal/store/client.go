@@ -56,6 +56,7 @@ type Client struct {
 	show     ShowReader
 	promote  PromoteStateReader
 	pats     PATReader
+	stats    StatsSource
 }
 
 // Connect opens the meta client from the admin-derived connection source: it
@@ -101,6 +102,7 @@ func Connect(ctx context.Context, src ConnSource) (*Client, error) {
 		show:     newPgxShowReader(readPoolSeam),
 		promote:  &pgxPromoteReader{pool: readPoolSeam},
 		pats:     &pgxPATReader{pool: readPoolSeam},
+		stats:    newPgxStatsSource(readPoolSeam),
 	}, nil
 }
 
@@ -201,6 +203,11 @@ func (c *Client) PromoteStateReader() PromoteStateReader { return c.promote }
 // prefix -> record lookup the TCP bearer-token verifier resolves each request
 // against, on any node.
 func (c *Client) PATReader() PATReader { return c.pats }
+
+// StatsSource returns the plain-MVCC stats read seam (the pool): the runs,
+// dead-letter worklist, persisted composer, registry, and checkpoint reads the
+// engine-stats rollup (`iris engine stats`, GET /stats) is composed from.
+func (c *Client) StatsSource() StatsSource { return c.stats }
 
 // Close tears down the client: it closes the reader pool and the leader session. It
 // is safe to call after the lock has already released the session, so the daemon can
