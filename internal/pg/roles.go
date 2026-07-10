@@ -129,6 +129,16 @@ $iris_pipeline_role$;`, quoteStringLiteral(spec.Role), role),
 		fmt.Sprintf("GRANT CONNECT ON DATABASE %s TO %s;", data, role),
 	}
 
+	// 5 (cont.). Capture reachability, pipeline-independent: USAGE on the engine's iris
+	// schema and EXECUTE on iris.capture(), so a freshly provisioned role's write fires
+	// the always-on capture trigger out of the box (specification section 4: capture is
+	// always on, every role). Without these the per-table trigger's call into
+	// iris.capture() is refused and the write fails, so the grants are part of every
+	// pipeline role, not per-declaration. The function is SECURITY DEFINER, so the
+	// journal INSERT still runs as the journal owner, never the pipeline role. Both are
+	// idempotent.
+	stmts = append(stmts, RenderCaptureReachabilityGrants(spec.Role)...)
+
 	// 5 (cont.). USAGE on each distinct granted schema, in deterministic order, so the
 	// column grants resolve.
 	for _, schema := range distinctSchemas(spec.Grants) {
