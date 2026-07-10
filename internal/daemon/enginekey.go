@@ -7,8 +7,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/MateusAMP2119/iris-engine-cli/internal/config"
+	"github.com/MateusAMP2119/iris-engine-cli/internal/store"
 )
 
 // This file holds the engine key: the ed25519 keypair minted once at
@@ -169,22 +173,122 @@ type EngineKeyReader interface {
 }
 
 // NewEngineKeyReader returns the production engine-key reader for the given
-// settings. The reader that opens a live meta connection and reads the engine_key
-// table's private half lands with the daemon's pgx-backed connection wiring (a
-// later task); until then this reader reports ErrEngineNotInstalled, so `iris engine
-// info` fails clearly rather than pretending to read a key it cannot yet reach. The
-// settings are accepted now so the signature is stable when the live reader replaces
-// this body.
-func NewEngineKeyReader(_ config.Settings) EngineKeyReader {
-	return unwiredEngineKeyReader{}
+// settings: it opens a short-lived read connection to the engine_key meta table,
+// reads the stored private half, and derives the public half `iris engine info`
+// shows. It reaches meta the same way for either Postgres mode -- external mode
+// through the configured admin DSN, managed mode through the running managed
+// instance's engine-owned runtime files (never by starting a second postmaster, so
+// it never contends with a live daemon) -- and reports ErrEngineNotInstalled when
+// the engine is not installed or its meta database is unreachable, so info fails
+// clearly. The read exposes only the public half; the private bytes never leave the
+// package.
+func NewEngineKeyReader(s config.Settings) EngineKeyReader {
+	return metaEngineKeyReader{settings: s, load: loadEngineKeyBytes}
 }
 
-// unwiredEngineKeyReader is the placeholder production reader: with no live
-// meta-connection wiring yet, every read reports ErrEngineNotInstalled.
-type unwiredEngineKeyReader struct{}
+// metaEngineKeyReader is the production EngineKeyReader: it loads the raw private
+// half from meta and derives an EngineKey. load is a seam -- the production value
+// opens a short-lived meta connection (loadEngineKeyBytes); tests inject a fake so
+// the decode-and-map logic is provable with no live Postgres.
+type metaEngineKeyReader struct {
+	settings config.Settings
+	load     func(ctx context.Context, s config.Settings) ([]byte, error)
+}
 
-// ReadEngineKey reports ErrEngineNotInstalled: the live meta-connection read is not
-// wired yet.
-func (unwiredEngineKeyReader) ReadEngineKey(context.Context) (EngineKey, error) {
-	return EngineKey{}, ErrEngineNotInstalled
+// ReadEngineKey loads the stored private half from meta and derives the EngineKey.
+// A load failure (engine not installed, meta unreachable) maps to
+// ErrEngineNotInstalled so `iris engine info` reports a clear operation failure; an
+// empty table (no key row yet) is the same "not installed" signal. Stored bytes
+// that are not a valid ed25519 private key are a distinct corruption error, not
+// masked as "not installed". Only the public half is ever exposed; the private
+// bytes stay inside the returned EngineKey.
+func (r metaEngineKeyReader) ReadEngineKey(ctx context.Context) (EngineKey, error) {
+	priv, err := r.load(ctx, r.settings)
+	if err != nil {
+		return EngineKey{}, fmt.Errorf("%w: %v", ErrEngineNotInstalled, err)
+	}
+	if len(priv) == 0 {
+		return EngineKey{}, ErrEngineNotInstalled
+	}
+	key, err := DecodeEngineKeyBytes(priv)
+	if err != nil {
+		return EngineKey{}, fmt.Errorf("daemon: engine key in meta is malformed: %w", err)
+	}
+	return key, nil
+}
+
+// loadEngineKeyBytes is the production key-bytes loader: it resolves the meta
+// connection source for the configured mode and reads the engine_key row's private
+// half through store's short-lived read connection (store stays the only pgx
+// importer). It never starts a Postgres instance.
+func loadEngineKeyBytes(ctx context.Context, s config.Settings) ([]byte, error) {
+	src, err := metaSourceForInfo(s)
+	if err != nil {
+		return nil, err
+	}
+	return store.ReadEngineKeyOnce(ctx, src)
+}
+
+// metaSourceForInfo resolves the admin-derived meta connection source for the
+// daemonless `iris engine info` key read. External mode derives it from the
+// configured admin DSN (the same resolution every connection uses). Managed mode
+// reconstructs the running managed instance's localhost DSN from its engine-owned
+// runtime files -- the persisted superuser credential and the port the live
+// postmaster records -- so the read reaches the already-running instance without
+// starting a second postmaster (which would contend with the live daemon) and
+// without any side effect. When the managed instance is not installed or not
+// running, the runtime files are absent and this returns an error the caller maps
+// to "engine not installed or unreachable".
+func metaSourceForInfo(s config.Settings) (store.ConnSource, error) {
+	if s.Managed() {
+		return managedMetaSource(s)
+	}
+	admin, err := Resolve(s)
+	if err != nil {
+		return nil, err
+	}
+	return admin.Source(), nil
+}
+
+// managedMetaSource builds the connection source for a running managed Postgres
+// from its engine-owned runtime files: the superuser credential persisted at
+// install and the TCP port the live postmaster records in postmaster.pid. It reads,
+// never writes -- so it never mints a credential or otherwise mutates the managed
+// directory -- and errors when either file is absent (the instance is not installed
+// or not running), which the caller maps to "engine not installed or unreachable".
+func managedMetaSource(s config.Settings) (store.ConnSource, error) {
+	dir := ManagedPGDir(s)
+	pw, ok, err := readManagedPassword(filepath.Join(dir, superuserPasswordFile))
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, errors.New("daemon: managed Postgres is not installed (no superuser credential)")
+	}
+	port, err := readPostmasterPort(managedDataDir(dir))
+	if err != nil {
+		return nil, err
+	}
+	dsn := fmt.Sprintf("postgres://%s:%s@localhost:%s/postgres?sslmode=disable", ManagedSuperuser, pw, port)
+	return ConnectionSource{conn: dsn}, nil
+}
+
+// readPostmasterPort returns the TCP port a running Postgres records on line 4 of
+// its data directory's postmaster.pid. An absent pid file means the instance is not
+// running, surfaced as an error the key read maps to "engine unreachable".
+func readPostmasterPort(dataDir string) (string, error) {
+	//nolint:gosec // G304: dataDir is the engine-owned managed-Postgres data dir, never user or network input.
+	raw, err := os.ReadFile(filepath.Join(dataDir, "postmaster.pid"))
+	if err != nil {
+		return "", fmt.Errorf("daemon: read managed postmaster.pid: %w", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) < 4 {
+		return "", fmt.Errorf("daemon: managed postmaster.pid has %d lines, want at least 4 (port on line 4)", len(lines))
+	}
+	port := strings.TrimSpace(lines[3])
+	if port == "" {
+		return "", errors.New("daemon: managed postmaster.pid records an empty port")
+	}
+	return port, nil
 }
