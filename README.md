@@ -32,6 +32,13 @@ One command, needs only Go 1.25+:
 go install github.com/MateusAMP2119/iris-engine-cli/cmd/iris@latest
 ```
 
+No Go toolchain? Grab a prebuilt static binary (linux/macOS, amd64/arm64) from the [releases page](https://github.com/MateusAMP2119/iris-engine-cli/releases/latest):
+
+```sh
+curl -L "https://github.com/MateusAMP2119/iris-engine-cli/releases/latest/download/iris_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar -xz
+sudo mv iris /usr/local/bin/
+```
+
 Or build from source:
 
 ```sh
