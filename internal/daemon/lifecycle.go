@@ -134,19 +134,22 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// source. The read pool connects as the engine's own least-privilege read-pool
 	// login, which holds no table grants of its own -- every data-surface read runs
 	// as the calling PAT's role, assumed via SET ROLE, so the pool login is a
-	// connection identity only. Its credential is minted fresh each start and the
-	// login re-asserted (idempotent), so a restart re-establishes the pool.
+	// connection identity only.
 	//
-	// Multi-node caveat (single-node correct today): each node mints its own
-	// read-pool secret and resets the shared login's password on start, so with two
-	// daemons on one data cluster the last starter's secret wins and an earlier
-	// node's read pool would then fail to authenticate. E13.7's contracts are
-	// single-node; a shared, meta-persisted read-pool credential (leader-minted, read
-	// by every node) is the follow-up for the failover epic. No conformance test
-	// exercises a standby's data reads today, so this is latent, not active.
-	readSecret, err := store.GenerateSecret()
+	// The read-pool credential is persisted create-once in engine-owned meta
+	// (read_pool_credential, mirroring engine_key): every daemon start reads the ONE
+	// stored secret back rather than minting a fresh one, so two daemons on one data
+	// cluster (an HA standby, or a restart racing a live leader) converge on a single
+	// credential. The login's password is set to that persisted secret on every start
+	// -- an idempotent password-only ALTER by the role's creator (fine on PG16+, no
+	// attribute assertion): because every node ALTERs to the SAME secret it never
+	// invalidates another node's live pool (unlike the former per-start fresh mint,
+	// where the last starter's secret won and an earlier node's pool then failed to
+	// authenticate). Setting to the persisted secret every start also self-heals the
+	// crash window between the create-once INSERT and the login ALTER.
+	readSecret, err := client.EnsureReadPoolCredential(ctx)
 	if err != nil {
-		return fmt.Errorf("daemon: mint read-pool credential: %w", err)
+		return fmt.Errorf("daemon: ensure read-pool credential: %w", err)
 	}
 	if err := pg.ProvisionReadPoolLogin(ctx, data, pg.ReadPoolLoginProvision{
 		Role:          pg.EngineReadPoolRole,
@@ -166,6 +169,18 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// applier: an apply that commits serves the next /q request with no restart), the
 	// declared-table shape source for /data, and the TCP bearer-token verifier.
 	endpointRegistry := dispatch.NewEndpointRegistry()
+
+	// Reload the persisted endpoints into the live registry before serving, so a
+	// restart or failover serves every applied endpoint with no re-apply
+	// (specification section 7). The in-memory registry is empty each process start;
+	// the endpoints/endpoint_filters meta rows are the truth of what was applied. This
+	// runs on every node (the read pool serves /q from any node) and is best-effort:
+	// a reload fault is logged, never fatal -- the control plane must serve even if a
+	// read-surface reload snags.
+	if err := reloadEndpoints(ctx, client.EndpointReader(), endpointRegistry, workspace, logger); err != nil {
+		logger.Warn("iris daemon: reload persisted endpoints", "err", err)
+	}
+
 	dataSource := newWorkspaceDataSource(workspace)
 	verifier := newStoreVerifier(client.PATReader())
 	endpointCtl := newEndpointPlane()

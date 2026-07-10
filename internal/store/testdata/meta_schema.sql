@@ -117,6 +117,14 @@ CREATE TABLE IF NOT EXISTS engine_key (
     CHECK (id = 1)
 );
 
+CREATE TABLE IF NOT EXISTS read_pool_credential (
+    id bigint,
+    secret text NOT NULL,
+    created_at text NOT NULL,
+    PRIMARY KEY (id),
+    CHECK (id = 1)
+);
+
 CREATE TABLE IF NOT EXISTS pats (
     id text,
     hash text NOT NULL,

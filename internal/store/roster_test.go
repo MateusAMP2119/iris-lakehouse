@@ -7,12 +7,14 @@ import (
 	"github.com/MateusAMP2119/iris-engine-cli/internal/store"
 )
 
-// TestEighteenTableRoster proves the bootstrap DDL creates exactly nineteen engine
-// tables: the eighteen meta control tables plus public.data_journal in the data
-// database. The eighteenth meta table is engine_key, added by the devdebt
-// 2026-07-10 spec delta that moved the engine signing key from a per-database GUC
-// into an engine-owned single-row meta table (spec section 4 bootstrap Q/A). The
-// contract id keeps its stable slug though the count grew.
+// TestEighteenTableRoster proves the bootstrap DDL creates exactly twenty engine
+// tables: the nineteen meta control tables plus public.data_journal in the data
+// database. The eighteenth meta table is engine_key (devdebt 2026-07-10 spec delta,
+// moving the engine signing key from a per-database GUC into an engine-owned
+// single-row meta table); the nineteenth is read_pool_credential (the E13.7
+// follow-up spec delta persisting the shared read-pool login secret create-once so
+// a restart or HA standby reuses one stable credential). The contract id keeps its
+// stable slug though the count grew (spec section 4 roster Q/A).
 //
 // spec: S04/eighteen-table-roster
 func TestEighteenTableRoster(t *testing.T) {
@@ -21,22 +23,22 @@ func TestEighteenTableRoster(t *testing.T) {
 	if got := len(meta.Tables); got != len(metaRoster) {
 		t.Fatalf("meta schema has %d tables, want %d", got, len(metaRoster))
 	}
-	// The eighteen meta tables are exactly the spec roster, in order.
+	// The nineteen meta tables are exactly the spec roster, in order.
 	for i, want := range metaRoster {
 		if meta.Tables[i].Name != want {
 			t.Errorf("meta table %d = %q, want %q", i, meta.Tables[i].Name, want)
 		}
 	}
 
-	// The nineteenth table is public.data_journal in the data database.
+	// The twentieth table is public.data_journal in the data database.
 	jt := pg.JournalTable()
 	if jt.Name != "data_journal" {
 		t.Errorf("data table name = %q, want data_journal", jt.Name)
 	}
 
 	total := len(meta.Tables) + 1
-	if total != 19 {
-		t.Errorf("engine table roster = %d, want exactly 19 (18 meta + data_journal)", total)
+	if total != 20 {
+		t.Errorf("engine table roster = %d, want exactly 20 (19 meta + data_journal)", total)
 	}
 
 	// data_journal is not a meta control table: the nineteenth table lives on the

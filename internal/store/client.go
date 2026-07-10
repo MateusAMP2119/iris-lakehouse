@@ -59,6 +59,7 @@ type Client struct {
 	stats      StatsSource
 	deadletter DeadLetterReader
 	seal       JournalSealReader
+	endpoints  EndpointRowReader
 }
 
 // Connect opens the meta client from the admin-derived connection source: it
@@ -107,6 +108,7 @@ func Connect(ctx context.Context, src ConnSource) (*Client, error) {
 		stats:      newPgxStatsSource(readPoolSeam),
 		deadletter: newPgxDeadLetterReader(readPoolSeam),
 		seal:       newPgxSealReader(readPoolSeam),
+		endpoints:  newPgxEndpointReader(readPoolSeam),
 	}, nil
 }
 
@@ -223,6 +225,12 @@ func (c *Client) DeadLetterReader() DeadLetterReader { return c.deadletter }
 // head, in-flight run count, and engine key material the leader-side seal step reads
 // to decide whether and how to seal the resident journal partition.
 func (c *Client) SealReader() JournalSealReader { return c.seal }
+
+// EndpointReader returns the plain-MVCC endpoint read seam (the pool): the persisted
+// endpoints and endpoint_filters rows the daemon reloads into the live serving
+// registry at startup, so a restart or failover serves every applied endpoint with
+// no re-apply.
+func (c *Client) EndpointReader() EndpointRowReader { return c.endpoints }
 
 // Close tears down the client: it closes the reader pool and the leader session. It
 // is safe to call after the lock has already released the session, so the daemon can
