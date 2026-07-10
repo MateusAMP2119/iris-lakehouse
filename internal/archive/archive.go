@@ -227,8 +227,6 @@ func syncDir(dir string) error {
 	return cerr
 }
 
-
-
 // ObjectStore is the seam the export flow uses to place archived partition
 // files into the content-addressed objects directory. *store.ObjectStore
 // satisfies it in production.
