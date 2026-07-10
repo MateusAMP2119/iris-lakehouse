@@ -29,7 +29,7 @@ func dbURLFromEnv(env []string) (string, bool) {
 // spec: S07/pipeline-scoped-connection-injected
 func TestManualRunScopedConnectionInjected(t *testing.T) {
 	t.Run("S07/pipeline-scoped-connection-injected", func(t *testing.T) {
-		const base = "postgres://writer:pw@localhost:5432/data?sslmode=disable"
+		const base = "postgres://writer:pw@localhost:5432/data?sslmode=disable" //nolint:gosec // G101: test-only fake DSN, not a real credential
 
 		t.Run("the run id rides the base scoped DSN", func(t *testing.T) {
 			m := &manualExec{dbURL: base}
