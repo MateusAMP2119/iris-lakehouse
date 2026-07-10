@@ -16,7 +16,7 @@
   <img src="https://img.shields.io/badge/Contracts-517%20traced-blueviolet?style=for-the-badge" alt="517 contracts">
 </p>
 
-Iris is a self-hostable lakehouse in a single Go binary. It orchestrates data pipelines written in any language, keeps all state in one Postgres cluster you own, and records the lineage of every row as a first-class feature: each write is attributed **in-transaction** to the run, binary, and declaration that produced it, then sealed into an ed25519-signed, tamper-evident journal. `iris data provenance <table> <pk>` answers where any row came from, at any point in its history. There are no managed services to wire together — no external object store, catalog, warehouse, or scheduler — and it runs the same on a laptop, a homelab server, or a single VPS.
+Iris is a lakehouse engine bundled with a CLI tool, developed in Go. The engine is built in the image of a glorified cron: a daemon that orchestrates routine tasks — pipelines written in any language — and stores their state and the data they produce in one Postgres cluster (with one twist: there is no clock; runs are chained by dependency, not by schedule). On top of that, it records the lineage of every row as a first-class feature: each write is attributed **in-transaction** to the run, binary, and declaration that produced it, then sealed into an ed25519-signed, tamper-evident journal. `iris data provenance <table> <pk>` answers where any row came from, at any point in its history. There are no managed services to wire together, and it runs the same on a laptop, a homelab server, or a single VPS.
 
 ---
 
