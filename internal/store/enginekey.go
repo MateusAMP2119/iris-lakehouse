@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // This file is the meta persistence of the engine's ed25519 signing key
@@ -51,6 +54,41 @@ func (r *pgxSealReader) ReadEngineKey(ctx context.Context) ([]byte, error) {
 	var priv []byte
 	if err := rows.Scan(&priv); err != nil {
 		return nil, fmt.Errorf("store: scan engine key: %w", err)
+	}
+	return priv, nil
+}
+
+// ReadEngineKeyOnce opens a short-lived read connection to the meta database from
+// src and returns the raw ed25519 private-key bytes the single-row engine_key table
+// holds, for the daemonless `iris engine info` key surface. It is a plain SELECT on
+// a connection that must already find meta present: it never creates the meta
+// database or any table (unlike Connect), so an absent meta database, an absent
+// engine_key table, or an unreachable cluster surfaces as a connection/query error
+// the caller maps to "engine not installed or unreachable", and an empty table
+// returns (nil, nil). The private bytes are the private half: a caller must never
+// log or render them. The connection is always closed (on a background context so a
+// cancelled read still releases it).
+func ReadEngineKeyOnce(ctx context.Context, src ConnSource) ([]byte, error) {
+	if src == nil {
+		return nil, errors.New("store: nil connection source")
+	}
+	cfg, err := metaConnConfig(src.ConnString())
+	if err != nil {
+		return nil, err
+	}
+	conn, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("store: open meta connection to read engine key: %w", err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+
+	var priv []byte
+	err = conn.QueryRow(ctx, selectEngineKeySQL).Scan(&priv)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil // no key row yet
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: read engine key: %w", err)
 	}
 	return priv, nil
 }
