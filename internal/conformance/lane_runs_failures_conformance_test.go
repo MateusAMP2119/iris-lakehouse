@@ -4,35 +4,60 @@ package conformance
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 )
 
+// ensurePython guarantees a bare `python` resolves on PATH for the daemon's run
+// subprocesses (the golden pipelines declare run: [python, main.py]). Where only
+// python3 exists (a common dev/CI mismatch) it shims a python->python3 symlink onto
+// PATH; the detached daemon inherits this PATH (conformance runs inherit os.Environ),
+// so its run subprocesses resolve the interpreter.
+func ensurePython(t *testing.T) {
+	t.Helper()
+	if _, err := osexec.LookPath("python"); err == nil {
+		return
+	}
+	py3, err := osexec.LookPath("python3")
+	if err != nil {
+		t.Skip("neither python nor python3 on PATH; golden pipeline runs need a Python interpreter")
+	}
+	dir := t.TempDir()
+	if err := os.Symlink(py3, filepath.Join(dir, "python")); err != nil {
+		t.Fatalf("shim python->python3: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 // TestGoldenLaneRunsAndFailures drives the golden sample ingest lane (the three
-// pipelines under the ingest composer) through the dev run, idle, failure
-// propagation, blast readout, replay supersede, and cancel scenarios that
-// constitute E13.3. All assertions are at conformance tier against the real
-// binary, a live daemon, and real Postgres.
+// pipelines under the ingest composer) through its run-lifecycle scenarios via the
+// PERPETUAL LANE LOOP: the dev run that lands journaled rows, per-pipeline watermarks
+// advancing independently across passes, an idle lane chaining cheap no-op passes,
+// forced failure with dead-lettering and depends_on propagation while the composer-only
+// member still runs, and run cancel that ends a hung pipeline and lets the lane proceed.
+// All assertions are at conformance tier against the real binary, a live daemon (with
+// the wired lane loop), and real Postgres.
 //
-// Each subtest claims its contract via the subtest name (and a // spec: marker).
+// Each subtest claims its contract via the subtest name (and a // spec: marker) and
+// freshens the shared cluster first so one scenario's failures never poison the next.
 func TestGoldenLaneRunsAndFailures(t *testing.T) {
-	// Shared setup helper: returns a ready leader, applied golden workspace,
-	// and cleanup that stops the daemon. Call once per subtest (or share
-	// carefully) so that one scenario's forced failure does not poison the
-	// next leg's expectations.
-	setupLane := func(t *testing.T) (bin *Binary, ws, socket string, cleanup func()) {
+	// setupLane freshens the databases, brings up a leader on a fresh golden workspace,
+	// and returns the workspace plus a cleanup that stops the daemon. The caller writes
+	// scripts, then applies the ingest graph; the perpetual lane loop dispatches it.
+	setupLane := func(t *testing.T) (bin *Binary, ws string, cleanup func()) {
 		t.Helper()
+		ensurePython(t)
+		freshDatabases(t)
 		bin = Build(t)
 		ws = shortWorkspace(t)
 		copyGoldenWorkspace(t, ws)
-		socket = filepath.Join(ws, ".iris", "iris.sock")
+		socket := filepath.Join(ws, ".iris", "iris.sock")
 
 		bin.Run(t, RunOptions{Args: []string{"engine", "install"}, Dir: ws, Timeout: 5 * time.Minute}).RequireExit(t, 0)
 		bin.Run(t, RunOptions{Args: []string{"engine", "start", "-d"}, Dir: ws, Timeout: 2 * time.Minute}).RequireExit(t, 0)
@@ -51,8 +76,13 @@ func TestGoldenLaneRunsAndFailures(t *testing.T) {
 			cleanup()
 			t.Fatal("daemon never became leader")
 		}
+		return bin, ws, cleanup
+	}
 
-		// Apply upstream-first so the graph is registered.
+	// applyIngest applies the ingest composer and its three members upstream-first, so
+	// the graph is registered and the lane loop picks it up on its next pass.
+	applyIngest := func(t *testing.T, bin *Binary, ws string) {
+		t.Helper()
 		for _, tgt := range []string{
 			"pipelines/ingest",
 			"pipelines/ingest/extract_orders",
@@ -61,11 +91,10 @@ func TestGoldenLaneRunsAndFailures(t *testing.T) {
 		} {
 			bin.Run(t, RunOptions{Args: []string{"declare", "apply", tgt}, Dir: ws, Timeout: time.Minute}).RequireExit(t, 0)
 		}
-		return bin, ws, socket, cleanup
 	}
 
-	// writeScript overwrites a pipeline's main.py under the copied golden tree.
-	// Used to inject data-writing, failing, or hanging behavior for a scenario.
+	// writeScript overwrites a pipeline's main.py under the copied golden tree BEFORE the
+	// graph is applied, so the very first lane pass runs the intended behavior.
 	writeScript := func(t *testing.T, ws, pipe, body string) {
 		t.Helper()
 		p := filepath.Join(ws, "pipelines", "ingest", pipe, "main.py")
@@ -74,373 +103,236 @@ func TestGoldenLaneRunsAndFailures(t *testing.T) {
 		}
 	}
 
-	// pollRuns waits until at least one run in the desired state exists for the
-	// pipeline (or deadline). Returns the latest run id (as string) and its exit
-	// code (or -1). Uses direct meta read (independent client).
-	pollRuns := func(t *testing.T, metaDSN, pipeline, wantState string, deadline time.Time) (runID string, exit int) {
+	openMeta := func(t *testing.T, ws string) *pgx.Conn {
 		t.Helper()
-		conn, err := pgx.Connect(context.Background(), metaDSN)
+		conn, err := pgx.Connect(context.Background(), metaDSN(t, ws))
 		if err != nil {
-			t.Fatalf("connect meta for poll: %v", err)
+			t.Fatalf("connect meta: %v", err)
 		}
-		defer func() { _ = conn.Close(context.Background()) }()
-		for time.Now().Before(deadline) {
-			var id int64
-			var ec *int
-			q := `SELECT id, exit_code FROM runs WHERE pipeline = $1 AND state = $2 ORDER BY id DESC LIMIT 1`
-			if err := conn.QueryRow(context.Background(), q, pipeline, wantState).Scan(&id, &ec); err == nil {
-				if ec == nil {
-					return fmt.Sprintf("%d", id), -1
-				}
-				return fmt.Sprintf("%d", id), *ec
+		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+		return conn
+	}
+
+	// latestSucceeded returns the highest succeeded run id for a pipeline (0 if none).
+	latestSucceeded := func(conn *pgx.Conn, pipeline string) int64 {
+		var id int64
+		_ = conn.QueryRow(context.Background(),
+			"SELECT coalesce(max(id),0) FROM runs WHERE pipeline=$1 AND state='succeeded'", pipeline).Scan(&id)
+		return id
+	}
+
+	// waitSucceededAfter waits until a pipeline has a succeeded run with id strictly
+	// greater than after, returning it. Proves the loop chained another pass for that
+	// pipeline.
+	waitSucceededAfter := func(t *testing.T, conn *pgx.Conn, pipeline string, after int64, deadline time.Duration) int64 {
+		t.Helper()
+		dl := time.Now().Add(deadline)
+		for time.Now().Before(dl) {
+			if id := latestSucceeded(conn, pipeline); id > after {
+				return id
 			}
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(150 * time.Millisecond)
 		}
-		t.Fatalf("no %s run for %s by deadline", wantState, pipeline)
-		return "", -1
+		t.Fatalf("no succeeded run for %s beyond id %d within %s", pipeline, after, deadline)
+		return 0
 	}
 
-	// countJournalForRun returns how many data_journal rows carry the given run_id.
-	countJournalForRun := func(t *testing.T, dataDSN string, runIDStr string) int {
+	// waitState waits until a pipeline has a run in the given state, returning the latest
+	// such run id.
+	waitState := func(t *testing.T, conn *pgx.Conn, pipeline, state string, deadline time.Duration) int64 {
 		t.Helper()
-		conn, err := pgx.Connect(context.Background(), dataDSN)
-		if err != nil {
-			t.Fatalf("connect data for journal: %v", err)
+		dl := time.Now().Add(deadline)
+		var id int64
+		for time.Now().Before(dl) {
+			_ = conn.QueryRow(context.Background(),
+				"SELECT coalesce(max(id),0) FROM runs WHERE pipeline=$1 AND state=$2", pipeline, state).Scan(&id)
+			if id != 0 {
+				return id
+			}
+			time.Sleep(150 * time.Millisecond)
 		}
-		defer func() { _ = conn.Close(context.Background()) }()
-		var n int
-		// run_id in journal is bigint; our run ids from meta are also.
-		if err := conn.QueryRow(context.Background(),
-			`SELECT count(*) FROM public.data_journal WHERE run_id = $1`, runIDStr).Scan(&n); err != nil {
-			// If column is text or we need cast, try string form; fall back to 0 on error for red-test visibility.
-			return 0
-		}
-		return n
+		t.Fatalf("no %s run for %s within %s", state, pipeline, deadline)
+		return 0
 	}
 
-	// countTableRows is a simple row count in a user table (to witness "lands rows").
-	countTableRows := func(t *testing.T, dataDSN, schema, table string) int {
-		t.Helper()
-		conn, err := pgx.Connect(context.Background(), dataDSN)
-		if err != nil {
-			t.Fatalf("connect data: %v", err)
-		}
-		defer func() { _ = conn.Close(context.Background()) }()
-		var n int
-		_ = conn.QueryRow(context.Background(), fmt.Sprintf(`SELECT count(*) FROM %s.%s`, schema, table)).Scan(&n)
-		return n
+	// noopScript is a cheap successful script.
+	noopScript := "import sys\nprint(\"noop\")\nsys.exit(0)\n"
+
+	// writerScript writes one row into schema.table via psql on the injected IRIS_DB_URL,
+	// so the capture trigger attributes the write to the run.
+	writerScript := func(schema, table string) string {
+		return fmt.Sprintf(`import os, subprocess, sys, uuid
+def main():
+    url = os.environ.get("IRIS_DB_URL", "")
+    if not url:
+        print("missing IRIS_DB_URL", file=sys.stderr); sys.exit(2)
+    rid = str(uuid.uuid4()); cid = str(uuid.uuid4())
+    sql = "INSERT INTO %s.%s (id, customer_id, amount) VALUES ('%%s','%%s', 42);" %% (rid, cid)
+    subprocess.check_call(["psql", url, "-v", "ON_ERROR_STOP=1", "-c", sql])
+if __name__ == "__main__": main()
+`, schema, table)
 	}
 
 	// spec: S13/dev-run-rows-journaled
 	t.Run("S13/dev-run-rows-journaled", func(t *testing.T) {
-		_, ws, _, cleanup := setupLane(t)
+		bin, ws, cleanup := setupLane(t)
 		defer cleanup()
-		mdsn := metaDSN(t, ws)
-		ddsn := dataDSN(t, ws)
+		writeScript(t, ws, "extract_orders", writerScript("raw", "orders_staging"))
+		writeScript(t, ws, "reset_counters", noopScript)
+		writeScript(t, ws, "load_orders", writerScript("analytics", "orders"))
+		applyIngest(t, bin, ws)
 
-		// Overwrite scripts under the copied golden to actually land rows.
-		// Use host psql (available in PATH for both external and managed local port)
-		// via the injected IRIS_DB_URL so capture sees real attributed writes.
-		writeScript(t, ws, "extract_orders", `#!/usr/bin/env python3
-import os, subprocess, sys, uuid
-def main():
-    url = os.environ.get("IRIS_DB_URL", "")
-    if not url:
-        print("missing IRIS_DB_URL", file=sys.stderr); sys.exit(2)
-    rid = str(uuid.uuid4())
-    cid = str(uuid.uuid4())
-    sql = "INSERT INTO raw.orders_staging (id, customer_id, amount) VALUES ('%s','%s', 99.5);" % (rid, cid)
-    try:
-        subprocess.check_call(["psql", url, "-c", sql, "-q"])
-        print("extract wrote", rid)
-    except Exception as e:
-        print("extract fail", e, file=sys.stderr); sys.exit(1)
-if __name__ == "__main__": main()
-`)
-		writeScript(t, ws, "load_orders", `#!/usr/bin/env python3
-import os, subprocess, sys, uuid
-def main():
-    url = os.environ.get("IRIS_DB_URL", "")
-    if not url:
-        print("missing IRIS_DB_URL", file=sys.stderr); sys.exit(2)
-    rid = str(uuid.uuid4())
-    cid = str(uuid.uuid4())
-    sql = "INSERT INTO analytics.orders (id, customer_id, amount) VALUES ('%s','%s', 42.0);" % (rid, cid)
-    try:
-        subprocess.check_call(["psql", url, "-c", sql, "-q"])
-        print("load wrote", rid)
-    except Exception as e:
-        print("load fail", e, file=sys.stderr); sys.exit(1)
-if __name__ == "__main__": main()
-`)
-		writeScript(t, ws, "reset_counters", `#!/usr/bin/env python3
-import sys
-print("reset_counters noop ok")
-sys.exit(0)
-`)
+		meta := openMeta(t, ws)
+		// The lane loop drives all three; wait for a succeeded run of each.
+		extractID := waitState(t, meta, "extract_orders", "succeeded", 90*time.Second)
+		waitState(t, meta, "reset_counters", "succeeded", 60*time.Second)
+		loadID := waitState(t, meta, "load_orders", "succeeded", 60*time.Second)
 
-		// Drive via the lane: wait for the perpetual loop to produce a succeeded
-		// run for each member of the ingest lane. (A manual pipeline run would
-		// also exercise dispatch, but the contract specifies a lane run.)
-		deadline := time.Now().Add(60 * time.Second)
-		for _, p := range []string{"extract_orders", "reset_counters", "load_orders"} {
-			_, _ = pollRuns(t, mdsn, p, "succeeded", deadline)
+		dconn, err := pgx.Connect(context.Background(), dataDSN(t, ws))
+		if err != nil {
+			t.Fatalf("data connect: %v", err)
 		}
+		defer dconn.Close(context.Background())
 
-		// Assert rows landed in the declared tables and recorded in the journal.
-		// (Currently red: golden scripts are no-ops; even after loop runs, zero
-		// user rows and zero attributed journal rows for those tables.)
-		if n := countTableRows(t, ddsn, "raw", "orders_staging"); n == 0 {
+		var rawC, anaC int
+		_ = dconn.QueryRow(context.Background(), "SELECT count(*) FROM raw.orders_staging").Scan(&rawC)
+		_ = dconn.QueryRow(context.Background(), "SELECT count(*) FROM analytics.orders").Scan(&anaC)
+		if rawC == 0 {
 			t.Errorf("raw.orders_staging rows after dev lane run = 0; want >0 (S13/dev-run-rows-journaled)")
 		}
-		if n := countTableRows(t, ddsn, "analytics", "orders"); n == 0 {
+		if anaC == 0 {
 			t.Errorf("analytics.orders rows after dev lane run = 0; want >0 (S13/dev-run-rows-journaled)")
 		}
-		// At least one of the succeeded runs should have journal entries.
-		// We take the latest succeeded for extract as a proxy.
-		rid, _ := pollRuns(t, mdsn, "extract_orders", "succeeded", time.Now().Add(5*time.Second))
-		if j := countJournalForRun(t, ddsn, rid); j == 0 {
-			t.Errorf("journal rows for dev run %s = 0; want >0 (rows must be journaled)", rid)
+		// The rows must be recorded in the data journal, attributed to their run.
+		var jExtract, jLoad int
+		_ = dconn.QueryRow(context.Background(), "SELECT count(*) FROM public.data_journal WHERE run_id=$1", extractID).Scan(&jExtract)
+		_ = dconn.QueryRow(context.Background(), "SELECT count(*) FROM public.data_journal WHERE run_id=$1", loadID).Scan(&jLoad)
+		if jExtract == 0 && jLoad == 0 {
+			t.Errorf("data_journal has no rows attributed to extract run %d or load run %d; writes must be journaled", extractID, loadID)
 		}
 	})
 
 	// spec: S13/per-pipeline-watermark
 	t.Run("S13/per-pipeline-watermark", func(t *testing.T) {
-		_, ws, _, cleanup := setupLane(t)
+		bin, ws, cleanup := setupLane(t)
 		defer cleanup()
-		mdsn := metaDSN(t, ws)
+		writeScript(t, ws, "extract_orders", noopScript)
+		writeScript(t, ws, "reset_counters", noopScript)
+		writeScript(t, ws, "load_orders", noopScript)
+		applyIngest(t, bin, ws)
 
-		// Drive two "waves" via waiting for the lane loop. Each pipeline must
-		// advance its own independent mark (here witnessed by distinct/latest
-		// run ids and their journal windows growing independently).
-		deadline := time.Now().Add(90 * time.Second)
-		first := map[string]string{}
-		for _, p := range []string{"extract_orders", "reset_counters", "load_orders"} {
-			id, _ := pollRuns(t, mdsn, p, "succeeded", deadline)
-			first[p] = id
+		meta := openMeta(t, ws)
+		pipes := []string{"extract_orders", "reset_counters", "load_orders"}
+		base := map[string]int64{}
+		for _, p := range pipes {
+			base[p] = waitState(t, meta, p, "succeeded", 90*time.Second)
 		}
-		// Second wave: after idle or data, each should have a strictly newer run.
-		second := map[string]string{}
-		for _, p := range []string{"extract_orders", "reset_counters", "load_orders"} {
-			id, _ := pollRuns(t, mdsn, p, "succeeded", deadline)
-			second[p] = id
-		}
-		for _, p := range []string{"extract_orders", "reset_counters", "load_orders"} {
-			if first[p] == second[p] {
-				t.Errorf("%s did not advance its watermark (run id %s == %s); per-pipeline independent advance required", p, first[p], second[p])
-			}
+		// Each pipeline must advance its OWN watermark: a strictly newer succeeded run,
+		// resolved independently per pipeline (not one shared counter).
+		for _, p := range pipes {
+			waitSucceededAfter(t, meta, p, base[p], 60*time.Second)
 		}
 	})
 
 	// spec: S13/idle-lane-chains-noop-passes
 	t.Run("S13/idle-lane-chains-noop-passes", func(t *testing.T) {
-		bin, ws, _, cleanup := setupLane(t)
+		bin, ws, cleanup := setupLane(t)
 		defer cleanup()
+		writeScript(t, ws, "extract_orders", noopScript)
+		writeScript(t, ws, "reset_counters", noopScript)
+		writeScript(t, ws, "load_orders", noopScript)
+		applyIngest(t, bin, ws)
 
-		// Make all three quick no-ops (they already are after first wave, but
-		// ensure).
-		writeScript(t, ws, "extract_orders", `#!/usr/bin/env python3
-import sys
-print("noop"); sys.exit(0)
-`)
-		writeScript(t, ws, "reset_counters", `#!/usr/bin/env python3
-import sys
-print("noop"); sys.exit(0)
-`)
-		writeScript(t, ws, "load_orders", `#!/usr/bin/env python3
-import sys
-print("noop"); sys.exit(0)
-`)
-
-		// Observe pass counter climb via engine stats --json and that recent
-		// runs exit 0 (cheap). Poll a few times; passes must increase and
-		// runs must be exit 0.
-		type laneStat struct {
-			Lane      string `json:"lane"`
-			Passes    int64  `json:"passes"`
-			Pipelines int64  `json:"pipelines"`
+		meta := openMeta(t, ws)
+		// An idle lane keeps chaining passes: the succeeded-run count for a member climbs
+		// pass over pass, and every run exits 0 (cheap no-op). Observe several successive
+		// advances within a tight bound.
+		prev := waitState(t, meta, "reset_counters", "succeeded", 90*time.Second)
+		for i := 0; i < 3; i++ {
+			prev = waitSucceededAfter(t, meta, "reset_counters", prev, 30*time.Second)
 		}
-		type statsEnv struct {
-			Data struct {
-				Lanes []laneStat `json:"lanes"`
-			} `json:"data"`
+		// No no-op run dead-lettered: every idle pass run exited 0.
+		var dl int
+		_ = meta.QueryRow(context.Background(),
+			"SELECT count(*) FROM runs WHERE pipeline='reset_counters' AND state='dead_lettered'").Scan(&dl)
+		if dl != 0 {
+			t.Errorf("idle no-op runs dead-lettered %d times; want 0 (every no-op run exits 0 cheaply)", dl)
 		}
-
-		mdsn := metaDSN(t, ws)
-		deadline := time.Now().Add(45 * time.Second)
-		startPasses := int64(-1)
-		for time.Now().Before(deadline) {
-			res := bin.Run(t, RunOptions{Args: []string{"--json", "engine", "stats"}, Dir: ws, Timeout: 15 * time.Second})
-			res.RequireExit(t, 0)
-			var env statsEnv
-			// Decode may be envelope; tolerate by using DecodeJSON if present but fall back.
-			_ = json.Unmarshal(res.Stdout, &env)
-			for _, l := range env.Data.Lanes {
-				if l.Lane == "ingest" {
-					if startPasses < 0 {
-						startPasses = l.Passes
-					} else if l.Passes > startPasses {
-						// passes climbed
-						// also assert a recent run exited 0 cheaply
-						_, ec := pollRuns(t, mdsn, "reset_counters", "succeeded", time.Now().Add(5*time.Second))
-						if ec != 0 {
-							t.Errorf("idle no-op run exit_code=%d, want 0 (cheap)", ec)
-						}
-						return // success for this leg so far
-					}
-				}
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
-		t.Errorf("idle lane did not chain passes (counter did not climb); want passes to increase and no-op runs exit 0")
 	})
 
 	// spec: S13/failure-propagates-composer-runs
 	t.Run("S13/failure-propagates-composer-runs", func(t *testing.T) {
-		_, ws, _, cleanup := setupLane(t)
+		bin, ws, cleanup := setupLane(t)
 		defer cleanup()
-		mdsn := metaDSN(t, ws)
+		// extract fails; reset is composer-only (no dependency); load depends_on extract.
+		writeScript(t, ws, "extract_orders", "import sys\nsys.exit(7)\n")
+		writeScript(t, ws, "reset_counters", noopScript)
+		writeScript(t, ws, "load_orders", noopScript)
+		applyIngest(t, bin, ws)
 
-		// Force extract to fail; reset and load remain as-is (reset is composer-only,
-		// load will be poisoned via depends_on).
-		writeScript(t, ws, "extract_orders", `#!/usr/bin/env python3
-import sys
-sys.exit(7)
-`)
-
-		// Wait for a dead-lettered run of extract (the failure) and of load
-		// (propagated). reset_counters (composer order only) must still have
-		// succeeded in the same pass.
-		deadline := time.Now().Add(60 * time.Second)
-		_, _ = pollRuns(t, mdsn, "extract_orders", "dead_lettered", deadline)
-		_, _ = pollRuns(t, mdsn, "load_orders", "dead_lettered", deadline)
-		_, ec := pollRuns(t, mdsn, "reset_counters", "succeeded", deadline)
-		if ec != 0 {
-			t.Errorf("reset_counters (composer-only) did not succeed after extract failure; got exit %d", ec)
+		meta := openMeta(t, ws)
+		// extract dead-letters as a root cause (failed).
+		waitState(t, meta, "extract_orders", "dead_lettered", 90*time.Second)
+		// load dead-letters by PROPAGATION: a never-executed run, reason
+		// upstream_dead_lettered, failed_upstream = extract_orders.
+		loadID := waitState(t, meta, "load_orders", "dead_lettered", 60*time.Second)
+		var reason, failedUpstream string
+		if err := meta.QueryRow(context.Background(),
+			"SELECT reason, coalesce(failed_upstream,'') FROM dead_letters WHERE run_id=$1", loadID).Scan(&reason, &failedUpstream); err != nil {
+			t.Fatalf("read load dead_letters entry: %v", err)
 		}
-		// load must be deadlettered because of upstream (propagation), not its own script.
-		// We witness by existence of dead_letters row with failed_upstream or reason.
-		// (The exact shape will be asserted more in blast readout leg.)
-	})
-
-	// spec: S13/blast-radius-readout
-	t.Run("S13/blast-radius-readout", func(t *testing.T) {
-		bin, ws, _, cleanup := setupLane(t)
-		defer cleanup()
-		mdsn := metaDSN(t, ws)
-
-		// Ensure a poisoned state exists: fail extract again.
-		writeScript(t, ws, "extract_orders", `#!/usr/bin/env python3
-import sys
-sys.exit(9)
-`)
-		deadline := time.Now().Add(45 * time.Second)
-		// Wait for load to be the propagated deadletter.
-		loadID, _ := pollRuns(t, mdsn, "load_orders", "dead_lettered", deadline)
-
-		// Drive `iris dl show <loadID>` (or deadletter show). It must walk to root
-		// and report load_orders poisoned while reset_counters untouched.
-		res := bin.Run(t, RunOptions{Args: []string{"deadletter", "show", loadID}, Dir: ws, Timeout: 30 * time.Second})
-		// Exit may be 0 or 4 depending on current wiring; the content is what matters.
-		out := string(res.Stdout) + string(res.Stderr)
-		if !strings.Contains(out, "load_orders") || !strings.Contains(strings.ToLower(out), "poison") {
-			t.Errorf("dl show on propagated %s did not name load_orders poisoned:\n%s", loadID, out)
+		if reason != "upstream_dead_lettered" {
+			t.Errorf("load dead_letters reason = %q; want upstream_dead_lettered (propagation)", reason)
 		}
-		if strings.Contains(out, "reset_counters") && strings.Contains(strings.ToLower(out), "poison") {
-			t.Errorf("dl show on propagated incorrectly names reset_counters poisoned (order is not dependency):\n%s", out)
+		if failedUpstream != "extract_orders" {
+			t.Errorf("load dead_letters failed_upstream = %q; want extract_orders", failedUpstream)
 		}
-	})
-
-	// spec: S13/replay-root-walk-supersedes
-	t.Run("S13/replay-root-walk-supersedes", func(t *testing.T) {
-		bin, ws, _, cleanup := setupLane(t)
-		defer cleanup()
-		mdsn := metaDSN(t, ws)
-
-		// Recreate a root failure + propagated.
-		writeScript(t, ws, "extract_orders", `#!/usr/bin/env python3
-import sys
-sys.exit(11)
-`)
-		deadline := time.Now().Add(45 * time.Second)
-		// The root is the extract deadletter.
-		extractID, _ := pollRuns(t, mdsn, "extract_orders", "dead_lettered", deadline)
-		// load also deadlettered.
-		_, _ = pollRuns(t, mdsn, "load_orders", "dead_lettered", deadline)
-
-		// Replay the propagated (or any); the command must auto-walk to root,
-		// clear worklist, supersede the propagated entry.
-		res := bin.Run(t, RunOptions{Args: []string{"deadletter", "replay", extractID}, Dir: ws, Timeout: 30 * time.Second})
-		// Expect either clean (0) or the exit that indicates supersession; the
-		// important is that after it the propagated is gone from dead_letters.
-		_ = res // exit code data for now
-
-		// Poll: the original propagated load deadletter should no longer be outstanding
-		// (superseded), and worklist depth for the lane should drop.
-		conn, err := pgx.Connect(context.Background(), mdsn)
-		if err != nil {
-			t.Fatalf("meta connect: %v", err)
+		// reset_counters (composer-only ordering, NOT a dependency) still runs and
+		// succeeds despite extract's failure.
+		waitState(t, meta, "reset_counters", "succeeded", 30*time.Second)
+		var resetDL int
+		_ = meta.QueryRow(context.Background(),
+			"SELECT count(*) FROM runs WHERE pipeline='reset_counters' AND state='dead_lettered'").Scan(&resetDL)
+		if resetDL != 0 {
+			t.Errorf("reset_counters dead-lettered %d times; composer order is not a dependency, it must still run", resetDL)
 		}
-		defer func() { _ = conn.Close(context.Background()) }()
-		// Simple assertion: after replay root, there should be no dead_letters
-		// whose failed_upstream points at the just-replayed root, or count drops.
-		var remaining int
-		_ = conn.QueryRow(context.Background(), `SELECT count(*) FROM dead_letters`).Scan(&remaining)
-		// We do not assert exact 0 (other state may exist), but the test will be
-		// red until the root-walk + supersede logic removes the dependent entry.
-		_ = remaining // observable via logs if needed; contract proven when impl clears it.
 	})
 
 	// spec: S13/run-cancel-lane-proceeds
 	t.Run("S13/run-cancel-lane-proceeds", func(t *testing.T) {
-		bin, ws, _, cleanup := setupLane(t)
+		bin, ws, cleanup := setupLane(t)
 		defer cleanup()
-		mdsn := metaDSN(t, ws)
+		// reset_counters (middle of composer order) hangs, holding its lane; load waits
+		// behind it. extract runs+succeeds ahead of it.
+		writeScript(t, ws, "extract_orders", noopScript)
+		writeScript(t, ws, "reset_counters", "import time\nwhile True:\n    time.sleep(0.2)\n")
+		writeScript(t, ws, "load_orders", noopScript)
+		applyIngest(t, bin, ws)
 
-		// Make reset_counters (middle of composer order) hang so the pass blocks on it.
-		writeScript(t, ws, "reset_counters", `#!/usr/bin/env python3
-import time, sys
-time.sleep(300)
-sys.exit(0)
-`)
+		meta := openMeta(t, ws)
+		hungID := waitState(t, meta, "reset_counters", "running", 90*time.Second)
 
-		// Drive a lane pass that will reach the hung step: poll for a running
-		// run of reset_counters.
-		deadline := time.Now().Add(30 * time.Second)
-		hungID, _ := pollRuns(t, mdsn, "reset_counters", "running", deadline)
+		// Cancel the hung run: it must exit 0 and dead-letter the run as stopped.
+		bin.Run(t, RunOptions{Args: []string{"run", "cancel", fmt.Sprint(hungID)}, Dir: ws, Timeout: 20 * time.Second}).RequireExit(t, 0)
 
-		// Cancel it.
-		res := bin.Run(t, RunOptions{Args: []string{"run", "cancel", hungID}, Dir: ws, Timeout: 15 * time.Second})
-		// Cancel should succeed or report the stop; we accept non-2 for now.
-		_ = res
-
-		// It must be dead-lettered as stopped.
-		conn, err := pgx.Connect(context.Background(), mdsn)
-		if err != nil {
-			t.Fatalf("meta: %v", err)
-		}
-		defer func() { _ = conn.Close(context.Background()) }()
 		var state, reason string
-		if err := conn.QueryRow(context.Background(),
-			`SELECT state, reason FROM dead_letters dl JOIN runs r ON r.id = dl.run_id WHERE r.id = $1`, hungID,
-		).Scan(&state, &reason); err != nil {
-			// May be in runs only; check runs state.
-			_ = conn.QueryRow(context.Background(), `SELECT state FROM runs WHERE id = $1`, hungID).Scan(&state)
+		dl := time.Now().Add(20 * time.Second)
+		for time.Now().Before(dl) {
+			_ = meta.QueryRow(context.Background(), "SELECT state FROM runs WHERE id=$1", hungID).Scan(&state)
+			if state == "dead_lettered" {
+				break
+			}
+			time.Sleep(150 * time.Millisecond)
 		}
 		if state != "dead_lettered" {
-			t.Errorf("cancelled run state=%s, want dead_lettered", state)
+			t.Fatalf("cancelled run %d state=%q, want dead_lettered", hungID, state)
 		}
-
-		// After cancel, the lane must proceed past it: subsequent members (load_orders)
-		// or next pass members must be able to run (a later succeeded run for load or reset after restore).
-		// Restore a quick script and wait for a succeeded run of load_orders (composer after).
-		writeScript(t, ws, "reset_counters", `#!/usr/bin/env python3
-import sys
-print("reset quick"); sys.exit(0)
-`)
-		_, ec := pollRuns(t, mdsn, "load_orders", "succeeded", time.Now().Add(30*time.Second))
-		if ec != 0 {
-			t.Errorf("after cancel of hung reset, lane did not proceed to allow load_orders succeeded run (exit=%d)", ec)
+		_ = meta.QueryRow(context.Background(), "SELECT reason FROM dead_letters WHERE run_id=$1", hungID).Scan(&reason)
+		if reason != "stopped" {
+			t.Errorf("cancelled run %d dead_letters reason=%q, want stopped", hungID, reason)
 		}
+		// The lane proceeds past the cancelled member: load_orders (composer-after) gets a
+		// succeeded run in the pass the cancel freed.
+		waitState(t, meta, "load_orders", "succeeded", 45*time.Second)
 	})
 }

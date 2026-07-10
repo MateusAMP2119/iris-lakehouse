@@ -116,10 +116,18 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	}
 	defer data.Close()
 
-	// The leader's workspace tree (already verified for prerequisite above): declarations
+	// The lane and manual runs' scoped data connection targets the engine-owned data
+	// database (where the declared tables and capture trigger live), retargeted from the
+	// admin/maintenance DSN and injected into each run as IRIS_DB_URL.
+	laneDataDSN, err := pg.DataDSN(adminDSN.Source().ConnString())
+	if err != nil {
+		return fmt.Errorf("daemon: derive lane run data DSN: %w", err)
+	}
+
+	// The leader's workspace tree (already verified as a prerequisite above): declarations
 	// and the schemas/ tree resolve against it. The daemon runs in the workspace (its
 	// socket lives under <workspace>/.iris), so its working directory is that tree.
-	// (No re-resolve or re-check: early check already refused lacking trees.)
+	// (No re-resolve or re-check: the early check already refused lacking trees.)
 
 	// The role state the mux consults and the control plane the mux routes apply/destroy
 	// to: standby/unwired until election confirms leadership and installs the
@@ -190,10 +198,11 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// winning leadership: the walk read, the depends_on gate, the fresh cause=loop
 	// run-start (run-scoped for capture attribution, tracked in the SHARED in-flight
 	// registry so run cancel and the self-demotion kill reach it), and the failure-
-	// propagation post-pass. The run's data connection targets the data database.
+	// propagation post-pass. The run's data connection targets the engine-owned data
+	// database, retargeted from the admin DSN.
 	laneBuild := func(submit dispatch.Submitter) *dispatch.Loop {
 		return newLaneLoop(submit, inflight, workspace, client.RegistryReader(), client.ManualReader(),
-			exec.NewOSRunner(), data, objects, adminDSN.Source().ConnString(), passCounter, logger)
+			exec.NewOSRunner(), data, objects, laneDataDSN, passCounter, logger)
 	}
 
 	cand := NewCandidate(client.Lock(), role, client.WriteConn(), logger,
