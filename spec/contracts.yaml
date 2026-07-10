@@ -603,7 +603,15 @@ contracts:
     anchor: "docs/Iris Specification Inventory.md#4-engine-state-schema-meta-and-the-data-journal"
     tier: integration
     status: unclaimed
+  - id: S04/pipeline-role-reaches-capture
+    anchor: "docs/Iris Specification Inventory.md#4-engine-state-schema-meta-and-the-data-journal"
+    tier: unit
+    status: unclaimed
   - id: S04/run-inputs-table-shape
+    anchor: "docs/Iris Specification Inventory.md#4-engine-state-schema-meta-and-the-data-journal"
+    tier: integration
+    status: unclaimed
+  - id: S04/run-inputs-upstream-not-fk
     anchor: "docs/Iris Specification Inventory.md#4-engine-state-schema-meta-and-the-data-journal"
     tier: integration
     status: unclaimed
@@ -890,6 +898,10 @@ contracts:
   - id: S06.2/prune-cascades-inputs-and-log
     anchor: "docs/Iris Specification Inventory.md#62-the-depends_on-gate"
     tier: integration
+    status: unclaimed
+  - id: S06.2/prune-upstream-survivor-no-violation
+    anchor: "docs/Iris Specification Inventory.md#62-the-depends_on-gate"
+    tier: conformance
     status: unclaimed
   - id: S06.2/prune-never-touches-journal
     anchor: "docs/Iris Specification Inventory.md#62-the-depends_on-gate"

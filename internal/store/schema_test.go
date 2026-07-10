@@ -44,7 +44,6 @@ var specFKEdges = []string{
 	"artifacts.pipeline->pipelines.name",
 	"runs.artifact_hash->artifacts.hash",
 	"run_inputs.run_id->runs.id",
-	"run_inputs.upstream_run_id->runs.id",
 	"dead_letters.run_id->runs.id",
 	"dead_letters.failed_upstream->pipelines.name",
 	"runs.replayed_from->runs.id",
@@ -69,7 +68,8 @@ func edgeSet(s store.Schema) map[string]bool {
 }
 
 // TestMetaFKGraphMatchesSpec proves the bootstrap DDL's foreign-key edges exactly
-// match the specified graph: the sixteen erDiagram edges and no others, with
+// match the specified graph: the fifteen erDiagram edges and no others (run_inputs.
+// upstream_run_id is FK-free, resolving to a run or its archival summary), with
 // pipelines as a zero-out-degree root, runs as the history root, and lanes,
 // migrations, run_summaries, and journal_checkpoints carrying no FKs to the rest.
 //
