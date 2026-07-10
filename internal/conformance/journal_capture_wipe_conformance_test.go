@@ -4,6 +4,7 @@ package conformance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/MateusAMP2119/iris-engine-cli/internal/pg"
 	"github.com/MateusAMP2119/iris-engine-cli/internal/store"
@@ -530,17 +532,17 @@ func mustExec(t *testing.T, conn *pgx.Conn, sql string, args ...any) {
 // freshDatabases gives the subtest a clean slate. In external mode (IRIS_PG_DSN)
 // every conformance test shares one Postgres cluster with fixed-name meta and
 // data databases, so leftover state from a prior test would poison this test's
-// global counts (rows landed, journal entries). It drops both databases with
-// FORCE; the daemon recreates them on the next engine start (external install is
-// a no-op and the meta/data databases are ensured lazily on connect). In managed
-// mode each workspace has its own embedded cluster, so there is nothing to reset.
+// global counts (rows landed, journal entries). It drops both databases; the
+// daemon recreates them on the next engine start (external install is a no-op and
+// the meta/data databases are ensured lazily on connect). In managed mode each
+// workspace has its own embedded cluster, so there is nothing to reset.
 func freshDatabases(t *testing.T) {
 	t.Helper()
 	ext := os.Getenv("IRIS_PG_DSN")
 	if ext == "" {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	conn, err := pgx.Connect(ctx, ext)
 	if err != nil {
@@ -548,8 +550,42 @@ func freshDatabases(t *testing.T) {
 	}
 	defer func() { _ = conn.Close(ctx) }()
 	for _, db := range []string{store.MetaDatabase, pg.DataDatabase} {
-		if _, err := conn.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", db)); err != nil {
+		dropSharedDatabase(ctx, t, conn, db)
+	}
+}
+
+// dropSharedDatabase drops one shared database, evicting whatever a just-stopped prior
+// daemon still holds and tolerating the one session kind the admin may not terminate.
+// FORCE terminates every session the admin owns -- a leftover daemon's own meta/data
+// connections and its leader-lock connection (all opened as the non-superuser IRIS_PG_DSN
+// admin) -- so a slow-to-exit prior daemon never wedges the reset (a plain DROP, unable
+// to evict it, would hang until ctx). The one session FORCE cannot terminate is the
+// engine read-pool login's on the data database: the admin holds only INHERIT FALSE
+// membership over that engine-created role (post read-pool-provision hardening), so
+// terminating it raises 42501 "permission denied to terminate process". That session
+// belongs to the prior daemon and drains within moments of the process exiting, so retry
+// until it is gone; 55006 (a plain in-use race) clears the same way. Any other error is a
+// real fault, and ctx bounds the wait so a connection that never drains surfaces the last
+// error rather than hanging.
+func dropSharedDatabase(ctx context.Context, t *testing.T, conn *pgx.Conn, db string) {
+	t.Helper()
+	stmt := fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", db)
+	for {
+		_, err := conn.Exec(ctx, stmt)
+		if err == nil {
+			return
+		}
+		// 42501 (a session owned by a role the admin may not terminate) and 55006
+		// (object_in_use) both clear once the prior daemon's sessions drain; wait and
+		// retry. Any other error is a real fault.
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || (pgErr.Code != "42501" && pgErr.Code != "55006") {
 			t.Fatalf("drop shared %s database for a clean slate: %v", db, err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("drop shared %s database for a clean slate: connections never drained: %v", db, err)
+		case <-time.After(200 * time.Millisecond):
 		}
 	}
 }
