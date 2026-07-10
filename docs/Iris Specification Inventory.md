@@ -143,7 +143,7 @@ schemas/
 
 **Q - Where do engine tables live?** A: Both Postgres, one cluster: control state in `meta`; capture state at `public.data_journal` in the data database (triggers write in the data's transaction). Journal `run_id` → `runs`: logical, never FK-enforced.
 
-**Q - Which tables exist?** A: Twenty: nineteen in `meta` (including `engine_key`, the engine's ed25519 signing key, and `read_pool_credential`, the shared read-pool login secret), one (`data_journal`) in the data `public` schema. Ordering: monotonic bigint identity, never a clock; `recorded_at`: opaque audit string, log correlation only.
+**Q - Which tables exist?** A: Twenty-one: twenty in `meta` (including `engine_key`, the engine's ed25519 signing key; `read_pool_credential`, the shared read-pool login secret; and `leadership`, the leader's advertised address), one (`data_journal`) in the data `public` schema. Ordering: monotonic bigint identity, never a clock; `recorded_at`: opaque audit string, log correlation only.
 
 **Roster (meta):**
 - `pipelines`
@@ -157,6 +157,7 @@ schemas/
 - `journal_checkpoints`
 - `engine_key`
 - `read_pool_credential`
+- `leadership`
 - `pats`
 - `pat_scopes`
 - `endpoints`
@@ -196,6 +197,8 @@ log_ref=.iris/logs/run-42.log  snapshot_lsn=0/16A3D2F0  journal_floor=81  journa
 
 **Q - `read_pool_credential`?** A: The engine's shared read-pool login secret. Single row, `id` pinned to 1: `secret` (the base64url password of the shared `iris_engine_read` login the read pool connects as on every node) and `created_at`. Minted once at first daemon start (INSERT ... ON CONFLICT DO NOTHING, so two daemons on one data cluster converge on ONE secret) and read back by every node's read-pool open; a restart or HA standby reuses the stored secret and sets the shared login's password to it (an idempotent password-only ALTER by the role's creator, superuser-free on PG16+), rather than minting a fresh secret and resetting the login (last-starter-wins, which killed an earlier node's pool). In `meta`, engine-admin-only like `engine_key`: no role grant touches it and every pipeline/data-PAT/read-pool role is denied CONNECT on `meta`, so the secret is unreachable to any caller. A `meta` table for the same HA reason as `engine_key`: the shared `meta` database standbys already read gives one stable read-pool credential across restart and failover, superuser-free.
 
+**Q - `leadership`?** A: The leader's advertised address: the string a standby names for retargeting (exit 6, `GET /leader`) and an operator passes to `--host`. Single row, `id` pinned to 1: `advertised_addr` (the leader's TCP listen address, empty when socket-only), `recorded_at`. The leader upserts it through the single writer on winning the advisory lock and re-advertises each term, so a failover leader supersedes the prior address; a deposed leader writes nothing (its dead session cannot), so the row converges on the live leader. Standbys read it (shared `meta`, the HA model) to name the leader; an empty or absent address renders as "unknown", honest since there is then no cross-host retarget target. In `meta`, engine-owned: no role grant touches it, and it is a hint for retargeting, never a second control channel.
+
 **Q - `pats` / `pat_scopes`?** A: Unified PAT store gating remote control and the read API. `pats`: `id` PK (token prefix), `hash` (argon2id), `label`, `revoked`. `pat_scopes` (scope set, 1NF): `pat_id` FK, `scope` in (control, read, data), PK (both); effective authority = union of rows. A `data` PAT also owns an engine-managed read-only Postgres role (access ledger).
 
 **Q - `endpoints` / `endpoint_filters`?** A: Persisted read endpoints. `endpoints`: `name` PK, `source` (dotted `schema.table`), `fields` (JSON projection), `sort` (keyset key, a unique column). `endpoint_filters`: `endpoint` FK, `param`, `op` in (eq, range), PK (`endpoint`, `param`). Endpoints own no roles or credentials; execution authority: always the calling PAT's role.
@@ -213,7 +216,7 @@ id=91  pg_role=iris_load_orders  run_id=57  schema=analytics  table=orders  row_
 op=update  undo=promoted  pre_image=NULL                           # the common case: a slim stamp
 ```
 
-**Q - Relations?** A: Two roots: `pipelines` (registry), `runs` (history). `migrations`, `run_summaries`, `journal_checkpoints`, `engine_key`, `read_pool_credential` stand alone. `data_journal` hangs off `runs` logically only (cross-database, no FK). `lanes` references `pipelines` by name, not FK (hence absent). `run_inputs.upstream_run_id` references `runs` logically only, no FK (hence absent from the diagram): retention prunes an upstream run while a cross-pipeline downstream's ledger row survives, so it resolves to a run or its archival summary, exactly like `data_journal.run_id`; `run_inputs.run_id` (the downstream's own run) stays a FK, cascaded before the run in the prune. FKs:
+**Q - Relations?** A: Two roots: `pipelines` (registry), `runs` (history). `migrations`, `run_summaries`, `journal_checkpoints`, `engine_key`, `read_pool_credential`, `leadership` stand alone. `data_journal` hangs off `runs` logically only (cross-database, no FK). `lanes` references `pipelines` by name, not FK (hence absent). `run_inputs.upstream_run_id` references `runs` logically only, no FK (hence absent from the diagram): retention prunes an upstream run while a cross-pipeline downstream's ledger row survives, so it resolves to a run or its archival summary, exactly like `data_journal.run_id`; `run_inputs.run_id` (the downstream's own run) stays a FK, cascaded before the run in the prune. FKs:
 
 ```mermaid
 erDiagram
@@ -638,6 +641,8 @@ $ ==iris data provenance== analytics.orders 9f3c..
 **Q - How is the daemon highly available?** A: Candidates run on any host reaching `meta` and carrying the workspace tree the leader dispatches from (pipeline folders, dev source, `env_file`s); without it a candidate refuses to start. Object store likewise: a failover leader dispatches built runs from its own `objects_path`; shared storage is the HA answer for artifact bytes and archived partitions. Leadership: a Postgres session advisory lock. Leader holds it, standbys block acquiring it, connection death releases it; next standby acquires, becomes leader, runs the same startup reconciliation as a restart. Connection death is not process death; demotion is explicit: a daemon losing its `meta` session self-demotes at once (stops dispatching, kills in-flight runs), re-enters standby on a fresh session. `meta` writes never ride a session that has not re-acquired the lock: no second writer, no overlapping run across a failover. Failover cost (accepted): stopped runs dead-letter and poison dependents' next consumption; unsticking a chain is an explicit `iris deadletter replay`. Managed Postgres is a daemon subprocess, dies with its host; `meta` availability past that host requires external mode, not engine work.
 
 **Q - Does HA preserve the single-writer invariant?** A: Yes. Only the leader writes `meta`; standbys reject mutations with leader guidance (exit 6). `iris engine info` reports role. Every candidate binds its own listeners; reads work anywhere.
+
+**Q - How does a standby name the leader for retargeting (exit 6, `GET /leader`)?** A: The leader advertises its address into `meta`: on winning the advisory lock it upserts its TCP listen address — what an operator retargets to via `--host` — into the single-row `leadership` table (§4) through the single writer, re-advertising each term. Standbys share `meta` by the HA model, so each reads the advertised address and surfaces it in the `not_leader` rejection (exit 6) and `GET /leader`. A deposed leader writes nothing (its dead session cannot); the new leader's win overwrites the row, so the advertisement converges on the live leader across a failover. A socket-only leader advertises the empty address (nothing to retarget to across hosts), which renders as "unknown". The advertised address is a hint for retargeting, never a second control channel: mutations still ride the single-writer path the advisory lock guards.
 
 Remaining ceiling: Postgres, correctly so. Engine indifferent to where `pg_dsn` points (managed local, RDS, Aurora, Citus): data-plane scale and `meta` availability are bought with a bigger or more available Postgres, not engine work.
 
