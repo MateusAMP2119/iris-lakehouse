@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Iris installer — fetches the latest release binary for this platform.
+# Iris installer: fetches the latest release binary for this platform.
 #   curl -fsSL https://raw.githubusercontent.com/MateusAMP2119/iris-engine-cli/master/install.sh | bash
 set -euo pipefail
 
