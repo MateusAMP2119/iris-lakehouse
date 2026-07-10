@@ -523,7 +523,7 @@ iris/
     declare/              # parse + validate iris-declare.yaml and the schemas/ tree
     build/                # per-language build recipes (go / python / node); records content hashes
     pat/                  # PAT mint + verify (argon2id), scope checks over {control, read, data}
-    version/              # build-stamped version string
+    buildinfo/            # build-stamped version string (leaf, read by cli)
 ```
 
 **Q - What are the package boundaries?** A: One direction, no cycles: `cli` → `daemon`/`api` → `dispatch` → `store`, `pg`, `exec`; `archive` sits beside `dispatch` and reuses `store`/`pg` (never opening a third path to either database); `declare`, `build`, `pat` are leaf packages. `store` is the only code that opens `meta` (single-writer path + leader lock); `pg` is the only code that talks to the data database. Two clients, two databases, never crossed. `api` renders exactly what the CLI's read commands render.
