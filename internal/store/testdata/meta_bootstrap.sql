@@ -68,8 +68,7 @@ CREATE TABLE IF NOT EXISTS run_inputs (
     run_id bigint,
     upstream_run_id bigint,
     PRIMARY KEY (run_id, upstream_run_id),
-    FOREIGN KEY (run_id) REFERENCES runs (id),
-    FOREIGN KEY (upstream_run_id) REFERENCES runs (id)
+    FOREIGN KEY (run_id) REFERENCES runs (id)
 );
 
 CREATE INDEX IF NOT EXISTS run_inputs_upstream_run_id_idx ON run_inputs (upstream_run_id);

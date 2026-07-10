@@ -352,6 +352,14 @@ func MetaSchema() Schema {
 				},
 			},
 			// run_inputs: consumption ledger. Reverse-indexed on upstream_run_id.
+			// run_id (the downstream's own run) is a FK to runs.id, cascaded before the
+			// run in the prune. upstream_run_id is deliberately FK-free (precedent:
+			// data_journal.run_id): count-based retention (section 6.2, no reference pin)
+			// prunes an upstream run while a cross-pipeline downstream's ledger row
+			// survives, so it resolves to a live run OR its archival summary. A hard FK
+			// there could only block the prune (RESTRICT) or cascade-delete a surviving
+			// run's consumption record (erasing lineage, re-opening its gate), and the
+			// composite NOT NULL primary key forbids SET NULL.
 			{
 				Name: "run_inputs",
 				Columns: []Column{
@@ -361,7 +369,6 @@ func MetaSchema() Schema {
 				PrimaryKey: []string{"run_id", "upstream_run_id"},
 				ForeignKeys: []ForeignKey{
 					{Column: "run_id", RefTable: "runs", RefColumn: "id"},
-					{Column: "upstream_run_id", RefTable: "runs", RefColumn: "id"},
 				},
 				Indexes: []Index{
 					{Name: "run_inputs_upstream_run_id_idx", Columns: []string{"upstream_run_id"}},

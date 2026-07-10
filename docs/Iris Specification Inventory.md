@@ -180,7 +180,7 @@ handle=8123  artifact_hash=NULL  declaration_checksum=<sha256 ...>
 log_ref=.iris/logs/run-42.log  snapshot_lsn=0/16A3D2F0  journal_floor=81  journal_ceiling=95
 ```
 
-**Q - `run_inputs`?** A: Consumption ledger: one row per consumed upstream run (fan-in = several rows). `run_id` FK, `upstream_run_id` FK, PK (both). Written once at run start, never mutated. ==Also indexed on `upstream_run_id`: the downstream walk (`iris run show --trace --down`, the dead-letter blast radius) is a reverse lookup the primary key cannot serve.== Lineage and the gate's already-consumed check (upstream's latest success consumed?) query it; no mutable cursor.
+**Q - `run_inputs`?** A: Consumption ledger: one row per consumed upstream run (fan-in = several rows). `run_id` FK; `upstream_run_id` **not** FK (logical-only, the precedent is `data_journal.run_id`): count-based retention (§6.2, no reference pin) prunes an upstream run while a cross-pipeline downstream's ledger row survives, so `upstream_run_id` resolves to a live run **or its archival summary**, never a hard FK — a FK there would either block the prune (RESTRICT, a live violation) or cascade-delete a surviving run's consumption record (erasing lineage and re-opening its gate), and the composite PK forbids SET NULL. PK (both). Written once at run start, never mutated. ==Also indexed on `upstream_run_id`: the downstream walk (`iris run show --trace --down`, the dead-letter blast radius) is a reverse lookup the primary key cannot serve.== Lineage and the gate's already-consumed check (upstream's latest success consumed?) query it; no mutable cursor.
 
 **Q - `dead_letters`?** A: Worklist: parking lot, not a queue, not history. One row per outstanding dead-lettered run awaiting disposition. `run_id` PK FK, `reason` in (failed, stopped, upstream_dead_lettered), `error`, `failed_upstream` (immediate upstream whose dead-lettered run propagated; else null). Exit paths: replay (replacement run minted), supersession, drain. Run row stays in `runs`; `run_summaries` outlives pruning. Depth = row count.
 
@@ -207,7 +207,7 @@ id=91  pg_role=iris_load_orders  run_id=57  schema=analytics  table=orders  row_
 op=update  undo=promoted  pre_image=NULL                           # the common case: a slim stamp
 ```
 
-**Q - Relations?** A: Two roots: `pipelines` (registry), `runs` (history). `migrations`, `run_summaries`, `journal_checkpoints` stand alone. `data_journal` hangs off `runs` logically only (cross-database, no FK). `lanes` references `pipelines` by name, not FK (hence absent). FKs:
+**Q - Relations?** A: Two roots: `pipelines` (registry), `runs` (history). `migrations`, `run_summaries`, `journal_checkpoints` stand alone. `data_journal` hangs off `runs` logically only (cross-database, no FK). `lanes` references `pipelines` by name, not FK (hence absent). `run_inputs.upstream_run_id` references `runs` logically only, no FK (hence absent from the diagram): retention prunes an upstream run while a cross-pipeline downstream's ledger row survives, so it resolves to a run or its archival summary, exactly like `data_journal.run_id`; `run_inputs.run_id` (the downstream's own run) stays a FK, cascaded before the run in the prune. FKs:
 
 ```mermaid
 erDiagram
@@ -217,7 +217,6 @@ erDiagram
     pipelines  ||--o{ artifacts    : "artifacts.pipeline"
     artifacts  ||--o{ runs         : "runs.artifact_hash"
     runs       ||--o{ run_inputs   : "run_inputs.run_id"
-    runs       ||--o{ run_inputs   : "run_inputs.upstream_run_id"
     runs       ||--o| dead_letters : "dead_letters.run_id"
     pipelines  ||--o{ dead_letters : "dead_letters.failed_upstream"
     runs       ||--o{ runs         : "runs.replayed_from"
@@ -358,7 +357,7 @@ checksum: <hash of table.yaml at this revision>
 
 **Q - Replay and drain?** A: Two operator dispositions: `iris deadletter replay` and `iris deadletter drain` take `<run>`, `--pipeline <name>`, or `--all`; bare invocation: usage error (exit 2), nothing defaults to everything. Replay targets root causes: propagated entries walk `failed_upstream` to the root; `--pipeline`/`--all` collapse to roots. A replay: fresh run on current data, normal lane path, run boundary; `cause=replay`, `replayed_from` the replaced run; now the pipeline's most recent run, dependents follow next pass, never force-run. A dead-lettering replay parks a fresh entry chained via `replayed_from` (exit 5). Propagated entries clear themselves: superseded once their dependent consumes a later upstream run; only root causes (failed, stopped) demand a human. Worklist exit: replacement, supersession, or drain. Drain: pure discard; nothing re-runs, nothing downstream altered, run becomes prunable; drained runs can never be replayed (the entry is the replay ticket, deliberately).
 
-**Q - Consumption vs retention?** A: Unlinked: the gate reads only the upstream's latest run, always count-retained; no consumer watermark. Policy (resolved): count-based, clockless; keep newest `retain` runs per pipeline (default 1000; `--retain`/`IRIS_RETAIN`/`retain` in `iris.toml`). Dispatcher prunes opportunistically after a pass; never a dead-lettered run with an outstanding `dead_letters` entry (replay, supersession, or drain releases it). Archival summary written in the run-deleting `meta` transaction (surviving references never dangle); pruning cascades to `run_inputs` rows and the run's log file. Capture rows exempt: run pruning never touches the journal, bounded by its own lifecycle.
+**Q - Consumption vs retention?** A: Unlinked: the gate reads only the upstream's latest run, always count-retained; no consumer watermark. Policy (resolved): count-based, clockless; keep newest `retain` runs per pipeline (default 1000; `--retain`/`IRIS_RETAIN`/`retain` in `iris.toml`). Dispatcher prunes opportunistically after a pass; never a dead-lettered run with an outstanding `dead_letters` entry (replay, supersession, or drain releases it). Archival summary written in the run-deleting `meta` transaction (surviving references never dangle); pruning cascades the run's OWN `run_inputs` rows (`run_id` = the pruned run) and the run's log file, never a surviving downstream's ledger row (`upstream_run_id` = the pruned run) — that row is FK-free and stays, resolving to the run's summary, so a cross-pipeline downstream keeps its lineage and its gate check. Capture rows exempt: run pruning never touches the journal, bounded by its own lifecycle.
 
 ### 6.3 The lane loop and runtime
 
