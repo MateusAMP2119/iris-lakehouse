@@ -106,6 +106,13 @@ meta: CREATE TABLE IF NOT EXISTS engine_key (
     PRIMARY KEY (id),
     CHECK (id = 1)
 );
+meta: CREATE TABLE IF NOT EXISTS read_pool_credential (
+    id bigint,
+    secret text NOT NULL,
+    created_at text NOT NULL,
+    PRIMARY KEY (id),
+    CHECK (id = 1)
+);
 meta: CREATE TABLE IF NOT EXISTS pats (
     id text,
     hash text NOT NULL,

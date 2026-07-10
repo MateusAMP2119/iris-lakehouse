@@ -10,11 +10,14 @@ import (
 	"github.com/MateusAMP2119/iris-engine-cli/internal/store"
 )
 
-// metaRoster is the exact eighteen-table roster of the meta control-plane
+// metaRoster is the exact nineteen-table roster of the meta control-plane
 // database (specification section 4). The order is the spec's own listing order,
 // which is also the create-if-missing emission order. engine_key follows
 // journal_checkpoints: the engine-owned ed25519 signing key moved from a
 // per-database GUC into this single-row meta table (devdebt 2026-07-10 spec delta).
+// read_pool_credential follows engine_key: the engine-owned shared read-pool login
+// secret, persisted create-once so a restart or HA standby reuses one stable
+// credential (devdebt 2026-07-10 E13.7 follow-up spec delta).
 var metaRoster = []string{
 	"pipelines",
 	"dependencies",
@@ -26,6 +29,7 @@ var metaRoster = []string{
 	"run_summaries",
 	"journal_checkpoints",
 	"engine_key",
+	"read_pool_credential",
 	"pats",
 	"pat_scopes",
 	"endpoints",

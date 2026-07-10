@@ -599,6 +599,10 @@ contracts:
     anchor: "docs/Iris Specification Inventory.md#4-engine-state-schema-meta-and-the-data-journal"
     tier: conformance
     status: unclaimed
+  - id: S04/read-pool-credential-in-meta-table
+    anchor: "docs/Iris Specification Inventory.md#4-engine-state-schema-meta-and-the-data-journal"
+    tier: integration
+    status: unclaimed
   - id: S04/run-attribution-via-connection
     anchor: "docs/Iris Specification Inventory.md#4-engine-state-schema-meta-and-the-data-journal"
     tier: conformance
@@ -1094,6 +1098,14 @@ contracts:
   - id: S07/endpoint-sql-deterministic
     anchor: "docs/Iris Specification Inventory.md#7-read-api--credentials"
     tier: unit
+    status: unclaimed
+  - id: S07/endpoints-reload-from-meta
+    anchor: "docs/Iris Specification Inventory.md#7-read-api--credentials"
+    tier: integration
+    status: unclaimed
+  - id: S07/endpoints-reload-on-restart
+    anchor: "docs/Iris Specification Inventory.md#7-read-api--credentials"
+    tier: conformance
     status: unclaimed
   - id: S07/endpoint-yaml-file-shape
     anchor: "docs/Iris Specification Inventory.md#7-read-api--credentials"

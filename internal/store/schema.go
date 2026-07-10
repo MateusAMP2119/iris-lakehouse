@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// This file holds the embedded meta schema: the eighteen control tables of the
+// This file holds the embedded meta schema: the nineteen control tables of the
 // dedicated meta database (specification section 4), modeled as Go data that
 // renders deterministically to create-if-missing DDL and is directly assertable
 // for the roster, foreign-key graph, and identity-ordering contracts. The model
@@ -263,7 +263,7 @@ func dependenciesSatisfied(t Table, emitted map[string]bool) bool {
 	return true
 }
 
-// MetaSchema returns the meta control-plane schema: the eighteen tables of
+// MetaSchema returns the meta control-plane schema: the nineteen tables of
 // specification section 4, in the spec's own roster order. Roster order is not a
 // safe DDL emission order (runs precedes artifacts it references); DDL() emits in
 // FK-dependency order instead. Ordering keys are monotonic bigint identity
@@ -456,6 +456,28 @@ func MetaSchema() Schema {
 				Columns: []Column{
 					{Name: "id", Type: "bigint"},
 					{Name: "private_key", Type: "bytea"},
+					{Name: "created_at", Type: "text"},
+				},
+				PrimaryKey: []string{"id"},
+				RawChecks:  []string{"id = 1"},
+			},
+			// read_pool_credential: the engine-owned shared read-pool login secret
+			// (specification section 4; the devdebt 2026-07-10 E13.7 follow-up spec delta).
+			// Single row, id pinned to 1: secret (the base64url password of the shared
+			// iris_engine_read login) and created_at. Minted once at first daemon start
+			// (INSERT ... ON CONFLICT DO NOTHING, create-once so two daemons on one data
+			// cluster converge on ONE secret) and read back by every node's read-pool
+			// open; a restart or HA standby reuses the stored secret rather than minting a
+			// fresh one and resetting the shared login's password (last-starter-wins, which
+			// killed an earlier node's pool). It lives in meta, engine-admin-only like
+			// engine_key: no grant renderer touches it and every pipeline/data-PAT/read-pool
+			// role is denied CONNECT on meta, so the secret is unreachable to any caller.
+			// The shared meta database standbys already read gives HA superuser-free.
+			{
+				Name: "read_pool_credential",
+				Columns: []Column{
+					{Name: "id", Type: "bigint"},
+					{Name: "secret", Type: "text"},
 					{Name: "created_at", Type: "text"},
 				},
 				PrimaryKey: []string{"id"},
