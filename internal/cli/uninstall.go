@@ -61,6 +61,7 @@ func (a *app) uninstallSelf() runE {
 		yes, _ := cmd.Flags().GetBool("yes")
 		force, _ := cmd.Flags().GetBool("force")
 		jsonMode, _ := cmd.Flags().GetBool("json")
+		p := a.newPainter(jsonMode)
 
 		// 1. Refuse while a daemon is reachable (same target resolution and probe
 		// every command uses), unless --force overrides the probe.
@@ -88,6 +89,11 @@ func (a *app) uninstallSelf() runE {
 
 		// 3. Consent gate (dev-loop y/N flavor).
 		if !yes && !force {
+			// tty ceremony: a cyan confirmation box before the y/N prompt, mirroring
+			// the curl uninstaller. Plain (piped) runs draw nothing.
+			if p.enabled {
+				a.uninstallBox(p, buildinfo.Version, path)
+			}
 			confirmFn := a.confirm
 			if confirmFn == nil {
 				confirmFn = a.terminalConfirm
@@ -106,7 +112,11 @@ func (a *app) uninstallSelf() runE {
 						Status: "aborted", Version: buildinfo.Version, Path: path,
 					}})
 				}
-				fmt.Fprintln(a.out, "Aborted. Nothing removed.")
+				if p.enabled {
+					fmt.Fprintln(a.out, p.green("  Aborted. Nothing removed."))
+				} else {
+					fmt.Fprintln(a.out, "Aborted. Nothing removed.")
+				}
 				return nil
 			}
 		}
@@ -122,18 +132,35 @@ func (a *app) uninstallSelf() runE {
 			}
 			return &fault{code: exitOpFailed, codeStr: "uninstall_failed", message: fmt.Sprintf("iris uninstall: remove %s: %v", path, err)}
 		}
-		a.logger.Info("iris uninstall: removed the binary", "path", path)
 
-		// 5. Success.
+		// 5. Success. The removal is reported by the human/JSON output below; no log
+		// line is emitted, so the console is not double-reported.
 		if jsonMode {
 			return json.NewEncoder(a.out).Encode(dataEnvelope{Data: uninstallCmdResult{
 				Status: "uninstalled", Version: buildinfo.Version, Path: path,
 			}})
 		}
+		if p.enabled {
+			// tty ceremony: the removal line, then a rainbow farewell mirroring the
+			// curl uninstaller's "Goodbye" gradient.
+			fmt.Fprintf(a.out, "  Uninstalled %s.\n", path)
+			fmt.Fprintf(a.out, "  %s from iris.\n", p.rainbow("Goodbye"))
+			return nil
+		}
 		fmt.Fprintf(a.out, "Uninstalled %s.\n", path)
 		fmt.Fprintln(a.out, "Goodbye from iris.")
 		return nil
 	}
+}
+
+// uninstallBox draws the cyan confirmation box shown before the y/N prompt on a
+// terminal, mirroring uninstall.sh: the version in magenta, the removal path
+// plain. It writes to stdout; the prompt itself follows on stderr.
+func (a *app) uninstallBox(p painter, version, path string) {
+	const rule = "──────────────────────────────────────────────"
+	fmt.Fprintln(a.out, p.cyan("  ┌"+rule+"┐"))
+	fmt.Fprintf(a.out, "  %s   Uninstall %s from %s?\n", p.cyan("│"), p.magenta(version), path)
+	fmt.Fprintln(a.out, p.cyan("  └"+rule+"┘"))
 }
 
 // terminalConfirm is the production interactive confirmation for `iris uninstall`:
