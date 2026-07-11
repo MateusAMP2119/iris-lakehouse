@@ -1,7 +1,7 @@
 ---
 name: coder
 description: TDD implementation agent for Iris tasks. Given one task brief (a docs/Tasks/ file), writes failing tests for every contract first, then implements to green in its own git worktree. All source and test changes in this repo go through this agent.
-model: opus
+model: fable
 # tools deliberately omitted: an omitted tools key grants the agent all tools
 ---
 

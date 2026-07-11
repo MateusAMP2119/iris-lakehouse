@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -46,9 +47,19 @@ func (a *app) updateCmd() *cobra.Command {
 // permission failure carry actionable guidance in the message.
 func (a *app) updateSelf() runE {
 	return func(cmd *cobra.Command, _ []string) error {
+		jsonMode, _ := cmd.Flags().GetBool("json")
+		p := a.newPainter(jsonMode)
+
 		run := a.runUpdate
 		if run == nil {
-			run = update.New().Run
+			u := update.New()
+			// The staged journey is ceremony: wire the renderer only when styling is
+			// on, so piped and --json output stays the single plain outcome line and the
+			// updater keeps its stdlib-only silence.
+			if p.enabled {
+				u.Progress = func(stage, detail string) { a.renderUpdateStage(p, stage, detail) }
+			}
+			run = u.Run
 		}
 		ctx := cmd.Context()
 		if ctx == nil {
@@ -58,7 +69,27 @@ func (a *app) updateSelf() runE {
 		if err != nil {
 			return a.updateFault(err)
 		}
-		return a.emitUpdateResult(cmd, res)
+		return a.emitUpdateResult(cmd, p, res)
+	}
+}
+
+// renderUpdateStage paints one step of the self-update journey (tty-only). Each
+// step is a colored arrow, a dim ellipsis, and the stage's detail; the download
+// detail is the asset name and human size, tab-separated. A disabled painter is
+// never wired to this, so it only ever runs on a terminal.
+func (a *app) renderUpdateStage(p painter, stage, detail string) {
+	arrow := p.cyan("→")
+	ell := p.dim("…")
+	switch stage {
+	case update.StageResolve:
+		fmt.Fprintf(a.out, "  %s resolving latest release %s %s\n", arrow, ell, p.magenta(detail))
+	case update.StageDownload:
+		asset, size, _ := strings.Cut(detail, "\t")
+		fmt.Fprintf(a.out, "  %s downloading %s %s %s\n", arrow, asset, ell, size)
+	case update.StageVerify:
+		fmt.Fprintf(a.out, "  %s verifying sha256 %s %s\n", arrow, ell, p.green(detail))
+	case update.StageReplace:
+		fmt.Fprintf(a.out, "  %s swapping binary %s %s\n", arrow, ell, detail)
 	}
 }
 
@@ -76,7 +107,7 @@ func (a *app) updateFault(err error) error {
 
 // emitUpdateResult renders a successful update: under --json the single data
 // envelope, otherwise a human line on stdout naming the outcome.
-func (a *app) emitUpdateResult(cmd *cobra.Command, res update.Result) error {
+func (a *app) emitUpdateResult(cmd *cobra.Command, p painter, res update.Result) error {
 	payload := updateResult{From: res.From, To: res.To, Path: res.Path}
 	switch res.Status {
 	case update.StatusUpToDate:
@@ -87,11 +118,22 @@ func (a *app) emitUpdateResult(cmd *cobra.Command, res update.Result) error {
 	if jsonMode, _ := cmd.Flags().GetBool("json"); jsonMode {
 		return json.NewEncoder(a.out).Encode(dataEnvelope{Data: payload})
 	}
+	if !p.enabled {
+		switch res.Status {
+		case update.StatusUpToDate:
+			fmt.Fprintf(a.out, "iris is already up to date (version %s)\n", res.To)
+		case update.StatusUpdated:
+			fmt.Fprintf(a.out, "updated iris %s -> %s\n", res.From, res.To)
+		}
+		return nil
+	}
+	// tty ceremony: a green-check summary, versions in the journey's palette.
+	check := p.green("✓")
 	switch res.Status {
 	case update.StatusUpToDate:
-		fmt.Fprintf(a.out, "iris is already up to date (version %s)\n", res.To)
+		fmt.Fprintf(a.out, "  %s iris is already up to date (version %s)\n", check, p.magenta(res.To))
 	case update.StatusUpdated:
-		fmt.Fprintf(a.out, "updated iris %s -> %s\n", res.From, res.To)
+		fmt.Fprintf(a.out, "  %s updated iris %s %s %s\n", check, p.magenta(res.From), p.cyan("->"), p.magenta(res.To))
 	}
 	return nil
 }
