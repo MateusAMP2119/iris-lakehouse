@@ -60,7 +60,7 @@ if [ "${IRIS_FORCE:-0}" != "1" ] && "$bin" engine info >/dev/null 2>&1; then
   printf "%b\n" "${Y}  └──────────────────────────────────────────────┘${X}"
   if can_prompt; then
     if ! confirm "  ${M}Remove the binary anyway, leaving engine state behind?${X} ${D}(y/N)${X} "; then
-      printf "%b\n" "${G}  Wise. The goddess keeps her engine. Nothing removed.${X}"
+      printf "%b\n" "${G}  Aborted. Tear the engine down first, then re-run.${X}"
       exit 0
     fi
   else
@@ -73,8 +73,8 @@ if can_prompt; then
   printf "%b\n" "${C}  ┌──────────────────────────────────────────────┐${X}"
   printf "%b\n" "${C}  │${X}   Uninstall ${M}${ver}${X} from ${bin}?"
   printf "%b\n" "${C}  └──────────────────────────────────────────────┘${X}"
-  if ! confirm "  ${M}Send the rainbow goddess away?${X} ${D}(y/N)${X} "; then
-    printf "%b\n" "${G}  She stays. Nothing removed.${X}"
+  if ! confirm "  ${M}Uninstall iris?${X} ${D}(y/N)${X} "; then
+    printf "%b\n" "${G}  Aborted. Nothing removed.${X}"
     exit 0
   fi
 fi
@@ -90,4 +90,4 @@ else
 fi
 
 printf "%b\n" "  Uninstalled ${bin}."
-printf "%b%b%b%b%b%b\n" "${R}  Bye " "${Y}from " "${G}the " "${C}rainbow " "${B}goddess" "${M}.${X}"
+printf "%b%b%b%b%b%b%b%b\n" "${R}  G" "${Y}o" "${G}o" "${C}d" "${B}b" "${M}y" "${R}e" "${X} from iris."
