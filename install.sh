@@ -86,7 +86,8 @@ can_prompt() {
 }
 
 if can_prompt; then
-  printf 'Take the 3-minute guided tour? Sets up a demo engine and pipeline. (Y/n) ' >/dev/tty
+  echo "The guided tour sets up a demo engine and pipeline in ./iris-quickstart-demo." >/dev/tty
+  printf 'Take the 3-minute guided tour? (Y/n) ' >/dev/tty
   IFS= read -r ans </dev/tty || ans="n"
   case "$ans" in
     [nN]*) ;;
