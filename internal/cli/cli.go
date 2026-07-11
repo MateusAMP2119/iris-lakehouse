@@ -82,7 +82,7 @@ type app struct {
 	// terminal --json envelope carries them as a warnings array, and human output
 	// prints them to stderr. Set per invocation, so the app holds no global state.
 	warnings []declare.Warning
-	// runUpdate performs the `iris engine update` self-replace, returning the
+	// runUpdate performs the `iris update` self-replace, returning the
 	// outcome for the running version. It is nil in production (the handler falls
 	// back to update.New().Run); tests inject a fake to drive the exit-code and
 	// output surface without network or filesystem I/O.
