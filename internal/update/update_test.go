@@ -72,14 +72,14 @@ func releaseServer(t *testing.T, tag string, archive []byte, checksumFor string,
 	mux.HandleFunc("/releases/latest", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/releases/tag/"+tag, http.StatusFound)
 	})
-	mux.HandleFunc("/releases/tag/"+tag, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/releases/tag/"+tag, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("<html>release page</html>"))
 	})
-	mux.HandleFunc("/releases/download/"+tag+"/"+asset, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/releases/download/"+tag+"/"+asset, func(w http.ResponseWriter, _ *http.Request) {
 		countHit()
 		_, _ = w.Write(archive)
 	})
-	mux.HandleFunc("/releases/download/"+tag+"/checksums.txt", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/releases/download/"+tag+"/checksums.txt", func(w http.ResponseWriter, _ *http.Request) {
 		countHit()
 		_, _ = w.Write([]byte(checksums))
 	})
@@ -127,7 +127,7 @@ func TestUpdateVerifiedAtomicReplace(t *testing.T) {
 	if res.To != "v2.0.0" || res.From != "v1.0.0" {
 		t.Errorf("From/To = %q/%q, want v1.0.0/v2.0.0", res.From, res.To)
 	}
-	got, err := os.ReadFile(exe)
+	got, err := os.ReadFile(exe) //nolint:gosec // G304: exe is this test's own scratch path under t.TempDir(), never user or network input.
 	if err != nil {
 		t.Fatalf("read replaced exe: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestUpdateUpToDateNoDownload(t *testing.T) {
 	if n := atomic.LoadInt32(&downloadHits); n != 0 {
 		t.Errorf("download endpoints hit %d times on an up-to-date check, want 0 (nothing downloaded)", n)
 	}
-	got, err := os.ReadFile(exe)
+	got, err := os.ReadFile(exe) //nolint:gosec // G304: exe is this test's own scratch path under t.TempDir(), never user or network input.
 	if err != nil {
 		t.Fatalf("read exe: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestUpdateChecksumMismatchAborts(t *testing.T) {
 	if err == nil {
 		t.Fatal("Run: nil error on checksum mismatch, want an abort")
 	}
-	got, rerr := os.ReadFile(exe)
+	got, rerr := os.ReadFile(exe) //nolint:gosec // G304: exe is this test's own scratch path under t.TempDir(), never user or network input.
 	if rerr != nil {
 		t.Fatalf("read exe: %v", rerr)
 	}
