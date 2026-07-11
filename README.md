@@ -54,6 +54,12 @@ iris engine start -d      # start the daemon: leader election, lanes, read API
 iris engine info          # confirm it's alive
 ```
 
+Updating later is one command; it fetches the latest release, verifies its checksum, and swaps the binary in place:
+
+```sh
+iris engine update
+```
+
 Leaving? Tear down engine state with `iris engine stop && iris engine uninstall`, then remove the binary:
 
 ```sh
