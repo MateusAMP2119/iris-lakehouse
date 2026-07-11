@@ -80,7 +80,7 @@ var wantTree = map[string][]string{
 	"run":        {"list", "show", "logs", "cancel"},
 	"data":       {"provenance"},
 	"workload":   {"show", "wipe"},
-	"engine":     {"start", "stop", "install", "uninstall", "info", "logs", "inspect", "stats", "update", "service"},
+	"engine":     {"start", "stop", "install", "uninstall", "info", "logs", "inspect", "stats", "service"},
 	"deadletter": {"list", "show", "replay", "drain"},
 	"endpoint":   {"apply", "remove", "list", "show"},
 	"pat":        {"create", "list", "revoke"},
@@ -92,10 +92,11 @@ func TestCommandTree(t *testing.T) {
 	t.Run("S08/resource-first-command-tree", func(t *testing.T) {
 		root := testRoot()
 
-		// Top-level commands are exactly the nine resource nouns plus the single
-		// admitted root lifecycle verb `uninstall` (self-removal of the binary,
-		// belonging to no resource noun): no other flat verbs, no extras.
-		wantTop := append(mapKeys(wantTree), "uninstall")
+		// Top-level commands are exactly the nine resource nouns plus the two
+		// admitted root lifecycle verbs `update` (self-replace of the binary) and
+		// `uninstall` (self-removal of the binary), each belonging to no resource
+		// noun: no other flat verbs, no extras.
+		wantTop := append(mapKeys(wantTree), "update", "uninstall")
 		assertSetEqual(t, "top-level nouns", childNames(root), wantTop)
 
 		// Each noun exposes exactly its documented verbs.
