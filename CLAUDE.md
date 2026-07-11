@@ -26,6 +26,26 @@ implementation is regenerable; the durable assets are the spec and the suite.
    doctrine) live in the manifest marked `exempt` and need no test.
 7. Nothing merges red: full test suite plus traceability gate green before any merge.
 
+## Commands
+
+- Build: `go build ./...`; binary: `go build -o iris ./cmd/iris` (always cgo-free;
+  release/cross-compile with `CGO_ENABLED=0`).
+- Unit + integration (database-free, what CI runs per Go version):
+  `go test -race ./...` — conformance is excluded via the `conformance` build tag.
+- Single test: `go test -race -run 'TestName(/subtest)?' ./internal/<pkg>/`.
+- Conformance suite (real binary, real Postgres 16+):
+  `go test -race -tags conformance -timeout 20m ./internal/conformance/...`
+  Requires `IRIS_PG_DSN` pointing at a cluster whose role has CREATEDB + CREATEROLE
+  (see `.github/workflows/ci.yml`); without it the suite provisions embedded Postgres
+  where it can, but CI parity is the DSN path. Slow (~11m); don't run casually.
+- Traceability gate: `go test ./internal/trace/...` (backlog mode, merge-blocking).
+  Strict readout: `IRIS_TRACE_STRICT=1 go test -run TestTraceabilityGateStrict -v ./internal/trace/...`.
+- Spec lock: the gate fails when `docs/Iris Specification Inventory.md` drifts from
+  `spec/inventory.lock`. After an intentional spec delta (only alongside its test
+  delta): `IRIS_TRACE_UPDATE_LOCK=1 go test -run TestSpecLockUpdate ./internal/trace`.
+- Lint: `golangci-lint run` (config `.golangci.yml`; CI pins the version in
+  `ci.yml` — currently v2.12.2).
+
 ## Branching rules
 
 - `master`: release line. Only receives epic-checkpoint PRs from `development`.
@@ -36,7 +56,7 @@ implementation is regenerable; the durable assets are the spec and the suite.
 - After each epic completes, a PR `Epic EXX` goes from `development` into `master` and
   waits for human review.
 - Respect each task's `Depends on` section. Dependency-independent tasks may proceed in
-  parallel worktrees (max 3); tasks in one dependency chain are strictly serial.
+  parallel worktrees; tasks in one dependency chain are strictly serial.
 
 ## Role split
 
