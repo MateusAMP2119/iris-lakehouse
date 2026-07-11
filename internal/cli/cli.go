@@ -100,6 +100,13 @@ type app struct {
 	// filepath.EvalSymlinks); tests inject it to point at a throwaway file so the
 	// removal never touches the test binary.
 	executablePath func() (string, error)
+	// isTTY reports whether the command's stdout is an interactive terminal, the
+	// gate for the lifecycle-command terminal ceremony (the colored update journey
+	// and uninstall farewell). It is nil in production (the painter falls back to
+	// stdoutIsTerminal, an os.Stdout char-device stat honored only when a.out is the
+	// real stdout); tests inject it to force styled or plain rendering without a real
+	// terminal.
+	isTTY func() bool
 }
 
 // newApp builds an app whose structured logs go to stderr at info level, keeping
