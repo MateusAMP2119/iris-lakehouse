@@ -12,9 +12,9 @@ import (
 	"github.com/MateusAMP2119/iris-engine-cli/internal/update"
 )
 
-// updateResult is the machine-readable payload of `iris engine update`, the
-// --json data envelope: the terminal status, the running and latest versions, and
-// (when replaced) the executable path.
+// updateResult is the machine-readable payload of `iris update`, the --json data
+// envelope: the terminal status, the running and latest versions, and (when
+// replaced) the executable path.
 type updateResult struct {
 	Status string `json:"status"`
 	From   string `json:"from,omitempty"`
@@ -22,14 +22,29 @@ type updateResult struct {
 	Path   string `json:"path,omitempty"`
 }
 
-// engineUpdate is the handler for `iris engine update`: a daemonless self-replace
-// of the installed binary with the latest GitHub release (specification section
-// 8). It resolves the latest release tag, refuses on a dev build, reports
+// updateCmd builds `iris update`: a root lifecycle verb (self-replace of the
+// installed iris binary with the latest GitHub release, specification section 8).
+// It is daemonless (it touches no daemon); it is the counterpart of the root
+// `iris uninstall` and is distinct from `iris engine install`/`uninstall`, which
+// manage engine state.
+func (a *app) updateCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "update",
+		Short: "Self-replace the installed binary with the latest GitHub release",
+		Args:  cobra.NoArgs,
+		RunE:  a.updateSelf(),
+	}
+	return daemonless(c)
+}
+
+// updateSelf is the handler for `iris update`: a daemonless self-replace of the
+// installed binary with the latest GitHub release (specification section 8). It
+// resolves the latest release tag, refuses on a dev build, reports
 // already-up-to-date without touching the binary when the tag matches, and
 // otherwise downloads, checksum-verifies, and atomically replaces the running
 // executable. Any failure is operation-failed (exit 4); a dev build and a
 // permission failure carry actionable guidance in the message.
-func (a *app) engineUpdate() runE {
+func (a *app) updateSelf() runE {
 	return func(cmd *cobra.Command, _ []string) error {
 		run := a.runUpdate
 		if run == nil {
@@ -56,7 +71,7 @@ func (a *app) updateFault(err error) error {
 	if errors.As(err, &dev) {
 		code = "dev_build"
 	}
-	return &fault{code: exitOpFailed, codeStr: code, message: fmt.Sprintf("engine update: %v", err)}
+	return &fault{code: exitOpFailed, codeStr: code, message: fmt.Sprintf("iris update: %v", err)}
 }
 
 // emitUpdateResult renders a successful update: under --json the single data
