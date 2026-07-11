@@ -164,7 +164,7 @@ conformance suite (real binary, real Postgres, -race) — green.
 
 ## E15 Onboarding and Guided Tour — epic PR: pending (opened 2026-07-11)
 
-- [ ] E15.1 Quickstart surface and gating — todo
+- [x] E15.1 Quickstart surface and gating — done ([PR #133](https://github.com/MateusAMP2119/iris-engine-cli/pull/133)); also: startDetached argv rebuilt from cobra command (F2), spec §9 delta admitting spf13/pflag to the allowlist
 - [ ] E15.2 Tour orchestration and installer handoff — todo (depends on E15.1)
 
 ## Cross-cutting devfix/debt PRs (2026-07-09/10 recovery session)
