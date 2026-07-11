@@ -57,7 +57,7 @@ iris engine info          # confirm it's alive
 Updating later is one command; it fetches the latest release, verifies its checksum, and swaps the binary in place:
 
 ```sh
-iris engine update
+iris update
 ```
 
 Leaving? Iris removes itself (prompts first; refuses while a daemon runs until you `iris engine stop && iris engine uninstall`):
