@@ -12,9 +12,14 @@ conformance suite (real binary, real Postgres, -race) — green.
 
 ## Open items
 
-- **E15 Onboarding and Guided Tour: complete on development 2026-07-11** (PRs #133,
-  #134; 14 S08/quickstart-* contracts, strict gate zero unclaimed). Epic checkpoint
-  PR to master not opened — joins the E04–E14 checkpoint queue awaiting human review.
+- **E16 Install Ceremony and Pipeline Catalog** (opened 2026-07-12): curl|sh becomes a
+  chaptered ceremony (THE CLI / THE ENGINE / THE PIPELINE), workspace prompt `~/iris`,
+  `--from-installer` version-gated handoff, embedded 3-entry pipeline catalog with
+  browse/pick + `--pipeline`. Briefs E16.1–E16.4; 10 new S08/ rows.
+- **v0.4.0 release**: Epic E15 checkpoint merged to master (PR #135); `gh release
+  create v0.4.0` awaits the user naming the release (classifier public-surface gate).
+- E15 complete on development 2026-07-11 (PRs #133, #134; checkpoint PR #135 merged
+  to master 2026-07-12).
 - **Epic checkpoint PRs to master**: none opened yet for E04–E14/E13; await human review
   per branching rules.
 - **External conformance clusters must be PostgreSQL 16+** (`INHERIT FALSE` grant
@@ -166,6 +171,13 @@ conformance suite (real binary, real Postgres, -race) — green.
 
 - [x] E15.1 Quickstart surface and gating — done ([PR #133](https://github.com/MateusAMP2119/iris-engine-cli/pull/133)); also: startDetached argv rebuilt from cobra command (F2), spec §9 delta admitting spf13/pflag to the allowlist
 - [x] E15.2 Tour orchestration and installer handoff — done ([PR #134](https://github.com/MateusAMP2119/iris-engine-cli/pull/134)); review fix: tour steps force-local, ambient IRIS_HOST/toml host ignored with notice (spec §8 clause)
+
+## E16 Install Ceremony and Pipeline Catalog — epic PR: pending (opened 2026-07-12)
+
+- [ ] E16.1 Act structure and workspace prompt — todo (carries the whole §8 delta + lock)
+- [ ] E16.2 Pipeline catalog registry and starter entries — todo (depends on E16.1)
+- [ ] E16.3 Catalog shop and picked tour — todo (depends on E16.2)
+- [ ] E16.4 Installer ceremony and version gate — todo (depends on E16.1; parallel-safe with E16.2/3)
 
 ## Cross-cutting devfix/debt PRs (2026-07-09/10 recovery session)
 
