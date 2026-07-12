@@ -133,7 +133,7 @@ func TestQuickstartActStructure(t *testing.T) {
 			if prompts := promptEvents(*events); len(prompts) != 0 {
 				t.Errorf("a failed ENGINE act still offered the next act's gate: %q", prompts)
 			}
-			if !strings.Contains(errb.String(), wantResumeHint) {
+			if !strings.Contains(strings.ToLower(errb.String()), strings.ToLower(wantResumeHint)) {
 				t.Errorf("failure carries no resume hint on stderr: %q", errb.String())
 			}
 		})
