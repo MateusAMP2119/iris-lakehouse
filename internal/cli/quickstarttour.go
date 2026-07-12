@@ -268,6 +268,9 @@ func (a *app) runQuickstartTour(cmd *cobra.Command, yes, fromInstaller bool, cat
 			return a.tourAbort()
 		}
 		fmt.Fprintln(a.out)
+		if act.id == tourActEngine {
+			engineBanner(a.out, p)
+		}
 		fmt.Fprintln(a.out, chapterMark(p, actColor(p, act.id), act.title))
 
 		// One consent opens the act: THE ENGINE's workspace prompt, THE
