@@ -253,8 +253,8 @@ func TestQuickstartStepOrderConfirmed(t *testing.T) {
 				}
 			}
 			// The picked entry explains itself (detail + finale preview) before apply.
-			if !strings.Contains(out.String(), "Finale: iris data provenance demo.colors green") {
-				t.Errorf("no picked-entry finale preview before the steps\nstdout: %s", out.String())
+			if !strings.Contains(stripANSI(out.String()), "Finale: iris data provenance demo.colors green") {
+				t.Errorf("no picked-entry finale preview before the steps\nstdout: %s", stripANSI(out.String()))
 			}
 			// The wrap-up leaves the engine running and says so.
 			if !strings.Contains(out.String(), "still running") {
