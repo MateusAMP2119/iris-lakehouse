@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/MateusAMP2119/iris-engine-cli/internal/buildinfo"
 	"github.com/MateusAMP2119/iris-engine-cli/internal/config"
 	"github.com/MateusAMP2119/iris-engine-cli/internal/daemon"
 )
@@ -99,18 +101,23 @@ type tourSession struct {
 type tourIO struct {
 	errOut io.Writer
 	reader *bufio.Reader
+	p      painter
 }
 
 // newTourIO builds the production tour dialogue over the process stdin.
-func newTourIO(errOut io.Writer) *tourIO {
-	return &tourIO{errOut: errOut, reader: bufio.NewReader(os.Stdin)}
+func newTourIO(errOut io.Writer, p painter) *tourIO {
+	return &tourIO{errOut: errOut, reader: bufio.NewReader(os.Stdin), p: p}
 }
 
 // pick asks the shop's pick question over n entries. EOF -- a closed stdin --
 // answers quit, the clean-abort path; only a real read fault surfaces as an
 // error; the answer's semantics live in parsePickAnswer.
 func (t *tourIO) pick(question string, n int) (int, promptAnswer, error) {
-	fmt.Fprintf(t.errOut, "%s ", question)
+	if t.p.enabled {
+		fmt.Fprintf(t.errOut, "%s  %s ", railAsk, question)
+	} else {
+		fmt.Fprintf(t.errOut, "%s ", question)
+	}
 	line, err := t.reader.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return 0, answerQuit, fmt.Errorf("quickstart: read prompt answer: %w", err)
@@ -126,7 +133,11 @@ func (t *tourIO) pick(question string, n int) (int, promptAnswer, error) {
 // returns the raw answer. A closed stdin with nothing read returns io.EOF, the
 // clean-abort path; only a real read fault surfaces as a wrapped error.
 func (t *tourIO) readLine(prompt, _ string) (string, error) {
-	fmt.Fprintf(t.errOut, "%s ", prompt)
+	if t.p.enabled {
+		fmt.Fprintf(t.errOut, "%s  %s ", railAsk, prompt)
+	} else {
+		fmt.Fprintf(t.errOut, "%s ", prompt)
+	}
 	line, err := t.reader.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", fmt.Errorf("quickstart: read prompt answer: %w", err)
@@ -202,7 +213,11 @@ func (a *app) runQuickstartTour(cmd *cobra.Command, yes, fromInstaller bool, cat
 	defer stop()
 
 	p := a.newPainter(false)
-	tio := newTourIO(a.errOut)
+	tio := newTourIO(a.errOut, p)
+	// The clack widgets (arrow-key select, radio confirm) belong to the real
+	// production dialogue only: any harnessed seam keeps the scripted line
+	// dialogue, so tests never meet raw terminal mode.
+	widgets := a.tourPick == nil && a.tourInput == nil
 	pick := a.tourPick
 	if pick == nil {
 		pick = tio.pick
@@ -223,6 +238,20 @@ func (a *app) runQuickstartTour(cmd *cobra.Command, yes, fromInstaller bool, cat
 
 	if !fromInstaller {
 		a.quickstartWelcome(p, selected, explicit)
+	} else if p.enabled {
+		clackIntro(a.out, p, "iris quickstart — the guided first session ("+buildinfo.Version+")")
+	}
+
+	// The heads-up disclaimer: what the tour really does on this machine, and
+	// the one consent that opens it. Production dialogue only (harnessed seams
+	// script the acts directly); --yes is the unattended acknowledgement.
+	if widgets && !yes {
+		if err := a.tourDisclaimer(s); err != nil {
+			if errors.Is(err, errTourAborted) {
+				return a.tourAbort()
+			}
+			return err
+		}
 	}
 
 	entry := selected
@@ -257,16 +286,36 @@ func (a *app) runQuickstartTour(cmd *cobra.Command, yes, fromInstaller bool, cat
 		if act.id == tourActPipeline {
 			// The shop: browse and pick interactively, unless the pick is already
 			// explicit (--pipeline) or unattended (--yes takes the selected entry).
+			// The production ceremony gets the arrow-key select; a harnessed seam
+			// or a terminal that refuses raw mode keeps the numbered dialogue.
 			if !yes && !explicit {
-				a.renderCatalogShop(p, cat)
-				choice, ans, perr := askTourPick(ctx, pick, pickQuestion(len(cat.Entries)), len(cat.Entries))
-				if perr != nil || ans != answerProceed || ctx.Err() != nil ||
-					choice < 1 || choice > len(cat.Entries) {
-					a.reportPromptFault(perr)
-					return a.tourAbort()
+				picked := false
+				if widgets && p.enabled {
+					opts := make([]clackOption, 0, len(cat.Entries))
+					for _, ce := range cat.Entries {
+						opts = append(opts, clackOption{label: ce.Name, hint: ce.Pitch})
+					}
+					choice, ans, ok := askClackSelect(ctx, a.out, p, "Pick a starter pipeline", opts)
+					if ok {
+						if ans != answerProceed || ctx.Err() != nil || choice < 1 || choice > len(cat.Entries) {
+							return a.tourAbort()
+						}
+						entry = cat.Entries[choice-1]
+						steps = quickstartPipelineSteps(entry)
+						picked = true
+					}
 				}
-				entry = cat.Entries[choice-1]
-				steps = quickstartPipelineSteps(entry)
+				if !picked {
+					a.renderCatalogShop(p, cat)
+					choice, ans, perr := askTourPick(ctx, pick, pickQuestion(len(cat.Entries)), len(cat.Entries))
+					if perr != nil || ans != answerProceed || ctx.Err() != nil ||
+						choice < 1 || choice > len(cat.Entries) {
+						a.reportPromptFault(perr)
+						return a.tourAbort()
+					}
+					entry = cat.Entries[choice-1]
+					steps = quickstartPipelineSteps(entry)
+				}
 			}
 			// The picked entry explains itself -- description and finale preview --
 			// before its steps; the apply step's ordinary confirm is the
@@ -325,8 +374,21 @@ func (a *app) runQuickstartTour(cmd *cobra.Command, yes, fromInstaller bool, cat
 			// The act closes only on the readout: `engine start -d` returns on
 			// socket-up while leadership can lag, so the tour holds here until the
 			// daemon reports a role -- THE PIPELINE act never opens on an unready
-			// engine (specification section 8, quickstart surface).
-			if err := wait(ctx, engineSettings); err != nil {
+			// engine (specification section 8, quickstart surface). The ceremony
+			// surface holds behind a spinner; plain surfaces hold silently.
+			var stopSpin func(string)
+			if p.enabled {
+				stopSpin = startSpinner(a.out, p, "Waiting for the engine to take leadership…")
+			}
+			err := wait(ctx, engineSettings)
+			if stopSpin != nil {
+				if err == nil {
+					stopSpin("engine ready — role: leader")
+				} else {
+					stopSpin("")
+				}
+			}
+			if err != nil {
 				if ctx.Err() != nil {
 					return a.tourAbort()
 				}
@@ -479,6 +541,100 @@ func isWorkspaceDir(dir string) bool {
 		}
 	}
 	return false
+}
+
+// tourDisclaimerBody is the heads-up copy: honest about maturity, concrete
+// about what the tour really runs, and how to undo all of it.
+func tourDisclaimerBody() string {
+	return strings.Join([]string{
+		"Iris is in active development. Expect sharp edges.",
+		"",
+		"The tour runs real commands on this machine:",
+		"- provisions a managed Postgres inside the workspace you pick",
+		"- starts the iris engine daemon (it stays running after the tour)",
+		"- registers and runs one starter pipeline, then reads its provenance",
+		"",
+		"Everything is local and idempotent; nothing leaves this machine.",
+		"Stop the engine later:  iris engine stop",
+		"Remove everything:      iris engine uninstall && iris uninstall",
+	}, "\n")
+}
+
+// tourDisclaimer renders the heads-up note and reads the tour's one opening
+// consent. The ceremony surface gets the boxed note and the radio confirm; a
+// terminal that refuses raw mode (or NO_COLOR's plain interactivity) gets the
+// same copy and a (Y/n) line. Decline, EOF, and interrupt read as the clean
+// abort.
+func (a *app) tourDisclaimer(s *tourSession) error {
+	const question = "Run the real first session on this machine?"
+	if s.p.enabled {
+		clackNote(a.out, s.p, "Heads-up", tourDisclaimerBody())
+		yes, ans, ok := askClackConfirm(s.ctx, a.out, s.p, question, true)
+		if ok {
+			if s.ctx.Err() != nil || ans != answerProceed || !yes {
+				return errTourAborted
+			}
+			clackBar(a.out, s.p)
+			return nil
+		}
+	} else {
+		fmt.Fprintln(a.out)
+		fmt.Fprintln(a.out, "Heads-up:")
+		fmt.Fprintln(a.out, tourDisclaimerBody())
+	}
+	line, perr := askTourLine(s.ctx, s.input, question+" (Y/n):", "y")
+	if perr != nil || s.ctx.Err() != nil {
+		a.reportPromptFault(perr)
+		return errTourAborted
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "", "y", "yes":
+		return nil
+	}
+	return errTourAborted
+}
+
+// askClackSelect runs the arrow-key select while honoring ctx, the widget
+// sibling of askTourPick: a cancellation wins over a pending read and reads
+// as quit. ok=false means raw mode was unavailable and nothing rendered.
+func askClackSelect(ctx context.Context, w io.Writer, p painter, question string, opts []clackOption) (int, promptAnswer, bool) {
+	type outcome struct {
+		choice int
+		ans    promptAnswer
+		ok     bool
+	}
+	ch := make(chan outcome, 1)
+	go func() {
+		choice, ans, ok := clackSelect(w, p, question, opts)
+		ch <- outcome{choice: choice, ans: ans, ok: ok}
+	}()
+	select {
+	case <-ctx.Done():
+		return 0, answerQuit, true
+	case o := <-ch:
+		return o.choice, o.ans, o.ok
+	}
+}
+
+// askClackConfirm runs the radio confirm while honoring ctx; see
+// askClackSelect for the cancellation contract.
+func askClackConfirm(ctx context.Context, w io.Writer, p painter, question string, def bool) (bool, promptAnswer, bool) {
+	type outcome struct {
+		yes bool
+		ans promptAnswer
+		ok  bool
+	}
+	ch := make(chan outcome, 1)
+	go func() {
+		yes, ans, ok := clackConfirm(w, p, question, def)
+		ch <- outcome{yes: yes, ans: ans, ok: ok}
+	}()
+	select {
+	case <-ctx.Done():
+		return false, answerQuit, true
+	case o := <-ch:
+		return o.yes, o.ans, o.ok
+	}
 }
 
 // askTourPick asks the shop's pick question through pick while honoring ctx:
@@ -678,7 +834,20 @@ func (a *app) tourWrapUp(p painter, e catalogEntry) {
 		fmt.Fprintf(a.out, "Note: %s is not on your PATH; add it to call iris from anywhere.\n", dir)
 	}
 	fmt.Fprintln(a.out)
+	if p.enabled {
+		fmt.Fprintln(a.out, p.dim(tourSignoffs[rand.IntN(len(tourSignoffs))]))
+	}
 	fmt.Fprintln(a.out, p.rainbow("Enjoy iris."))
+}
+
+// tourSignoffs is the ceremony-only farewell pool, one picked at random after
+// a completed tour — the plain surface stays byte-stable without it.
+var tourSignoffs = []string{
+	"The rainbow is provisioned. Every row now answers for itself.",
+	"Engine humming. Go on, ask a row who wrote it — it loves that.",
+	"All set. Somewhere, a mystery CSV just lost its alibi.",
+	"Settled in. Your rows will never write anonymously again.",
+	"Provenance sealed. History has entered the chat.",
 }
 
 // executableDirOffPATH resolves the running binary's directory and reports it
