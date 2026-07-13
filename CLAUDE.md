@@ -1,7 +1,7 @@
 # Iris — engine + CLI
 
 Provenance-first data engine + pipeline orchestrator, one Go binary (`cmd/iris`).
-Reference docs: `docs/Iris Specification Inventory.md` (spec), `docs/Iris Epics.md` (epics + build order), `docs/Tasks/` (work items), `BUILD_STATE.md` (live build status).
+Reference docs: `docs/Iris Specification Inventory.md` (spec), `docs/Iris Epics.md` (epics + build order), `docs/Tasks/` (work items). (BUILD_STATE.md retired.)
 
 ## Commands
 

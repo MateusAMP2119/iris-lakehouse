@@ -228,8 +228,8 @@ CI runs all of the above on Go 1.25 and 1.26, plus golangci-lint and the cross-c
 | [Specification Inventory](docs/Iris%20Specification%20Inventory.md) | The full spec: every behavior, table, endpoint, and doctrine. Source of truth; on conflict, the spec wins |
 | [Epics](docs/Iris%20Epics.md) | The 15 capability epics (E00–E14) and their build-dependency order |
 | [Tasks](docs/Tasks) | Per-task briefs: contract lists, dependencies, Done-when checklists |
-| [BUILD_STATE.md](BUILD_STATE.md) | Live build status: every task, PR, and open item |
 | [CLAUDE.md](CLAUDE.md) | TDD doctrine, branching rules, and conventions |
+| (BUILD_STATE.md retired) | |
 
 ---
 

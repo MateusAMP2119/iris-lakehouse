@@ -1,7 +1,7 @@
 # Iris — engine + CLI
 
 Provenance-first data engine + pipeline orchestrator, one Go binary (`cmd/iris`).
-Source of truth: `docs/Iris Specification Inventory.md` (conflict with any other doc → spec wins). Epics + build order: `docs/Iris Epics.md`. Work items: `docs/Tasks/`. Live build status: `BUILD_STATE.md`.
+Source of truth: `docs/Iris Specification Inventory.md` (conflict with any other doc → spec wins). Epics + build order: `docs/Iris Epics.md`. Work items: `docs/Tasks/`. (BUILD_STATE.md retired; no longer used for tracking.)
 
 ## TDD doctrine (non-negotiable)
 
