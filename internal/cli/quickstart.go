@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/MateusAMP2119/iris-engine-cli/internal/buildinfo"
 )
 
 // quickstartStep is one canonical tour step: a stable id, a one-line
@@ -205,14 +207,27 @@ func (a *app) runQuickstart() runE {
 // how consent works, and how the tour ends. The installer's continuation
 // (--from-installer) skips it -- install.sh's banner was the welcome.
 func (a *app) quickstartWelcome(p painter, selected catalogEntry, explicit bool) {
-	fmt.Fprintln(a.out, p.cyan("Welcome to iris — the guided first session."))
-	fmt.Fprintln(a.out)
-	fmt.Fprintln(a.out, "The tour runs the real first session in two acts:")
-	fmt.Fprintf(a.out, "  %s — provision the engine and start it\n", p.cyan("THE ENGINE"))
 	pipelineLine := "pick a starter from the pipeline catalog, run it, ask a row who wrote it"
 	if explicit {
 		pipelineLine = fmt.Sprintf("register the %s pipeline, run it, ask a row who wrote it", selected.ID)
 	}
+	if p.enabled {
+		// The ceremony surface opens the clack rail; the plain rendering below
+		// stays byte-stable for every non-terminal consumer.
+		clackIntro(a.out, p, "Welcome to iris — the guided first session ("+buildinfo.Version+")")
+		fmt.Fprintf(a.out, "%s  The tour runs the real first session in two acts:\n", p.dim(railBar))
+		fmt.Fprintf(a.out, "%s    %s — provision the engine and start it\n", p.dim(railBar), p.cyan("THE ENGINE"))
+		fmt.Fprintf(a.out, "%s    %s — %s\n", p.dim(railBar), p.magenta("THE PIPELINE"), pipelineLine)
+		fmt.Fprintf(a.out, "%s\n", p.dim(railBar))
+		fmt.Fprintf(a.out, "%s  Every step is the real command; it ends with the engine left running.\n", p.dim(railBar))
+		fmt.Fprintf(a.out, "%s\n", p.dim(railBar))
+		clackOutro(a.out, p, "tour continues below")
+		return
+	}
+	fmt.Fprintln(a.out, p.cyan("Welcome to iris — the guided first session."))
+	fmt.Fprintln(a.out)
+	fmt.Fprintln(a.out, "The tour runs the real first session in two acts:")
+	fmt.Fprintf(a.out, "  %s — provision the engine and start it\n", p.cyan("THE ENGINE"))
 	fmt.Fprintf(a.out, "  %s — %s\n", p.magenta("THE PIPELINE"), pipelineLine)
 	fmt.Fprintln(a.out)
 	fmt.Fprintln(a.out, "One question opens each act; its steps then run straight through, for real.")
