@@ -120,6 +120,9 @@ func newLaneLoop(
 	objects *store.ObjectStore,
 	dataDSN string,
 	passCounter *dispatch.PassCounter,
+	retention store.RetentionReader,
+	retain int64,
+	deleteLog RunLogPruneFunc,
 	logger *slog.Logger,
 ) *dispatch.Loop {
 	if logger == nil {
@@ -145,6 +148,9 @@ func newLaneLoop(
 		workspace: workspace,
 		submit:    submit,
 		manual:    manual,
+		retention: retention,
+		retain:    retain,
+		deleteLog: deleteLog,
 		logger:    logger,
 	}
 	opts := []dispatch.LoopOption{dispatch.WithPostPass(post)}
@@ -322,20 +328,34 @@ func (m *laneExec) childEnv(runID int64) []string {
 	return append(os.Environ(), dispatch.DBConnEnvVar+"="+url)
 }
 
-// lanePostPass runs the dispatcher-owned failure propagation after a lane pass
-// completes: for each member whose gate poisoned this pass, it mints a
-// never-executed dead-lettered run (cause=propagated) recording the immediate
-// failed_upstream and the poisoned upstream run(s) for lineage. It never runs
-// mid-pass.
+// lanePostPass runs the dispatcher-owned bookkeeping after a lane pass completes,
+// never mid-pass: failure propagation (for each member whose gate poisoned this
+// pass, it mints a never-executed dead-lettered run (cause=propagated) recording
+// the immediate failed_upstream and the poisoned upstream run(s) for lineage) and
+// count-based retention pruning (each lane pipeline's runs beyond the newest
+// `retain` are archived into run_summaries and deleted, sparing runs held by
+// outstanding dead letters).
 type lanePostPass struct {
 	workspace string
 	submit    dispatch.Submitter
 	manual    store.ManualReader
+	retention store.RetentionReader
+	retain    int64
+	deleteLog RunLogPruneFunc
 	logger    *slog.Logger
 }
 
-// AfterPass propagates each poisoned member's failure to a downstream dead-letter.
+// AfterPass propagates each poisoned member's failure to a downstream dead-letter,
+// then prunes the lane's run history down to the retention count.
 func (p lanePostPass) AfterPass(ctx context.Context, report dispatch.PassReport) error {
+	if err := p.propagateFailures(ctx, report); err != nil {
+		return err
+	}
+	return p.pruneRetention(ctx, report)
+}
+
+// propagateFailures mints the propagated dead-letter for each poisoned member.
+func (p lanePostPass) propagateFailures(ctx context.Context, report dispatch.PassReport) error {
 	for _, m := range report.Poisoned {
 		plan := dispatch.PlanPropagation(m.Decision)
 		if !plan.Propagate {
@@ -362,6 +382,58 @@ func (p lanePostPass) AfterPass(ctx context.Context, report dispatch.PassReport)
 			return fmt.Errorf("lane post-pass %q: propagate: %w", m.Pipeline, err)
 		}
 	}
+	return nil
+}
+
+// pruneRetention enforces count-based retention over THIS lane's pipelines: it
+// reads the run census and the dead-letter-held set, selects the runs beyond the
+// newest `retain` per pipeline (dispatch.SelectPrunable, sparing held runs), and
+// prunes each through the single writer (archival summary + delete in one meta
+// transaction, then the per-run log). Scoping to the lane's own pipelines keeps
+// concurrent lane post-passes from pruning the same run: lanes never share a
+// pipeline. A pass with nothing beyond retain writes nothing. An error is
+// returned to the loop, which logs it and retries at the next pass boundary --
+// retention is opportunistic, never fatal to dispatch.
+func (p lanePostPass) pruneRetention(ctx context.Context, report dispatch.PassReport) error {
+	if p.retention == nil {
+		return nil // retention read seam not wired (walk-only test composition)
+	}
+	member := make(map[string]bool, len(report.Pipelines))
+	for _, name := range report.Pipelines {
+		member[name] = true
+	}
+
+	census, err := p.retention.RetentionRuns(ctx)
+	if err != nil {
+		return fmt.Errorf("lane post-pass %q: %w", report.Lane, err)
+	}
+	var runs []dispatch.RetentionRun
+	for _, ref := range census {
+		if member[ref.Pipeline] {
+			runs = append(runs, dispatch.RetentionRun{RunID: ref.RunID, Pipeline: ref.Pipeline})
+		}
+	}
+	held, err := p.retention.OutstandingDeadLetterRuns(ctx)
+	if err != nil {
+		return fmt.Errorf("lane post-pass %q: %w", report.Lane, err)
+	}
+
+	ids := dispatch.SelectPrunable(runs, int(p.retain), held)
+	if len(ids) == 0 {
+		return nil
+	}
+	records, err := p.retention.PrunableRunsByID(ctx, ids)
+	if err != nil {
+		return fmt.Errorf("lane post-pass %q: %w", report.Lane, err)
+	}
+	for _, rec := range records {
+		if err := p.submit.Submit(ctx, func(w *store.Writer) error {
+			return w.PruneRun(ctx, rec, p.deleteLog)
+		}); err != nil {
+			return fmt.Errorf("lane post-pass %q: prune run %d: %w", report.Lane, rec.RunID, err)
+		}
+	}
+	p.logger.Info("lane post-pass: pruned runs beyond retention", "lane", report.Lane, "count", len(records), "retain", p.retain)
 	return nil
 }
 

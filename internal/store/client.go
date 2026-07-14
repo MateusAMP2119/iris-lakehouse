@@ -60,6 +60,7 @@ type Client struct {
 	endpoints   EndpointRowReader
 	leaderAddr  LeaderAddrReader
 	runLineages RunLineageReader
+	retention   RetentionReader
 }
 
 // Connect opens the meta client from the admin-derived connection source: it
@@ -111,6 +112,7 @@ func Connect(ctx context.Context, src ConnSource) (*Client, error) {
 		endpoints:   newPgxEndpointReader(readPoolSeam),
 		leaderAddr:  newPgxLeaderAddrReader(readPoolSeam),
 		runLineages: newPgxRunLineageReader(readPoolSeam),
+		retention:   newPgxRetentionReader(readPoolSeam),
 	}, nil
 }
 
@@ -248,6 +250,11 @@ func (c *Client) LeaderAddrReader() LeaderAddrReader { return c.leaderAddr }
 // records with their consumed upstream ids and replayed_from the runs collection
 // (`iris run list`, GET /runs[?include=inputs] and GET /runs/{id}) is composed from.
 func (c *Client) RunLineageReader() RunLineageReader { return c.runLineages }
+
+// RetentionReader returns the plain-MVCC retention read seam (the pool): the run
+// (id, pipeline) census, the dead-letter-held run ids, and the archival records
+// the lane loop's post-pass count-based pruner decides over and archives from.
+func (c *Client) RetentionReader() RetentionReader { return c.retention }
 
 // Close tears down the client: it closes the reader pool and the leader session. It
 // is safe to call after the lock has already released the session, so the daemon can

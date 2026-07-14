@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/MateusAMP2119/iris-engine-cli/internal/buildinfo"
+	"github.com/MateusAMP2119/iris-engine-cli/internal/config"
 )
 
 // runE is the signature of a cobra command handler.
@@ -289,8 +290,8 @@ func (a *app) engineCmd() *cobra.Command {
 	// Daemon-scoped flags live only on engine start.
 	start.Flags().BoolP("detach", "d", false, "detach and run the engine in the background")
 	start.Flags().String("pg-dsn", "", "DSN of an external Postgres to use instead of the managed one")
-	start.Flags().String("retain", "", "run-history retention count")
-	start.Flags().String("journal-partition-rows", "", "rows per journal partition before sealing")
+	start.Flags().Int64("retain", config.DefaultRetain, "run-history retention count")
+	start.Flags().Int64("journal-partition-rows", config.DefaultJournalPartitionRows, "rows per journal partition before sealing")
 	start.Flags().String("objects-path", "", "filesystem path for the local object store")
 	start.Flags().String("tcp", "", "address to expose the read API and control plane over TCP")
 	start.Flags().String("tls-cert", "", "TLS certificate for the TCP listener")

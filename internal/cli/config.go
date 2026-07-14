@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -71,6 +72,12 @@ func flagLayer(cmd *cobra.Command) config.Layer {
 	if v, ok := changedString(cmd, "pg-dsn"); ok {
 		l.PgDSN = &v
 	}
+	if v, ok := changedInt64(cmd, "retain"); ok {
+		l.Retain = &v
+	}
+	if v, ok := changedInt64(cmd, "journal-partition-rows"); ok {
+		l.JournalPartitionRows = &v
+	}
 	if v, ok := changedString(cmd, "objects-path"); ok {
 		l.ObjectsPath = &v
 	}
@@ -95,4 +102,19 @@ func changedString(cmd *cobra.Command, name string) (string, bool) {
 		return "", false
 	}
 	return f.Value.String(), true
+}
+
+// changedInt64 returns the value of an int64 flag and whether the invocation
+// explicitly set it. Cobra already rejected a non-integer value at parse time,
+// so the re-parse of the flag's canonical string form is total.
+func changedInt64(cmd *cobra.Command, name string) (int64, bool) {
+	f := cmd.Flags().Lookup(name)
+	if f == nil || !f.Changed {
+		return 0, false
+	}
+	v, err := strconv.ParseInt(f.Value.String(), 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
 }

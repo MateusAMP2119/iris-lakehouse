@@ -88,6 +88,11 @@ type FreshRunner interface {
 type PassReport struct {
 	// Lane is the lane the pass walked.
 	Lane string
+	// Pipelines are the lane's members in composer order -- the walked set, whether
+	// or not each started a run this pass. Post-pass retention scopes to it: the
+	// lane's pipelines are pruned on the lane's own pass boundary, and lanes never
+	// share a pipeline, so concurrent lane post-passes never prune the same run.
+	Pipelines []string
 	// Started are the pipelines started as fresh cause=loop runs this pass, in
 	// composer order.
 	Started []string
@@ -225,7 +230,7 @@ func NewLoop(walk WalkReader, gate PassGate, runner FreshRunner, logger *slog.Lo
 // operational error), stopping the pass so the runner is reusable rather than left
 // mid-lane.
 func (l *Loop) runLanePass(ctx context.Context, lane Lane) (PassReport, error) {
-	report := PassReport{Lane: lane.Name}
+	report := PassReport{Lane: lane.Name, Pipelines: append([]string(nil), lane.Pipelines...)}
 	for _, pipeline := range lane.Pipelines {
 		if err := ctx.Err(); err != nil {
 			return report, err
