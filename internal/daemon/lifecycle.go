@@ -265,6 +265,11 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// gate (GET /pipelines/{name}/gate) is the depends_on gate ledger `iris pipeline
 	// show` prints, served standalone.
 	runs := newRunsPlane(client.RunLineageReader(), logger)
+	// The per-run log writer: both run paths stream a run's stdout/stderr into
+	// its run-id-keyed file (runs.log_ref), the post-pass pruner deletes the file
+	// with the run row, and the run-logs plane serves it back (GET /runs/{id}/logs,
+	// a read on any role -- the log lives on the node that executed the run).
+	runLogs := NewRunLogWriter(s)
 	runTrace := newRunTracePlane(client.Reader(), logger)
 	pipelineGate := newPipelineGatePlane(client.ShowReader(), logger)
 
@@ -279,6 +284,7 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 		api.WithInfo(info), api.WithInspect(inspect), api.WithPipelineShow(pipelineShow),
 		api.WithDeadImpact(deadletters), api.WithReplay(deadletters), api.WithDrain(deadletters),
 		api.WithRuns(runs), api.WithRunTrace(runTrace), api.WithPipelineGate(pipelineGate),
+		api.WithRunLogs(NewRunLogsPlane(runLogs)),
 	), WithServerLogger(logger), WithVerifier(verifier))
 	if err := srv.Start(ctx); err != nil {
 		return err
@@ -311,11 +317,10 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// bookkeeping (failure propagation, then count-based retention pruning down to
 	// the resolved retain, each pruned run's log dying with its row). The run's data
 	// connection targets the engine-owned data database, retargeted from the admin DSN.
-	runLogs := NewRunLogWriter(s)
 	laneBuild := func(submit dispatch.Submitter) *dispatch.Loop {
 		return newLaneLoop(submit, inflight, workspace, client.RegistryReader(), client.ManualReader(),
 			exec.NewOSRunner(), data, objects, laneDataDSN, passCounter,
-			client.RetentionReader(), s.Retain, runLogs.DeleteOnPrune, logger)
+			client.RetentionReader(), s.Retain, runLogs, logger)
 	}
 
 	cand := NewCandidate(client.Lock(), role, client.WriteConn(), logger,
@@ -329,6 +334,7 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 		WithLaneLoop(laneBuild),
 		WithLanePlane(lanes),
 		WithTeardownSeams(client.RetentionReader()),
+		WithRunLogs(runLogs),
 		WithPassCounter(passCounter),
 		WithDeadletterPlane(deadletters),
 		WithInflightKiller(inflight),

@@ -121,6 +121,11 @@ type Candidate struct {
 	// leaves the destroyer's no-op lister (shape-test compositions).
 	retention store.RetentionReader
 
+	// runLogs is the per-run output capture the manual plane streams a run's
+	// stdout/stderr through (the lane loop receives it via its build closure).
+	// Nil leaves manual runs uncaptured (shape-test compositions).
+	runLogs *RunLogWriter
+
 	// Promote wiring (for pipeline promote).
 	promotes        *promotePlane
 	promoteState    store.PromoteStateReader
@@ -356,6 +361,16 @@ func WithWipePlane(wp *wipePlane, reader store.Reader, data dataPlane) Candidate
 		c.wipes = wp
 		c.reader = reader
 		c.data = data
+	}
+}
+
+// WithRunLogs wires the per-run output capture: manual runs stream their
+// stdout/stderr into the writer's run-id-keyed logs and record runs.log_ref
+// (the lane loop receives the same writer through its build closure). Absent,
+// run output is discarded (shape-test compositions).
+func WithRunLogs(logs *RunLogWriter) CandidateOption {
+	return func(c *Candidate) {
+		c.runLogs = logs
 	}
 }
 
@@ -673,7 +688,7 @@ func (c *Candidate) lead(ctx context.Context) (demoted bool, err error) {
 		// store (the *pg.Client that also serves as the journal high-watermark), the
 		// meta seal read seam, the single dispatcher (checkpoint insert + archive
 		// flip), and the object store. Nil seams (the shape tests) leave sealing off.
-		mo := newManualOrchestrator(c.workspace, d, c.registry, c.manualReader, c.objects, c.runner, c.journalHM, c.manualDataDSN, reg, c.buildSealer(d), c.logger)
+		mo := newManualOrchestrator(c.workspace, d, c.registry, c.manualReader, c.objects, c.runner, c.journalHM, c.manualDataDSN, reg, c.buildSealer(d), c.runLogs, c.logger)
 		c.pipelines.install(mo)
 		defer c.pipelines.clear()
 	}

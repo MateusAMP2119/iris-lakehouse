@@ -37,8 +37,8 @@ import (
 // starting it -- so the manual path never starts a lane member out of band and same-lane
 // serialization holds. Each run's IRIS_DB_URL is the base data-database connection
 // carrying the run id (the same injection the lane loop applies), so a manual run's
-// captured writes attribute to its own run. Run output is still not captured to a per-run
-// log file (neither run path wires the dispatch.RunLog seam), so log_ref stays null.
+// captured writes attribute to its own run. Run output streams into the per-run log
+// (RunLogWriter, the same sink the lane loop wires), recorded as runs.log_ref.
 
 // pipelinePlane is the daemon's api.PipelineHandler: it serves the pipeline listing from
 // the reader pool always, and delegates the manual run to the live orchestrator when the
@@ -139,7 +139,7 @@ type manualOrchestrator struct {
 // is the base scoped data-database connection each run's IRIS_DB_URL is derived from
 // (the run id rides it), the same DSN the lane loop injects, so a manual run's captured
 // writes attribute to its own run exactly like a lane run's.
-func newManualOrchestrator(workspace string, submit dispatch.Submitter, registry store.RegistryReader, manual store.ManualReader, objects *store.ObjectStore, runner exec.Runner, journal dispatch.JournalHighWatermark, dbURL string, inflight *inflightRuns, sealer *journalSealer, logger *slog.Logger) *manualOrchestrator {
+func newManualOrchestrator(workspace string, submit dispatch.Submitter, registry store.RegistryReader, manual store.ManualReader, objects *store.ObjectStore, runner exec.Runner, journal dispatch.JournalHighWatermark, dbURL string, inflight *inflightRuns, sealer *journalSealer, runLogs *RunLogWriter, logger *slog.Logger) *manualOrchestrator {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -153,6 +153,7 @@ func newManualOrchestrator(workspace string, submit dispatch.Submitter, registry
 		dbURL:     dbURL,
 		inflight:  inflight,
 		sealer:    sealer,
+		runLogs:   runLogs,
 		logger:    logger,
 	}
 	mr := dispatch.NewManualRunner(
@@ -309,6 +310,7 @@ type manualExec struct {
 	dbURL     string         // the run's base scoped data-database connection; the run id rides it (the daemon derives it with pg.DataDSN; empty only where no data connection is wired)
 	inflight  *inflightRuns  // tracks this run's live process group so a self-demotion kills it; nil in the shape tests
 	sealer    *journalSealer // the opportunistic post-pass seal step; nil in the shape tests leaves sealing off
+	runLogs   *RunLogWriter  // per-run output capture; nil discards (shape tests)
 	logger    *slog.Logger
 }
 
@@ -354,23 +356,33 @@ func (m *manualExec) runNow(ctx context.Context, rec store.RunRecord) (dispatch.
 	}
 	runID := strconv.FormatInt(info.ID, 10)
 
+	// Open the per-run output capture: the run's stdout and stderr stream into
+	// the run-id-keyed log under .iris/logs, and its path is recorded as
+	// runs.log_ref. Capture is best-effort -- a failed open runs the pipeline
+	// uncaptured (warned) rather than blocking the run.
+	sink, logRef := openRunLog(m.runLogs, runID, m.logger)
+
 	argv := dispatch.ResolveRunArgv(target.Argv, nil, m.objects)
 	// objects is this leader's (wired at candidate construction; a promoted failover
 	// leader therefore resolves built-run binaries from its own objects_path).
 	h, err := m.runner.Start(ctx, exec.Spec{
-		Dir:  filepath.Join(m.workspace, target.Folder),
-		Argv: argv,
-		Env:  m.childEnv(info.ID),
+		Dir:    filepath.Join(m.workspace, target.Folder),
+		Argv:   argv,
+		Env:    m.childEnv(info.ID),
+		Stdout: sink,
+		Stderr: sink,
 	})
 	if err != nil {
+		closeRunLog(sink)
 		// Nothing started: remove the queued run so meta carries no phantom.
 		if derr := m.submitter.Submit(ctx, func(w *store.Writer) error { return w.DeleteQueuedRun(ctx, runID) }); derr != nil {
 			m.logger.Warn("manual run: could not delete queued run after start failure", "run", runID, "err", derr)
 		}
 		return dispatch.RunSucceeded, fmt.Errorf("start manual run for %q: %w", rec.Pipeline, err)
 	}
+	defer closeRunLog(sink)
 
-	if err := m.submitter.Submit(ctx, func(w *store.Writer) error { return w.MarkRunRunning(ctx, runID, h.PGID()) }); err != nil {
+	if err := m.submitter.Submit(ctx, func(w *store.Writer) error { return w.MarkRunRunning(ctx, runID, h.PGID(), logRef) }); err != nil {
 		_ = h.Kill()
 		_, _ = h.Wait()
 		return dispatch.RunSucceeded, fmt.Errorf("record manual run %s running: %w", runID, err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 )
 
@@ -59,6 +60,16 @@ type DeadImpactHandler interface {
 	Impact(ctx context.Context, runID string) (any, error)
 }
 
+// RunLogsHandler serves GET /runs/{id}/logs: the run's captured stdout/stderr,
+// streamed as plain text (a log is raw process output, never an envelope). The
+// daemon implements it over the per-run log files under its own workspace; the
+// mux depends only on this interface.
+type RunLogsHandler interface {
+	// Logs opens the run's captured output for streaming. The mux closes the
+	// returned reader. A run with no captured output is an error naming why.
+	Logs(ctx context.Context, id string) (io.ReadCloser, error)
+}
+
 // The default (unwired) read-route faults. A route reaching its no* handler means
 // the daemon has not wired the reader, so the request is a 500 internal fault
 // naming the missing reader -- never a 404 (the route exists) and never a
@@ -72,6 +83,8 @@ var (
 	ErrGateUnavailable = errors.New("api: pipeline gate reader not wired")
 	// ErrImpactUnavailable signals the dead letter impact reader is not wired.
 	ErrImpactUnavailable = errors.New("api: dead letter impact reader not wired")
+	// ErrRunLogsUnavailable signals the run logs reader is not wired.
+	ErrRunLogsUnavailable = errors.New("api: run logs reader not wired")
 )
 
 // noRuns is the default RunsHandler before one is wired: every read is an
@@ -97,6 +110,13 @@ func (noPipelineGate) Gate(context.Context, string) (any, error) { return nil, E
 type noDeadImpact struct{}
 
 func (noDeadImpact) Impact(context.Context, string) (any, error) { return nil, ErrImpactUnavailable }
+
+// noRunLogs is the default RunLogsHandler before one is wired.
+type noRunLogs struct{}
+
+func (noRunLogs) Logs(context.Context, string) (io.ReadCloser, error) {
+	return nil, ErrRunLogsUnavailable
+}
 
 // WithRuns wires the runs collection handler for GET /runs and GET /runs/{id}. A
 // nil handler is ignored, keeping the safe default (the route faults internal
@@ -135,6 +155,16 @@ func WithDeadImpact(h DeadImpactHandler) MuxOption {
 	return func(m *mux) {
 		if h != nil {
 			m.deadImpact = h
+		}
+	}
+}
+
+// WithRunLogs wires the run logs handler for GET /runs/{id}/logs. A nil handler
+// is ignored.
+func WithRunLogs(h RunLogsHandler) MuxOption {
+	return func(m *mux) {
+		if h != nil {
+			m.runLogs = h
 		}
 	}
 }
@@ -211,6 +241,33 @@ func (m *mux) serveRunTrace(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	WriteData(w, http.StatusOK, res)
+}
+
+// serveRunLogs handles GET /runs/{id}/logs: the run's captured stdout/stderr,
+// streamed as plain text -- raw process output, never a JSON envelope. An
+// unwired reader is a 500 internal fault; a run with no captured output is an
+// operation failure naming why.
+func (m *mux) serveRunLogs(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET "+r.URL.Path+" only")
+		return
+	}
+	if !noParams(w, r) {
+		return
+	}
+	rc, err := m.runLogs.Logs(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, ErrRunLogsUnavailable) {
+			WriteError(w, http.StatusInternalServerError, string(CodeInternal), err.Error())
+			return
+		}
+		WriteError(w, http.StatusUnprocessableEntity, CodeOpFailed, err.Error())
+		return
+	}
+	defer func() { _ = rc.Close() }()
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, rc)
 }
 
 // servePipelineGate handles GET /pipelines/{name}/gate: the depends_on gate ledger.

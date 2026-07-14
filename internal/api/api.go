@@ -98,6 +98,7 @@ func NewMux(opts ...MuxOption) http.Handler {
 		provenance:   noProvenance{},
 		runs:         noRuns{},
 		runTrace:     noRunTrace{},
+		runLogs:      noRunLogs{},
 		pipelineGate: noPipelineGate{},
 		deadImpact:   noDeadImpact{},
 		endpointCtl:  noEndpointControl{},
@@ -137,6 +138,7 @@ type mux struct {
 	// silent empty payload), so the daemon wires the pgx-backed implementation.
 	runs         RunsHandler
 	runTrace     RunTraceHandler
+	runLogs      RunLogsHandler
 	pipelineGate PipelineGateHandler
 	deadImpact   DeadImpactHandler
 	// endpointCtl runs the leader-side POST /endpoint/apply (endpointapply.go);
