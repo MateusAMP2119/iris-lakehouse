@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/MateusAMP2119/iris-engine-cli/internal/api"
@@ -344,12 +345,37 @@ func (o *controlOrchestrator) provisionPipelineRole(ctx context.Context, p *decl
 	if err != nil {
 		return fmt.Errorf("declare apply: expand declared access for %q: %w", p.Name, err)
 	}
+
+	// Grant only what exists: a declared table can legitimately be absent at
+	// apply time (created outside the schemas/ tree, or arriving in a later
+	// apply). The role, credential, and connect/meta boundaries are asserted
+	// regardless; the missing tables' grants are deferred to the next apply,
+	// named in the log, rather than failing the whole apply on a GRANT against
+	// a table Postgres does not hold yet.
+	live, err := o.data.ReadLiveView(ctx)
+	if err != nil {
+		return fmt.Errorf("declare apply: read live view for role grants: %w", err)
+	}
+	grantable := grants[:0:0]
+	var deferred []string
+	for _, g := range grants {
+		if live.Tables[g.Schema+"."+g.Table] {
+			grantable = append(grantable, g)
+			continue
+		}
+		deferred = append(deferred, g.Schema+"."+g.Table)
+	}
+	if len(deferred) > 0 {
+		o.logger.Warn("declare apply: declared table(s) absent; their role grants are deferred to the next apply",
+			"pipeline", p.Name, "tables", strings.Join(dedupeStrings(deferred), ", "))
+	}
+
 	if err := pg.ProvisionPipelineRole(ctx, o.data, pg.RoleProvision{
 		Role:          role,
 		CredentialDDL: store.RenderSetRolePassword(role, secret),
 		MetaDatabase:  store.MetaDatabase,
 		DataDatabase:  pg.DataDatabase,
-		Grants:        grants,
+		Grants:        grantable,
 	}); err != nil {
 		return fmt.Errorf("declare apply: provision pipeline role: %w", err)
 	}
@@ -371,6 +397,19 @@ func (o *controlOrchestrator) provisionPipelineRole(ctx context.Context, p *decl
 	}
 	o.logger.Info("declare apply: provisioned pipeline role", "pipeline", p.Name, "role", role, "grants", len(grants))
 	return nil
+}
+
+// dedupeStrings returns the unique values of in, preserving first-seen order.
+func dedupeStrings(in []string) []string {
+	seen := make(map[string]bool, len(in))
+	var out []string
+	for _, v := range in {
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // laneMembers returns the lane's member names from the lanes table in meta (the

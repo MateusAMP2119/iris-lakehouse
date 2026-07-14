@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/MateusAMP2119/iris-engine-cli/internal/declare"
+	"github.com/MateusAMP2119/iris-engine-cli/internal/pg"
 	"github.com/MateusAMP2119/iris-engine-cli/internal/store/storetest"
 )
 
@@ -23,6 +24,11 @@ func pipelineDecl(name string) *declare.Pipeline {
 	}
 }
 
+// declaredLive is a live view where the declaration's tables exist.
+func declaredLive() pg.LiveView {
+	return pg.LiveView{Tables: map[string]bool{"analytics.orders": true, "analytics.rollup": true}}
+}
+
 func TestApplyProvisionsPipelineRole(t *testing.T) {
 	t.Run("apply-provisions-pipeline-role", func(t *testing.T) {
 		ctx := context.Background()
@@ -30,6 +36,7 @@ func TestApplyProvisionsPipelineRole(t *testing.T) {
 		t.Run("first apply provisions the role and records the full ledger", func(t *testing.T) {
 			rec := storetest.NewWriteRecorder()
 			data := &driftDataFake{}
+			data.controlDataFake.live = declaredLive()
 			o := &controlOrchestrator{
 				data:      data,
 				submit:    gateSubmitter{rec: rec},
@@ -73,6 +80,7 @@ func TestApplyProvisionsPipelineRole(t *testing.T) {
 		t.Run("a re-apply reuses the persisted credential (create-once)", func(t *testing.T) {
 			rec := storetest.NewWriteRecorder()
 			data := &driftDataFake{}
+			data.controlDataFake.live = declaredLive()
 			o := &controlOrchestrator{
 				data:      data,
 				submit:    gateSubmitter{rec: rec},
@@ -90,6 +98,27 @@ func TestApplyProvisionsPipelineRole(t *testing.T) {
 			// The idempotent DDL still runs (role ensure + grants), on the persisted secret.
 			if len(data.execs) == 0 {
 				t.Error("a re-apply issued no provisioning DDL; the idempotent re-provision must run")
+			}
+		})
+
+		t.Run("grants on absent tables are deferred, the role still provisions", func(t *testing.T) {
+			rec := storetest.NewWriteRecorder()
+			data := &driftDataFake{} // empty live view: no declared table exists yet
+			o := &controlOrchestrator{
+				data:      data,
+				submit:    gateSubmitter{rec: rec},
+				roleCreds: credsFake{secrets: nil},
+				logger:    discardLogger(),
+			}
+			if err := o.provisionPipelineRole(ctx, pipelineDecl("early")); err != nil {
+				t.Fatalf("provisionPipelineRole over absent tables: %v", err)
+			}
+			ddl := strings.Join(data.execs, "\n")
+			if !strings.Contains(ddl, "CREATE ROLE") || !strings.Contains(ddl, "REVOKE CONNECT") {
+				t.Errorf("role/boundary DDL missing despite deferred grants:\n%s", ddl)
+			}
+			if strings.Contains(ddl, `SELECT ("id")`) || strings.Contains(ddl, `("total")`) {
+				t.Errorf("grants were issued against absent tables:\n%s", ddl)
 			}
 		})
 
