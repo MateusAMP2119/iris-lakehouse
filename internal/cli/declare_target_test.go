@@ -75,11 +75,11 @@ func TestDeclareSingleFileTarget(t *testing.T) {
 
 // TestApplySingleFileResolution proves iris declare apply's target resolution:
 // a bare apply is a usage error (exit 2); a resolvable target (file or folder)
-// passes resolution and reaches the
-// unchanged daemon-dial stub (exit 3, no daemon reachable, never auto-started
-// -- proof resolution succeeded rather than short-circuiting); a folder with
-// no iris-declare.yaml is a precise error (exit 4), never a sweep into a
-// nested declaration (no workspace sweep, no transitive chaining).
+// passes resolution and reaches the unchanged daemon-dial stub (exit 3, no
+// daemon reachable, never auto-started -- proof resolution succeeded rather
+// than short-circuiting); a folder with no iris-declare.yaml is a precise
+// error (exit 4), never a sweep into a nested declaration (no workspace sweep,
+// no transitive chaining).
 func TestApplySingleFileResolution(t *testing.T) {
 	t.Run("apply-single-file-resolution", func(t *testing.T) {
 		t.Run("bare apply is a usage error (exit 2)", func(t *testing.T) {

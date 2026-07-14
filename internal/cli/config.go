@@ -12,12 +12,12 @@ import (
 // resolveTarget resolves an invocation's engine/connection settings through the
 // configuration precedence: the global --socket/--host/--token flags override
 // the IRIS_* environment, which overrides an optional .iris/iris.toml under the
-// workspace, which overrides the built-in
-// defaults (the local socket + managed Postgres of the zero-config path). Full
-// consumption -- actually dialing the resolved target -- arrives with the daemon
-// client in E02/E03; today the exit-3 dial path resolves through it so the
-// precedence is real rather than a library sitting unused, and a misconfigured
-// iris.toml or IRIS_* value surfaces as a warning instead of silently.
+// workspace, which overrides the built-in defaults (the local socket + managed
+// Postgres of the zero-config path). Full consumption -- actually dialing the
+// resolved target -- arrives with the daemon client in E02/E03; today the exit-3
+// dial path resolves through it so the precedence is real rather than a library
+// sitting unused, and a misconfigured iris.toml or IRIS_* value surfaces as a
+// warning instead of silently.
 func (a *app) resolveTarget(cmd *cobra.Command) config.Settings {
 	workspace, err := os.Getwd()
 	if err != nil {

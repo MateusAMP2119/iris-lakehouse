@@ -461,20 +461,17 @@ func MetaSchema() Schema {
 				PrimaryKey: []string{"id"},
 				RawChecks:  []string{"id = 1"},
 			},
-			// read_pool_credential: the engine-owned shared read-pool login
-			// secret. Single row, id pinned to 1: secret (the base64url password
-			// of the shared
-			// iris_engine_read login) and created_at. Minted once at first daemon
-			// start (INSERT ... ON CONFLICT DO NOTHING, create-once so two daemons
-			// on one data cluster converge on ONE secret) and read back by every
-			// node's read-pool open; a restart or HA standby reuses the stored
-			// secret rather than minting a fresh one and resetting the shared
-			// login's password (last-starter-wins, which killed an earlier node's
-			// pool). It lives in meta, engine-admin-only like engine_key: no
-			// grant renderer touches it and every pipeline/data-PAT/read-pool
-			// role is denied CONNECT on meta, so the secret is unreachable to any
-			// caller. The shared meta database standbys already read gives HA
-			// superuser-free.
+			// read_pool_credential: the engine-owned shared read-pool login secret. Single
+			// row, id pinned to 1: secret (the base64url password of the shared
+			// iris_engine_read login) and created_at. Minted once at first daemon start
+			// (INSERT ... ON CONFLICT DO NOTHING, create-once so two daemons on one data
+			// cluster converge on ONE secret) and read back by every node's read-pool open;
+			// a restart or HA standby reuses the stored secret rather than minting a fresh
+			// one and resetting the shared login's password (last-starter-wins, which killed
+			// an earlier node's pool). It lives in meta, engine-admin-only like engine_key:
+			// no grant renderer touches it and every pipeline/data-PAT/read-pool role is
+			// denied CONNECT on meta, so the secret is unreachable to any caller. The shared
+			// meta database standbys already read gives HA superuser-free.
 			{
 				Name: "read_pool_credential",
 				Columns: []Column{

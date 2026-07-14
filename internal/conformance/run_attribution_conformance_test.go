@@ -18,14 +18,13 @@ import (
 // TestRunAttribution is the end-to-end proof that every captured write is attributed
 // to its run, that attribution rides the injected connection, and that the journal
 // layers concurrent and partial writes exactly as the provenance and undo consumers
-// require. It stands up one real Postgres
-// cluster the engine has never touched, provisions the partitioned journal and the
-// real iris.capture() function through the live pg path, declares a user table with
-// the three per-operation capture triggers, and mints a dedicated pipeline writer
-// role. Each subtest then drives writes AS that role over a connection whose run id
-// rides it exactly as the engine injects it at spawn -- via pg.InjectRunID merging the
-// per-session iris.run_id setting onto the DSN, never a hand-issued SET -- and asserts
-// the live journal.
+// require. It stands up one real Postgres cluster the engine has never touched,
+// provisions the partitioned journal and the real iris.capture() function through the
+// live pg path, declares a user table with the three per-operation capture triggers,
+// and mints a dedicated pipeline writer role. Each subtest then drives writes AS that
+// role over a connection whose run id rides it exactly as the engine injects it at
+// spawn -- via pg.InjectRunID merging the per-session iris.run_id setting onto the
+// DSN, never a hand-issued SET -- and asserts the live journal.
 //
 // The six legs, one per subtest:
 //

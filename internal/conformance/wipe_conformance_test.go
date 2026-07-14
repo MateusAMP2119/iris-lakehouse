@@ -18,15 +18,14 @@ import (
 // This file is E06.7 Live wipe closure: the epic's final conformance leg, proving
 // `iris workload wipe [<pipeline>]` against a REAL database. It exercises the live
 // wipe executor (pg.ExecuteWipe) the way E06.6's promotion leg exercises
-// pg.ExecutePromotionFlip: it stands up a
-// bare Postgres cluster, provisions the partitioned journal, the real
-// iris.capture() function, a user table with the three per-operation capture
-// triggers, and a pipeline writer role through the live pg path, drives real
-// captured writes, then runs the live wipe and asserts the outcome from an
-// independent admin connection. The full binary/daemon wiring of the command
-// rides E13's acceptance scenario; this leg proves what only a live database can:
-// wipe is one atomic transaction, exactly reverts in-scope disposable rows,
-// never clobbers permanent writes, and retains every journal row.
+// pg.ExecutePromotionFlip: it stands up a bare Postgres cluster, provisions the
+// partitioned journal, the real iris.capture() function, a user table with the
+// three per-operation capture triggers, and a pipeline writer role through the live
+// pg path, drives real captured writes, then runs the live wipe and asserts the
+// outcome from an independent admin connection. The full binary/daemon wiring of
+// the command rides E13's acceptance scenario; this leg proves what only a live
+// database can: wipe is one atomic transaction, exactly reverts in-scope disposable
+// rows, never clobbers permanent writes, and retains every journal row.
 
 const (
 	wipeWriter   = "iris_wipe_writer"
@@ -165,10 +164,10 @@ func (wc *wipeCluster) writerConn(t *testing.T, runID int64, wipeEligible bool) 
 
 // TestWipeRevertsUnpromotedKeepsJournal proves the epic's headline safety property
 // against a real database: `iris workload wipe` reverts un-promoted disposable data
-// while retaining every journal row. A single disposable
-// run inserts, updates, and deletes rows; the live wipe rolls all of it back to the
-// pre-run state, yet not one journal row is deleted -- every visited entry survives,
-// only its undo marker flips to wiped.
+// while retaining every journal row. A single disposable run inserts, updates, and
+// deletes rows; the live wipe rolls all of it back to the pre-run state, yet not
+// one journal row is deleted -- every visited entry survives, only its undo marker
+// flips to wiped.
 func TestWipeRevertsUnpromotedKeepsJournal(t *testing.T) {
 	wc := newWipeCluster(t)
 	wc.provisionTable(t, "analytics", "orders",
@@ -204,13 +203,13 @@ func TestWipeRevertsUnpromotedKeepsJournal(t *testing.T) {
 }
 
 // TestWipeNeverClobbersPermanent proves the never-clobbers rule against a real
-// database: a bare wipe exactly reverts the disposable
-// rows nothing permanent sits on, while every permanent write is preserved. A
-// disposable run inserts rows 1..3; a permanent run then updates row 1 (born
-// promoted) and inserts a permanent row 4. The wipe reverts rows 2 and 3, but the
-// open insert of row 1 is conflict-skipped because the later promoted update is
-// still in the row's value -- so the permanent write is never clobbered -- and the
-// promoted entries and their row survive untouched.
+// database: a bare wipe exactly reverts the disposable rows nothing permanent sits
+// on, while every permanent write is preserved. A disposable run inserts rows 1..3;
+// a permanent run then updates row 1 (born promoted) and inserts a permanent row 4.
+// The wipe reverts rows 2 and 3, but the open insert of row 1 is conflict-skipped
+// because the later promoted update is still in the row's value -- so the permanent
+// write is never clobbered -- and the promoted entries and their row survive
+// untouched.
 func TestWipeNeverClobbersPermanent(t *testing.T) {
 	wc := newWipeCluster(t)
 	wc.provisionTable(t, "analytics", "orders",
@@ -267,13 +266,13 @@ func TestWipeNeverClobbersPermanent(t *testing.T) {
 }
 
 // TestWipeAtomicTransaction proves the wipe runs in a single data-database
-// transaction: a mid-wipe failure leaves NO partial wipe
-// applied. A disposable run's writes are captured normally, then one captured
-// update entry's pre-image is tampered so restoring it violates the table's CHECK
-// constraint. Reverse replay deletes the later insert first, then hits the poisoned
-// restore and aborts; because journal and tables co-reside in one transaction, the
-// abort rolls the whole wipe back -- the already-deleted row is restored and every
-// journal entry is still undo='open'.
+// transaction: a mid-wipe failure leaves NO partial wipe applied. A disposable
+// run's writes are captured normally, then one captured update entry's pre-image is
+// tampered so restoring it violates the table's CHECK constraint. Reverse replay
+// deletes the later insert first, then hits the poisoned restore and aborts;
+// because journal and tables co-reside in one transaction, the abort rolls the
+// whole wipe back -- the already-deleted row is restored and every journal entry is
+// still undo='open'.
 func TestWipeAtomicTransaction(t *testing.T) {
 	wc := newWipeCluster(t)
 	wc.provisionTable(t, "analytics", "orders",

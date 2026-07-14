@@ -32,9 +32,8 @@ type uninstallCmdResult struct {
 
 // uninstallCmd builds `iris uninstall`: one of the two root lifecycle verbs
 // (beside `iris update`), the self-removal of the installed iris binary. It is
-// daemonless and carries the destructive
-// --yes/--force gate; it is distinct from `iris engine uninstall`, which tears
-// down engine state.
+// daemonless and carries the destructive --yes/--force gate; it is distinct
+// from `iris engine uninstall`, which tears down engine state.
 func (a *app) uninstallCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "uninstall",
@@ -46,17 +45,17 @@ func (a *app) uninstallCmd() *cobra.Command {
 	return daemonless(c)
 }
 
-// uninstallSelf is the handler for `iris uninstall`: the daemonless self-removal
-// of the running iris executable. It refuses while a
-// daemon is reachable (guiding to stop and tear down the engine first) unless
-// --force overrides the probe; it then enforces the dev-loop consent gate
+// uninstallSelf is the handler for `iris uninstall`: the daemonless
+// self-removal of the running iris executable. It refuses while a daemon is
+// reachable (guiding to stop and tear down the engine first) unless --force
+// overrides the probe; it then enforces the dev-loop consent gate
 // (--yes/--force, or an interactive y/N prompt showing the version and path,
 // aborting cleanly on decline and refusing with the standard consent-required
-// error when no terminal is present); and finally resolves the running executable
-// through its symlinks and removes it. A permission failure carries sudo /
-// curl-uninstaller guidance. Every failure is operation-failed (exit 4); a clean
-// abort exits 0 without touching a file; success prints the goodbye lines (or the
-// one --json data envelope) and exits 0.
+// error when no terminal is present); and finally resolves the running
+// executable through its symlinks and removes it. A permission failure carries
+// sudo / curl-uninstaller guidance. Every failure is operation-failed (exit 4);
+// a clean abort exits 0 without touching a file; success prints the goodbye
+// lines (or the one --json data envelope) and exits 0.
 func (a *app) uninstallSelf() runE {
 	return func(cmd *cobra.Command, _ []string) error {
 		yes, _ := cmd.Flags().GetBool("yes")

@@ -15,12 +15,12 @@ import (
 
 // This file is the honesty suite for `iris run list --graph`, the lineage rail
 // rendering. The rendering contract is honesty made testable: a solid stroke is
-// a run_inputs edge and nothing else, a
-// dotted rail is same-pipeline serial order (sequence, never ancestry), a replay
-// is an annotation never an edge, run-id gaps stay visible, --graph is
-// presentation only (--json never carries drawing), and past the rail cap the
-// weave refuses and prints the --lane/--pipeline filter hint. --ascii swaps to
-// git's glyph vocabulary and is pinned byte-for-byte by a golden.
+// a run_inputs edge and nothing else, a dotted rail is same-pipeline serial
+// order (sequence, never ancestry), a replay is an annotation never an edge,
+// run-id gaps stay visible, --graph is presentation only (--json never carries
+// drawing), and past the rail cap the weave refuses and prints the
+// --lane/--pipeline filter hint. --ascii swaps to git's glyph vocabulary and is
+// pinned byte-for-byte by a golden.
 
 // clearTargetEnv unsets the ambient IRIS_* target variables so a test resolves
 // its daemon target only from the explicit --socket it passes (test-env

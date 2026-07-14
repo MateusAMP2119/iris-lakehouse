@@ -8,12 +8,11 @@ import (
 )
 
 // This file renders declared user tables (schemas/<schema>/<table>/table.yaml)
-// into data-database DDL: the CREATE TABLE a
-// missing table is provisioned from, and the ALTER TABLE ADD COLUMN an additive
-// migration applies. pg is the data-database DDL owner, so this rendering lives
-// beside the journal DDL; the closed type mapping it consults is the declare
-// leaf's (ResolveType). The output is deterministic, so a golden diff is a
-// contract diff.
+// into data-database DDL: the CREATE TABLE a missing table is provisioned from,
+// and the ALTER TABLE ADD COLUMN an additive migration applies. pg is the
+// data-database DDL owner, so this rendering lives beside the journal DDL; the
+// closed type mapping it consults is the declare leaf's (ResolveType). The
+// output is deterministic, so a golden diff is a contract diff.
 //
 // Two deliberate deviations from the worked example the rendering is modeled on,
 // both correctness-preserving supersets of its shape:
@@ -31,13 +30,13 @@ import (
 // rather than emitting invalid SQL that would surface only at the database.
 
 // RenderCreateTable renders a declared table as a CREATE TABLE statement. Each
-// column's four modifiers render as their SQL
-// clauses: a raw-SQL default as DEFAULT <expr> (rendered first), then
-// primary_key as PRIMARY KEY (which subsumes NOT NULL and uniqueness), or -- for
-// a non-primary-key column -- an effective not-null as NOT NULL and unique as
-// UNIQUE. Columns are aligned to two padded fields (quoted name, then type). A
-// column whose YAML type is outside the
-// closed set returns an error naming the table, column, and bad type.
+// column's four modifiers render as their SQL clauses: a raw-SQL default as
+// DEFAULT <expr> (rendered first), then primary_key as PRIMARY KEY (which
+// subsumes NOT NULL and uniqueness), or -- for a non-primary-key column -- an
+// effective not-null as NOT NULL and unique as UNIQUE. Columns are aligned to
+// two padded fields (quoted name, then type). A column whose YAML type is
+// outside the closed set returns an error naming the table, column, and bad
+// type.
 func RenderCreateTable(t *declare.Table) (string, error) {
 	types := make([]string, len(t.Columns))
 	nameWidth, typeWidth := 0, 0
@@ -73,10 +72,10 @@ func RenderCreateTable(t *declare.Table) (string, error) {
 }
 
 // RenderAddColumn renders the additive ALTER TABLE ADD COLUMN DDL for one column
-// added to schema.table. It is the applied form of a
-// migration file's recorded column definition; emitting it during sync is
-// E03.7's, this is only the deterministic rendering. A column whose YAML type is
-// outside the closed set returns an error.
+// added to schema.table. It is the applied form of a migration file's recorded
+// column definition; emitting it during sync is E03.7's, this is only the
+// deterministic rendering. A column whose YAML type is outside the closed set
+// returns an error.
 //
 // The ADD COLUMN carries IF NOT EXISTS (Postgres 9.6+) so it is idempotent: the
 // data ALTER runs before the meta migration head is recorded, so a head-record

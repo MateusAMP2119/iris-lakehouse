@@ -30,11 +30,10 @@ func waitForStandby(t *testing.T, socket string) bool {
 // TestStandbyMutationRejection is the end-to-end proof, against a real Postgres
 // and the shipped binary, that mutations are the leader's alone and a standby
 // rejects them with leader guidance and exit 6. It stands up two real daemon
-// candidates sharing one external meta: the
-// first wins the advisory lock and leads; the second, blocked on that lock, stays
-// a standby. A mutation run through the shipped CLI against the standby's socket
-// must exit 6, and its message (and --json envelope) must carry the leader
-// guidance for retargeting.
+// candidates sharing one external meta: the first wins the advisory lock and
+// leads; the second, blocked on that lock, stays a standby. A mutation run
+// through the shipped CLI against the standby's socket must exit 6, and its
+// message (and --json envelope) must carry the leader guidance for retargeting.
 //
 // The scenario needs two candidates on one shared meta, so it runs only in
 // external mode (IRIS_PG_DSN set, the conformance/CI configuration): under

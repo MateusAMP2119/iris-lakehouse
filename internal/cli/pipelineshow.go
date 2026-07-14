@@ -14,13 +14,13 @@ import (
 )
 
 // This file is the CLI side of `iris pipeline show <name>`: the single-pipeline
-// readout. The CLI GETs the daemon's /pipeline/show route and prints exactly the
-// payload the route serves -- the
-// resolved declaration, the role and its field-level grants, the recent runs, and
-// the gate ledger with the per-edge verdict from the closed set -- under --json
-// the same data envelope any HTTP consumer reads. It is a read, served on any
-// role. Transport failure is no-daemon (exit 3) with start guidance; an
-// unregistered pipeline or any other failure is operation-failed (exit 4).
+// readout. The CLI GETs the daemon's /pipeline/show route and prints exactly
+// the payload the route serves -- the resolved declaration, the role and its
+// field-level grants, the recent runs, and the gate ledger with the per-edge
+// verdict from the closed set -- under --json the same data envelope any HTTP
+// consumer reads. It is a read, served on any role. Transport failure is
+// no-daemon (exit 3) with start guidance; an unregistered pipeline or any other
+// failure is operation-failed (exit 4).
 
 // pipelineShow is the handler for `iris pipeline show <name>`: it GETs the
 // daemon's /pipeline/show readout and renders it.

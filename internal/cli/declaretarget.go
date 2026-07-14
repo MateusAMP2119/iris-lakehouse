@@ -14,21 +14,20 @@ import (
 )
 
 // This file is the CLI side of the declare apply/destroy control mutations. Both
-// commands resolve and validate the
-// single target declaration locally (fast, actionable feedback: a bad target is
-// operation-failed, exit 4, before any network), then send the workspace-relative path
-// to the daemon's leader-gated control route. The leader resolves the declaration and
-// the schemas/ tree against its own workspace tree and runs the registry apply plus
-// schema provisioning (apply) or the scoped teardown (destroy). Exit codes follow the
-// standard categories: success 0, no daemon reachable 3, operation failed 4, not the
-// leader 6; any advisory warnings ride the terminal envelope.
+// commands resolve and validate the single target declaration locally (fast,
+// actionable feedback: a bad target is operation-failed, exit 4, before any network),
+// then send the workspace-relative path to the daemon's leader-gated control route.
+// The leader resolves the declaration and the schemas/ tree against its own workspace
+// tree and runs the registry apply plus schema provisioning (apply) or the scoped
+// teardown (destroy). Exit codes follow the standard categories: success 0, no daemon
+// reachable 3, operation failed 4, not the leader 6; any advisory warnings ride the
+// terminal envelope.
 
 // declareApply is the handler for `iris declare apply`. It resolves and parses the
 // single target declaration, computes the advisory warnings the apply surfaces
-// (cross-mode reads and the like) through the applyWarnings
-// seam, then POSTs the target to the daemon's /apply route. The warnings accompany the
-// apply, never replace it: they ride the terminal --json envelope whether the apply
-// succeeds or fails.
+// (cross-mode reads and the like) through the applyWarnings seam, then POSTs the
+// target to the daemon's /apply route. The warnings accompany the apply, never replace
+// it: they ride the terminal --json envelope whether the apply succeeds or fails.
 func (a *app) declareApply() runE {
 	return func(cmd *cobra.Command, args []string) error {
 		_, decl, err := declare.LoadDeclarationFile(args[0])
@@ -73,12 +72,12 @@ func (a *app) declareDestroy() runE {
 	}
 }
 
-// postControl sends a control mutation to the daemon and maps its outcome to an
-// exit category. It resolves the daemon target through the configuration
-// precedence, POSTs the request (attaching the PAT over TCP), and classifies the
-// response: a transport failure is no-daemon (exit 3) with start guidance; a not_leader
-// rejection is exit 6 with leader guidance; any other error is operation-failed (exit
-// 4); a 200 is success, emitted with any warnings.
+// postControl sends a control mutation to the daemon and maps its outcome to an exit
+// category. It resolves the daemon target through the configuration precedence, POSTs
+// the request (attaching the PAT over TCP), and classifies the response: a transport
+// failure is no-daemon (exit 3) with start guidance; a not_leader rejection is exit 6
+// with leader guidance; any other error is operation-failed (exit 4); a 200 is success,
+// emitted with any warnings.
 func (a *app) postControl(cmd *cobra.Command, route string, req api.ControlRequest, op string) error {
 	settings := a.resolveTarget(cmd)
 	client, base, overTCP := a.daemonHTTPClient(settings)
@@ -184,8 +183,8 @@ func (a *app) emitControlSuccess(cmd *cobra.Command, res api.ControlResult) erro
 }
 
 // controlSuccessEnvelope is the --json success document for a control mutation: the
-// data envelope plus any advisory warnings that rode the outcome, so a
-// successful apply/destroy emits one JSON document carrying both.
+// data envelope plus any advisory warnings that rode the outcome, so a successful
+// apply/destroy emits one JSON document carrying both.
 type controlSuccessEnvelope struct {
 	Data     api.ControlResult `json:"data"`
 	Warnings []declare.Warning `json:"warnings,omitempty"`

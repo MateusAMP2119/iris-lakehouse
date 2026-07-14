@@ -9,15 +9,15 @@ import (
 	"github.com/MateusAMP2119/iris-engine-cli/internal/pg"
 )
 
-// The provenance tests exercise the `iris data provenance` three-lookup walk as
-// pure query logic over in-memory fixtures:
-// row -> stamps via the journal's provenance key, run id -> run facts with the
-// archival-summary fallback, and recursive ancestry via run_inputs with the
-// summary's consumed-upstream list standing in once a run's own ledger rows are
-// pruned. The walk returns lineage only -- stamps, run facts, ancestry edges --
-// and never a row image. No SQL runs here; the fixtures are the relational
-// shapes the live wiring reads (journal rows from the data database, runs /
-// run_summaries / run_inputs from meta).
+// The provenance tests exercise the `iris data provenance` three-lookup walk
+// as pure query logic over in-memory fixtures: row -> stamps via the journal's
+// provenance key, run id -> run facts with the archival-summary fallback, and
+// recursive ancestry via run_inputs with the summary's consumed-upstream list
+// standing in once a run's own ledger rows are pruned. The walk returns
+// lineage only -- stamps, run facts, ancestry edges -- and never a row image.
+// No SQL runs here; the fixtures are the relational shapes the live wiring
+// reads (journal rows from the data database, runs / run_summaries /
+// run_inputs from meta).
 
 // strPtr and i64Ptr build the nullable fixture fields (SQL NULL modeled as nil).
 func strPtr(s string) *string { return &s }

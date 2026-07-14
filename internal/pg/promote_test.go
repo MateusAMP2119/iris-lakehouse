@@ -13,13 +13,12 @@ import (
 
 // The promotion tests exercise the marker-only promotion model over in-memory
 // journal fixtures and the recording data-database fake: promotion flips the
-// pipeline's open journal entries to
-// undo = promoted and flips its data_mode to permanent, and does NOTHING else --
-// no table row or journal entry is copied, moved, or deleted, capture and
-// provenance continue unchanged, and later wipes skip the released entries.
-// The undo lifecycle types (UndoState, JournalEntry, Retirement, WipeTarget,
-// PlanWipe) are the E06.5 wipe model's own; promotion reuses them so the two
-// halves of the marker lifecycle can never drift.
+// pipeline's open journal entries to undo = promoted and flips its data_mode to
+// permanent, and does NOTHING else -- no table row or journal entry is copied,
+// moved, or deleted, capture and provenance continue unchanged, and later wipes
+// skip the released entries. The undo lifecycle types (UndoState, JournalEntry,
+// Retirement, WipeTarget, PlanWipe) are the E06.5 wipe model's own; promotion
+// reuses them so the two halves of the marker lifecycle can never drift.
 
 // promotionFixture returns the canonical two-pipeline journal the promotion
 // tests share, plus the run attribution map. Pipeline "etl" (runs 101, 102) has
@@ -265,11 +264,11 @@ func TestPromotionNoDataMovement(t *testing.T) {
 // TestPromoteCaptureProvenanceContinue proves capture and provenance continue
 // unchanged after a pipeline's data is promoted to permanent: capture and
 // provenance never stop. Post-promotion writes still classify to a stamp for
-// every operation (slim,
-// born promoted -- the permanent tier), those stamps append to the same journal,
-// and a row's provenance stack reads continuously across the promotion boundary:
-// the pre-promotion layers survive (attribution intact) and the post-promotion
-// layers stack on top. The promotion itself touches no capture machinery.
+// every operation (slim, born promoted -- the permanent tier), those stamps
+// append to the same journal, and a row's provenance stack reads continuously
+// across the promotion boundary: the pre-promotion layers survive (attribution
+// intact) and the post-promotion layers stack on top. The promotion itself
+// touches no capture machinery.
 func TestPromoteCaptureProvenanceContinue(t *testing.T) {
 	journal, runPipeline := promotionFixture()
 

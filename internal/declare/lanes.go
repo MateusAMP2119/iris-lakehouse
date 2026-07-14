@@ -21,9 +21,8 @@ type Membership struct {
 // RegistryView is the already-registered lane state a single `iris declare apply`
 // validates against: which lane each registered pipeline belongs to, and which
 // lanes have had their composer applied. Apply is single-file and upstream-first,
-// so validation is pure over this snapshot; the
-// persistence layer (a later task) fills it from meta. Both maps are read-only
-// here and a nil map reads as empty.
+// so validation is pure over this snapshot; the persistence layer (a later task)
+// fills it from meta. Both maps are read-only here and a nil map reads as empty.
 type RegistryView struct {
 	// Members maps each registered pipeline name to its lane membership.
 	Members map[string]Membership
@@ -97,11 +96,11 @@ func (e Effects) WritesLanes() bool {
 
 // ValidatePipelineApply validates a single pipeline `declare apply` against the
 // registry view and returns its lane effects. It enforces the pipeline-side lane
-// rules: inline and containment lanes must
-// agree; a pipeline belongs to exactly one lane; an inline lane joined without
-// containment is valid only while single-member; a lane reaching 2+ members needs
-// its composer applied (the 2+ interlock). A pipeline (member) apply never writes
-// lanes, so the returned effects carry no lane rewrite.
+// rules: inline and containment lanes must agree; a pipeline belongs to exactly
+// one lane; an inline lane joined without containment is valid only while
+// single-member; a lane reaching 2+ members needs its composer applied (the 2+
+// interlock). A pipeline (member) apply never writes lanes, so the returned
+// effects carry no lane rewrite.
 func ValidatePipelineApply(view RegistryView, apply PipelineApply) (Effects, error) {
 	if apply.Pipeline == "" {
 		return Effects{}, fmt.Errorf("declare: pipeline apply has no name")
@@ -153,13 +152,13 @@ func ValidatePipelineApply(view RegistryView, apply PipelineApply) (Effects, err
 	return Effects{Lane: lane}, nil
 }
 
-// resolveLane resolves the lane a pipeline apply joins and whether it is contained
-// in that lane's folder, enforcing inline/containment agreement. The returned
-// contained is honest to Membership.Contained: true only when the pipeline folder
-// sits inside the lane folder. A pipeline that omits lane and has no containing
-// lane folder is placed in its own implicit lane, named for itself and parallel
-// with everything; it has no lane folder to sit inside,
-// so contained is false. Because that implicit lane is named for the pipeline, its
+// resolveLane resolves the lane a pipeline apply joins and whether it is
+// contained in that lane's folder, enforcing inline/containment agreement. The
+// returned contained is honest to Membership.Contained: true only when the
+// pipeline folder sits inside the lane folder. A pipeline that omits lane and
+// has no containing lane folder is placed in its own implicit lane, named for
+// itself and parallel with everything; it has no lane folder to sit inside, so
+// contained is false. Because that implicit lane is named for the pipeline, its
 // membership stays a single pipeline unless the name collides with an already
 // populated lane, in which case the 2+ rules below reject the collision rather
 // than silently merging it.
@@ -186,10 +185,10 @@ func resolveLane(apply PipelineApply) (lane string, contained bool, err error) {
 
 // ValidateComposerApply validates a single composer `declare apply` against the
 // registry view and returns its lane effects. It enforces the composer-side rules:
-// the composer's lane must match its folder
-// name; every order entry must name a pipeline folder inside the lane folder; and
-// no ordered pipeline may already belong to another lane. A composer apply rewrites
-// the lane's whole order, so the returned effects carry the full-lane rewrite.
+// the composer's lane must match its folder name; every order entry must name a
+// pipeline folder inside the lane folder; and no ordered pipeline may already
+// belong to another lane. A composer apply rewrites the lane's whole order, so the
+// returned effects carry the full-lane rewrite.
 func ValidateComposerApply(view RegistryView, apply ComposerApply) (Effects, error) {
 	// A composer must name a real lane and folder: an empty pair trivially
 	// "matches" (both blank) but would be written as an empty-keyed lanes row, so

@@ -71,12 +71,12 @@ func quickstartPipelineSteps(e catalogEntry) []quickstartStep {
 }
 
 // quickstartActsFor returns the canonical chaptered step table of the guided
-// first session for one catalog entry: THE ENGINE (install, start -d, info) then
-// THE PIPELINE (apply, run,
-// provenance on the entry's showcase). Every rendering -- the interactive
-// tour, the plain act-headed guide, and the --json envelope -- shares this one
-// table. It is built fresh per call (no mutable package state); openers are
-// wired by the tour (tourActs), so the guide renderings stay pure data.
+// first session for one catalog entry: THE ENGINE (install, start -d, info)
+// then THE PIPELINE (apply, run, provenance on the entry's showcase). Every
+// rendering -- the interactive tour, the plain act-headed guide, and the --json
+// envelope -- shares this one table. It is built fresh per call (no mutable
+// package state); openers are wired by the tour (tourActs), so the guide
+// renderings stay pure data.
 func quickstartActsFor(e catalogEntry) []tourAct {
 	return []tourAct{
 		{
@@ -138,12 +138,12 @@ func quickstartSteps() ([]quickstartStep, error) {
 
 // quickstartCmd builds `iris quickstart`: the third root verb beside the
 // lifecycle pair, the installer's continuation -- the guided tour of the first
-// session. It is daemonless: the tour runs before
-// any engine exists (it bootstraps one). Interactivity requires stdin AND
-// stdout to both be interactive terminals with --json off; --yes runs the
-// whole tour unattended (piped or not) with the invoking directory as the
-// workspace; any other invocation renders the plain act-headed guide -- or,
-// under --json, the step-list data envelope -- executing nothing and exiting 0.
+// session. It is daemonless: the tour runs before any engine exists (it
+// bootstraps one). Interactivity requires stdin AND stdout to both be
+// interactive terminals with --json off; --yes runs the whole tour unattended
+// (piped or not) with the invoking directory as the workspace; any other
+// invocation renders the plain act-headed guide -- or, under --json, the
+// step-list data envelope -- executing nothing and exiting 0.
 func (a *app) quickstartCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "quickstart",

@@ -8,11 +8,10 @@ import (
 )
 
 // The wipe unit tests exercise the pure wipe model over in-memory journal
-// fixtures: scope selection of open
-// disposable entries, reverse-order replay, the journal-internal conflict-skip
-// rule, retirement of every visited entry, pipeline narrowing, and the
-// cursor-with-data revert. No Postgres, no SQL: the plan is data; a later task
-// executes it live.
+// fixtures: scope selection of open disposable entries, reverse-order replay, the
+// journal-internal conflict-skip rule, retirement of every visited entry, pipeline
+// narrowing, and the cursor-with-data revert. No Postgres, no SQL: the plan is
+// data; a later task executes it live.
 
 // wholeScope is the bare-invocation target: no pipeline narrowing, the whole
 // wipe scope.
@@ -122,12 +121,11 @@ func TestWipeReverseReplay(t *testing.T) {
 
 // TestWipeConflictSkip proves an open entry is conflict-skipped, its row left
 // as-is, whenever any later journal entry exists for the same (schema, table,
-// row_pk) whose write is
-// still in the row's value -- promoted, skipped, or open outside the wipe's
-// scope. There is no image comparison anywhere: the decision consumes only
-// journal rows (the model's API never receives a row image), and the report
-// names the conflicting run. A later wiped entry does not conflict: its write
-// was already reverted out of the row's value.
+// row_pk) whose write is still in the row's value -- promoted, skipped, or open
+// outside the wipe's scope. There is no image comparison anywhere: the decision
+// consumes only journal rows (the model's API never receives a row image), and the
+// report names the conflicting run. A later wiped entry does not conflict: its
+// write was already reverted out of the row's value.
 func TestWipeConflictSkip(t *testing.T) {
 	row := pg.RowKey{Schema: "analytics", Table: "orders", RowPK: "x"}
 	tests := []struct {
@@ -225,11 +223,10 @@ func TestWipeConflictSkip(t *testing.T) {
 
 // TestWipeRetiresAllVisited proves wipe retires every visited open entry: reverted
 // ones to undo = wiped, conflict-skipped ones to undo = skipped. The split keeps
-// provenance decidable
-// (a skipped write is still in the row's value, a wiped one is not) and means
-// conflicts are reported once and never re-visited: a retired entry leaves the
-// wipe scope, so a second wipe finds nothing and reports nothing. The summary
-// reports both counts.
+// provenance decidable (a skipped write is still in the row's value, a wiped one
+// is not) and means conflicts are reported once and never re-visited: a retired
+// entry leaves the wipe scope, so a second wipe finds nothing and reports nothing.
+// The summary reports both counts.
 func TestWipeRetiresAllVisited(t *testing.T) {
 	journal := []pg.JournalEntry{
 		{ID: 1, RunID: 40, Schema: "analytics", Table: "orders", RowPK: "a", Op: pg.OpInsert, Undo: pg.UndoOpen},
@@ -262,9 +259,8 @@ func TestWipeRetiresAllVisited(t *testing.T) {
 
 // TestWipePipelineScope proves a named `iris workload wipe <pipeline>` narrows the
 // wipe scope to that pipeline's journal entries only, leaving other pipelines'
-// open entries
-// untouched; bare invocation covers the whole wipe scope; and declare destroy's
-// data revert is exactly the narrowed form.
+// open entries untouched; bare invocation covers the whole wipe scope; and declare
+// destroy's data revert is exactly the narrowed form.
 func TestWipePipelineScope(t *testing.T) {
 	runPipeline := map[int64]string{40: "pipeline_a", 41: "pipeline_b"}
 	journal := []pg.JournalEntry{
@@ -301,12 +297,12 @@ func TestWipePipelineScope(t *testing.T) {
 }
 
 // TestWipeRevertsCursorWithData proves persistent pipeline state (the source
-// cursor) lives in a declared table the pipeline writes, so a run's cursor advance
-// is a journaled write like any
-// other. Wiping a disposable run rolls that cursor-advance write back together
-// with the run's data -- the same plan, the same replay, the same retirement --
-// restoring the pre-advance cursor value, so the next pass reprocesses exactly
-// the reverted window and never silently skips it.
+// cursor) lives in a declared table the pipeline writes, so a run's cursor
+// advance is a journaled write like any other. Wiping a disposable run rolls
+// that cursor-advance write back together with the run's data -- the same plan,
+// the same replay, the same retirement -- restoring the pre-advance cursor
+// value, so the next pass reprocesses exactly the reverted window and never
+// silently skips it.
 func TestWipeRevertsCursorWithData(t *testing.T) {
 	preAdvance := `{"pipeline":"load_orders","last_seen_id":100}`
 	journal := []pg.JournalEntry{
@@ -345,10 +341,9 @@ func TestWipeRevertsCursorWithData(t *testing.T) {
 }
 
 // TestCompactCollapseRule proves the compaction collapse rule: released pre-images
-// (undo != open) are nulled, and duplicate
-// stamps per (schema, table, row_pk, run_id) collapse to the latest op while
-// every run's exact set of written rows survives exactly (different rows from
-// the same run are never dropped).
+// (undo != open) are nulled, and duplicate stamps per (schema, table, row_pk,
+// run_id) collapse to the latest op while every run's exact set of written rows
+// survives exactly (different rows from the same run are never dropped).
 func TestCompactCollapseRule(t *testing.T) {
 	t.Run("compaction-collapse-rule", func(t *testing.T) {
 		// A run wrote the same row twice (update then another), plus an insert

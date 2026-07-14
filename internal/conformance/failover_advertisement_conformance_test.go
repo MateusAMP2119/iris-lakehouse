@@ -16,14 +16,13 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// This file is the end-to-end proof of cross-host leader advertisement: a real
-// leader advertises its address into
-// the shared meta, a real standby names that live address for retargeting, and after
-// the leader is killed and the standby takes over, the advertisement converges on the
-// new leader. It reuses the two-daemon-on-one-meta pattern the E11 failover legs
-// established, adding TCP listeners so the advertised address is a concrete,
-// routable value -- the whole point flagged by E11.2 (guidance had the shape but no
-// concrete address).
+// This file is the end-to-end proof of cross-host leader advertisement: a real leader
+// advertises its address into the shared meta, a real standby names that live address
+// for retargeting, and after the leader is killed and the standby takes over, the
+// advertisement converges on the new leader. It reuses the two-daemon-on-one-meta
+// pattern the E11 failover legs established, adding TCP listeners so the advertised
+// address is a concrete, routable value -- the whole point flagged by E11.2 (guidance
+// had the shape but no concrete address).
 //
 // It needs two candidates on ONE shared meta, so it runs only in external mode
 // (IRIS_PG_DSN set, the conformance/CI configuration); managed Postgres gives each
@@ -115,13 +114,13 @@ func startDaemonTCP(t *testing.T, bin *Binary, ws, tcpAddr string, install bool)
 }
 
 // TestLeaderAdvertisementFailover is the end-to-end proof that a standby names the
-// live leader's concrete address and that the advertisement follows a failover.
-// Two real daemon candidates share one
-// external meta, each with its own TCP listener: the leader advertises its TCP
-// address into the shared meta, the standby reads it and names it on GET /leader.
-// When the leader is SIGKILLed (host-loss) the standby acquires the freed lock, takes
-// over, and re-advertises its OWN address -- so the leadership table converges on the
-// new leader, never stranding the dead leader's address.
+// live leader's concrete address and that the advertisement follows a failover. Two
+// real daemon candidates share one external meta, each with its own TCP listener: the
+// leader advertises its TCP address into the shared meta, the standby reads it and
+// names it on GET /leader. When the leader is SIGKILLed (host-loss) the standby
+// acquires the freed lock, takes over, and re-advertises its OWN address -- so the
+// leadership table converges on the new leader, never stranding the dead leader's
+// address.
 func TestLeaderAdvertisementFailover(t *testing.T) {
 	if os.Getenv("IRIS_PG_DSN") == "" {
 		t.Skip("leader advertisement failover needs two candidates on one shared meta; set IRIS_PG_DSN (external mode) to run it")

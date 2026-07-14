@@ -9,13 +9,13 @@ import (
 )
 
 // ResolveDeclarationFile resolves a user-supplied apply/destroy target to
-// exactly one iris-declare.yaml:
-// apply and destroy each target exactly one declaration file, never a
-// workspace or a set. A file path must be named iris-declare.yaml; a folder
-// path resolves to <folder>/iris-declare.yaml, with no further search -- a
-// folder that itself has no declaration is a precise error naming it, never a
-// sweep into subfolders (no workspace-wide discovery, no transitive
-// chaining). It does not parse the file; use LoadDeclarationFile for that.
+// exactly one iris-declare.yaml: apply and destroy each target exactly one
+// declaration file, never a workspace or a set. A file path must be named
+// iris-declare.yaml; a folder path resolves to <folder>/iris-declare.yaml,
+// with no further search -- a folder that itself has no declaration is a
+// precise error naming it, never a sweep into subfolders (no workspace-wide
+// discovery, no transitive chaining). It does not parse the file; use
+// LoadDeclarationFile for that.
 func ResolveDeclarationFile(path string) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {

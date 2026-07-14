@@ -28,14 +28,14 @@ import (
 
 // This file proves the data surface's physical enforcement contracts against a
 // real Postgres: the engine's own read-pool login checks out shared-pool
-// sessions, SET ROLEs to the data PAT's engine-managed
-// NOLOGIN role, and Postgres itself -- not application code -- bounds every
-// read to the role's granted fields. /data serves the granted projection and
-// refuses the rest; /q on an endpoint whose source fields the caller lacks
-// answers 403 forbidden naming the endpoint and never the missing fields. It
-// drives the real read pool and the real api mux over a provisioned cluster
-// (the role_enforcement pattern: the enforcement DDL under test, enforced by a
-// live database, without the full CLI machinery around it).
+// sessions, SET ROLEs to the data PAT's engine-managed NOLOGIN role, and
+// Postgres itself -- not application code -- bounds every read to the role's
+// granted fields. /data serves the granted projection and refuses the rest; /q
+// on an endpoint whose source fields the caller lacks answers 403 forbidden
+// naming the endpoint and never the missing fields. It drives the real read
+// pool and the real api mux over a provisioned cluster (the role_enforcement
+// pattern: the enforcement DDL under test, enforced by a live database, without
+// the full CLI machinery around it).
 
 // dataSurfaceEnvelope decodes the read-API envelope for these assertions.
 type dataSurfaceEnvelope struct {

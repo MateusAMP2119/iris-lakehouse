@@ -11,10 +11,10 @@ import (
 )
 
 // This file proves the data-PAT read-role and engine read-pool login provisioning
-// DDL: a data PAT owns a NOLOGIN read role,
-// assumed via SET ROLE by the engine read-pool login, granted read-only on its
-// mint fields and membership in the pool login so the pool can assume it. It
-// drives the real render/exec code through the recording fake, no live Postgres.
+// DDL: a data PAT owns a NOLOGIN read role, assumed via SET ROLE by the engine
+// read-pool login, granted read-only on its mint fields and membership in the
+// pool login so the pool can assume it. It drives the real render/exec code
+// through the recording fake, no live Postgres.
 
 // TestProvisionDataPATRoleNologinSetRole proves the data-PAT role provisioning is
 // a NOLOGIN read role (never LOGIN, no credential), denied the meta database,

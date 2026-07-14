@@ -81,11 +81,11 @@ func WipeEligible(mode declare.DataMode) bool {
 
 // ClassifyPayloadTier returns the tier of the stamp capture writes for one changed row
 // under the given data mode and operation. It is the pure model of the decision the
-// iris.capture() trigger makes in-transaction: a full
-// pre-image exactly on a wipe-eligible update or delete, a slim stamp everywhere else
-// (every insert, and every write born promoted under a permanent data mode). It never
-// returns "no stamp": capture is unconditional, so every op in every mode classifies to
-// a tier -- only the tier differs.
+// iris.capture() trigger makes in-transaction: a full pre-image exactly on a
+// wipe-eligible update or delete, a slim stamp everywhere else (every insert, and every
+// write born promoted under a permanent data mode). It never returns "no stamp":
+// capture is unconditional, so every op in every mode classifies to a tier -- only the
+// tier differs.
 func ClassifyPayloadTier(mode declare.DataMode, op WriteOp) PayloadTier {
 	if WipeEligible(mode) && (op == OpUpdate || op == OpDelete) {
 		return PayloadFull
@@ -95,11 +95,11 @@ func ClassifyPayloadTier(mode declare.DataMode, op WriteOp) PayloadTier {
 
 // PermanentRequiresBuilt enforces the data-durability gate: permanent data requires a
 // built artifact, so a permanent-mode write from an un-built source pipeline is
-// refused. built reports whether the writing pipeline's
-// artifact is built (a content-addressed binary with a recorded hash). A disposable
-// write is admitted from either artifact mode; only the permanent + un-built
-// combination is refused. It returns nil when the write is durability-admissible and a
-// descriptive error naming both the permanent mode and the built requirement otherwise.
+// refused. built reports whether the writing pipeline's artifact is built (a
+// content-addressed binary with a recorded hash). A disposable write is admitted from
+// either artifact mode; only the permanent + un-built combination is refused. It
+// returns nil when the write is durability-admissible and a descriptive error naming
+// both the permanent mode and the built requirement otherwise.
 func PermanentRequiresBuilt(mode declare.DataMode, built bool) error {
 	if mode == declare.DataPermanent && !built {
 		return fmt.Errorf("iris: refused permanent-mode write from un-built source; permanent data requires a built artifact")

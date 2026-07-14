@@ -13,12 +13,12 @@ import (
 )
 
 // This file proves the data-database grant surface: the field-level GRANT DDL
-// rendering, and reconciliation of a role's
-// live grants against the meta access ledger -- the ledger is authoritative, the
-// reconcile emits GRANT DDL to make Postgres match it additively, and strays
-// beyond the ledger are reported, never silently fixed. The generated DDL is
-// captured through the recording pg fake and diffed byte-for-byte against golden
-// files, with no live Postgres; live-grant reads are a faked data-database seam.
+// rendering, and reconciliation of a role's live grants against the meta access
+// ledger -- the ledger is authoritative, the reconcile emits GRANT DDL to make
+// Postgres match it additively, and strays beyond the ledger are reported, never
+// silently fixed. The generated DDL is captured through the recording pg fake
+// and diffed byte-for-byte against golden files, with no live Postgres;
+// live-grant reads are a faked data-database seam.
 
 // fakeLiveGrants is a recording-free LiveGrantReader: it returns a fixed set of
 // live field grants (or an injected error), standing in for a pg_catalog read of

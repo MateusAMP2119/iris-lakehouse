@@ -216,15 +216,15 @@ func actColor(p painter, id string) func(string) string {
 	}
 }
 
-// runQuickstartTour is the chaptered guided tour of the first session: after the
-// welcome (skipped for the installer's continuation, whose banner was the
-// welcome) it walks the acts -- chapter
-// mark, one consent (THE ENGINE's workspace question, or the act gate), then
-// the act's steps straight through the in-process runner. A reachable daemon
-// on the workspace socket announces install/start as already done and skips
-// them. Declines, EOF, and interrupts abort clean (exit 0, resume hint); the
-// first failing step surfaces its own error and exit category; yes runs
-// everything unattended in the invoking directory.
+// runQuickstartTour is the chaptered guided tour of the first session: after
+// the welcome (skipped for the installer's continuation, whose banner was the
+// welcome) it walks the acts -- chapter mark, one consent (THE ENGINE's
+// workspace question, or the act gate), then the act's steps straight through
+// the in-process runner. A reachable daemon on the workspace socket announces
+// install/start as already done and skips them. Declines, EOF, and interrupts
+// abort clean (exit 0, resume hint); the first failing step surfaces its own
+// error and exit category; yes runs everything unattended in the invoking
+// directory.
 func (a *app) runQuickstartTour(cmd *cobra.Command, yes, fromInstaller bool, cat *pipelineCatalog, selected catalogEntry, explicit bool) error {
 	base := cmd.Context()
 	if base == nil {
@@ -500,14 +500,13 @@ func (a *app) renderTourStep(p painter, step quickstartStep) {
 
 // openEngineWorkspace is THE ENGINE act's opener: the workspace question.
 // Interactive, it reads one line with a visible default -- `~/iris`, or the
-// invoking directory when that
-// is already a workspace (.iris/ or pipelines/ present) -- expands `~` to the
-// operator's home, creates the directory (mkdir -p) and enters it, so every
-// subsequent step operates on cwd exactly like any command. The empty answer
-// accepts the default AND consents to the act; `q`, EOF, and an interrupt
-// abort clean (errTourAborted). Under --yes it never prompts: the invoking
-// directory is the workspace, unchanged. A real filesystem fault is a
-// quickstart_workspace fault, exit 4.
+// invoking directory when that is already a workspace (.iris/ or pipelines/
+// present) -- expands `~` to the operator's home, creates the directory
+// (mkdir -p) and enters it, so every subsequent step operates on cwd exactly
+// like any command. The empty answer accepts the default AND consents to the
+// act; `q`, EOF, and an interrupt abort clean (errTourAborted). Under --yes it
+// never prompts: the invoking directory is the workspace, unchanged. A real
+// filesystem fault is a quickstart_workspace fault, exit 4.
 func (a *app) openEngineWorkspace(s *tourSession) error {
 	wd, err := os.Getwd()
 	if err != nil {

@@ -23,10 +23,10 @@ import (
 // and real Postgres, and proves iris declare apply is idempotent: repeating an apply
 // -- including its schema provisioning -- changes nothing. It installs the engine,
 // starts a detached daemon over the golden sample workspace, applies the ingest
-// composer and its three pipelines
-// (upstream-first), snapshots the persisted registry (meta) and the provisioned data
-// catalog, re-applies every declaration, and asserts both snapshots are byte-identical:
-// the registry upsert is a no-op and provisioning re-emits no schema change.
+// composer and its three pipelines (upstream-first), snapshots the persisted registry
+// (meta) and the provisioned data catalog, re-applies every declaration, and asserts
+// both snapshots are byte-identical: the registry upsert is a no-op and provisioning
+// re-emits no schema change.
 func TestApplyRepeatNoop(t *testing.T) {
 	t.Run("apply-repeat-noop", func(t *testing.T) {
 		start := time.Now()

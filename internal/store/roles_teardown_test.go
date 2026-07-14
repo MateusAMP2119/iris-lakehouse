@@ -11,9 +11,8 @@ import (
 	"github.com/MateusAMP2119/iris-engine-cli/internal/store/storetest"
 )
 
-// This file proves the engine-managed pipeline-role teardown rides declare
-// destroy and engine uninstall, never a standalone operation. The proof is
-// two-sided:
+// This file proves the engine-managed pipeline-role teardown rides declare destroy
+// and engine uninstall, never a standalone operation. The proof is two-sided:
 //   - behavioral: RetirePipeline (the destroy path) retires the role/grants/
 //     credentials rows in its one atomic transaction, and engine uninstall drops the
 //     whole meta database (DropMetaDatabaseDDL), taking the access ledger with it;

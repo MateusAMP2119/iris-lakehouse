@@ -20,10 +20,9 @@ import (
 // The remaining legs (a daemon over a unix socket, a real Postgres created by the
 // engine, grants enforced, every write captured, wipes exact, and the single-JSON
 // --json envelope decoded by Result.DecodeJSON) activate as later epics fill the
-// binary: E01 gives it a
-// --json surface, E02 gives StartDaemon a real daemon and managed Postgres, and
-// each subsequent epic's conformance test reuses this same harness to drive the
-// matching acceptance-scenario step.
+// binary: E01 gives it a --json surface, E02 gives StartDaemon a real daemon and
+// managed Postgres, and each subsequent epic's conformance test reuses this same
+// harness to drive the matching acceptance-scenario step.
 func TestConformanceRealBinaryJSON(t *testing.T) {
 	bin := Build(t)
 

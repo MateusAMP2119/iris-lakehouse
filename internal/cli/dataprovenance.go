@@ -15,9 +15,9 @@ import (
 
 // This file is the CLI side of `iris data provenance <schema.table> <pk>`: the
 // row-level lineage walk. It GETs /provenance/{schema}/{table}/{pk} and renders
-// the same payload the route
-// serves. Under --json the data envelope is identical (render parity); the
-// human form prints the layer stack with per-stamp disposition.
+// the same payload the route serves. Under --json the data envelope is
+// identical (render parity); the human form prints the layer stack with
+// per-stamp disposition.
 //
 // The route (and thus CLI) requires only the read scope; it carries lineage
 // only, never row images.

@@ -16,11 +16,11 @@ import (
 )
 
 // TestPostPromotionWritesStillCaptured is the end-to-end proof of promotion's
-// half of the one-store doctrine against a real Postgres: after a pipeline's data
-// is promoted, new writes to its
-// tables are permanent -- born undo='promoted', outside wipe scope -- yet still
-// captured in the journal at stamp cost (slim: no pre-image, no row copy).
-// Promotion never stops capture; it only changes what the stamps are born as.
+// half of the one-store doctrine against a real Postgres: after a pipeline's
+// data is promoted, new writes to its tables are permanent -- born
+// undo='promoted', outside wipe scope -- yet still captured in the journal at
+// stamp cost (slim: no pre-image, no row copy). Promotion never stops capture;
+// it only changes what the stamps are born as.
 //
 // The leg stands up one real cluster, provisions the partitioned journal and
 // the real iris.capture() function through the live pg path, declares a user

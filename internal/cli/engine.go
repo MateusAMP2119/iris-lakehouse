@@ -45,15 +45,14 @@ type installResult struct {
 }
 
 // engineInstall is the handler for `iris engine install`: a daemonless lifecycle
-// command (it dials no daemon) that performs the engine bootstrap. Through the
-// one Manager code path it brings up Postgres for the
-// configured mode -- downloading and placing the pinned, checksum-verified managed
-// Postgres under <workspace>/.iris/pg and starting it, or resolving the external
-// admin DSN -- then creates meta alongside the data database, ensures the control
-// tables and the partitioned journal, and sets up the control socket. In managed mode
-// the local instance is stopped again once the bootstrap completes. It fails fast
-// (operation failed, exit 4) on any error. (The engine-key leg is deferred: see
-// daemon.InstallEngine.)
+// command (it dials no daemon) that performs the engine bootstrap. Through the one
+// Manager code path it brings up Postgres for the configured mode -- downloading and
+// placing the pinned, checksum-verified managed Postgres under <workspace>/.iris/pg
+// and starting it, or resolving the external admin DSN -- then creates meta alongside
+// the data database, ensures the control tables and the partitioned journal, and sets
+// up the control socket. In managed mode the local instance is stopped again once the
+// bootstrap completes. It fails fast (operation failed, exit 4) on any error. (The
+// engine-key leg is deferred: see daemon.InstallEngine.)
 func (a *app) engineInstall() runE {
 	return func(cmd *cobra.Command, _ []string) error {
 		settings := a.resolveTarget(cmd)
@@ -101,12 +100,12 @@ type engineInfoResult struct {
 // engineInfo is the handler for `iris engine info`: the engine readout. It reads
 // the engine key through an EngineKeyReader seam, derives the public half, and
 // shows only that -- the private half stays in meta and never reaches an output
-// stream. It then merges the daemon-held runtime
-// readout (GET /info: role, listeners, targets, lane passes, uptime) best-effort:
-// info remains a real local readout when no daemon is running (the daemonless
-// install/key surface), and reports the full field set against a live daemon.
-// When the key cannot be read the engine is not installed or unreachable,
-// reported as operation-failed (exit 4) with a clear message.
+// stream. It then merges the daemon-held runtime readout (GET /info: role,
+// listeners, targets, lane passes, uptime) best-effort: info remains a real local
+// readout when no daemon is running (the daemonless install/key surface), and
+// reports the full field set against a live daemon. When the key cannot be read
+// the engine is not installed or unreachable, reported as operation-failed (exit
+// 4) with a clear message.
 func (a *app) engineInfo() runE {
 	return func(cmd *cobra.Command, _ []string) error {
 		settings := a.resolveTarget(cmd)
@@ -234,13 +233,12 @@ type uninstallResult struct {
 }
 
 // engineUninstall is the handler for `iris engine uninstall`: the gated, daemonless,
-// local-machine-only engine teardown. It refuses without --yes (operation
-// failed, exit 4, with guidance), and otherwise removes
-// the engine's on-disk state -- the object store under objects_path (artifact bytes
-// and archived partitions), the control socket, and the service unit. The meta and
-// journal drops are orchestrated by daemon.UninstallEngine and run against the
-// cluster once the daemon's live admin connection is wired; the on-disk teardown
-// is real from now.
+// local-machine-only engine teardown. It refuses without --yes (operation failed,
+// exit 4, with guidance), and otherwise removes the engine's on-disk state -- the
+// object store under objects_path (artifact bytes and archived partitions), the
+// control socket, and the service unit. The meta and journal drops are orchestrated
+// by daemon.UninstallEngine and run against the cluster once the daemon's live admin
+// connection is wired; the on-disk teardown is real from now.
 func (a *app) engineUninstall() runE {
 	return func(cmd *cobra.Command, _ []string) error {
 		// Confirmation gate for teardown: typed name ("engine") or --yes/--force.
@@ -320,12 +318,12 @@ type startResult struct {
 
 // engineStart is the handler for `iris engine start`: a daemonless lifecycle
 // command that runs an engine candidate. By default it runs the daemon attached
-// in the foreground, streaming logs to stderr and
-// blocking until SIGTERM/SIGINT; with -d it detaches, re-execing itself as a
-// background daemon and returning once the socket is reachable so the daemon
-// survives the CLI's exit. In managed mode with no installed Postgres it fails
-// fast with install guidance (exit 4); it does not itself start Postgres yet
-// (managed-PG startup and meta connectivity land in E02.6).
+// in the foreground, streaming logs to stderr and blocking until
+// SIGTERM/SIGINT; with -d it detaches, re-execing itself as a background daemon
+// and returning once the socket is reachable so the daemon survives the CLI's
+// exit. In managed mode with no installed Postgres it fails fast with install
+// guidance (exit 4); it does not itself start Postgres yet (managed-PG startup
+// and meta connectivity land in E02.6).
 func (a *app) engineStart() runE {
 	return func(cmd *cobra.Command, _ []string) error {
 		settings := a.resolveTarget(cmd)
@@ -450,10 +448,9 @@ type stopResult struct {
 
 // engineStop is the handler for `iris engine stop`: it stops a detached daemon by
 // the pid it recorded, signalling SIGTERM and waiting for it to exit. With no
-// recorded daemon there is nothing to stop, so it reports no-daemon (exit 3)
-// with start guidance. Graceful-shutdown semantics
-// deepen in E02.7/E02.8; this is the minimal stop that also cleans up a detached
-// daemon.
+// recorded daemon there is nothing to stop, so it reports no-daemon (exit 3) with
+// start guidance. Graceful-shutdown semantics deepen in E02.7/E02.8; this is the
+// minimal stop that also cleans up a detached daemon.
 func (a *app) engineStop() runE {
 	return func(cmd *cobra.Command, _ []string) error {
 		settings := a.resolveTarget(cmd)
@@ -499,9 +496,9 @@ type serviceResult struct {
 // daemonless command that generates the host platform's service unit (systemd on
 // linux, launchd on darwin) wrapping the detached daemon and writes it on demand
 // (never auto-shipped). It writes to the workspace-local ServiceUnitPath seam by
-// default, or to --path when given, and is
-// the only command that installs a unit (no boot autostart is configured
-// elsewhere). It fails fast (exit 4) on any generation or write error.
+// default, or to --path when given, and is the only command that installs a unit
+// (no boot autostart is configured elsewhere). It fails fast (exit 4) on any
+// generation or write error.
 func (a *app) engineServiceInstall() runE {
 	return func(cmd *cobra.Command, _ []string) error {
 		settings := a.resolveTarget(cmd)

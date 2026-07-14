@@ -4,10 +4,10 @@ import "sort"
 
 // This file is the pure model of the seal-time journal compaction rule: the
 // clockless, count-based transformation a seal applies to a partition's rows before
-// it checkpoints them. CompactJournalRange
-// (live.go) is the SQL realization of exactly this rule against a sealed id range;
-// CompactEntries is the same rule expressed as pure Go so the collapse contract is
-// unit-testable without a live database.
+// it checkpoints them. CompactJournalRange (live.go) is the SQL realization of
+// exactly this rule against a sealed id range; CompactEntries is the same rule
+// expressed as pure Go so the collapse contract is unit-testable without a live
+// database.
 //
 // The rule has two halves, and one invariant:
 //

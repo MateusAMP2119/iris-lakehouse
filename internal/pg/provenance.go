@@ -2,12 +2,12 @@ package pg
 
 import "sort"
 
-// This file owns the pure provenance walk: the query logic behind
-// `iris data provenance <schema.table> <pk>` and the read model behind
-// GET /provenance/{schema}/{table}/{pk}.
-// The walk is three indexed lookups on plain relational tables -- no graph
-// store, no extension -- modeled here entirely over in-memory fixtures so
-// every rule is unit-testable and the live wiring stays a dumb reader:
+// This file owns the pure provenance walk: the query logic behind `iris data
+// provenance <schema.table> <pk>` and the read model behind GET
+// /provenance/{schema}/{table}/{pk}. The walk is three indexed lookups on
+// plain relational tables -- no graph store, no extension -- modeled here
+// entirely over in-memory fixtures so every rule is unit-testable and the
+// live wiring stays a dumb reader:
 //
 //  1. Row -> run. The provenance key (schema, table, row_pk) returns the
 //     row's stamps; the latest SURVIVING stamp names the current author
@@ -35,9 +35,8 @@ import "sort"
 // does not say: one level, the run's directly consumed upstreams.
 const DefaultAncestryDepth = 1
 
-// FullAncestry asks the ancestry walk for the whole upward DAG in one call:
-// the pure model of the single WITH RECURSIVE query
-// (`iris run show <run> --trace`).
+// FullAncestry asks the ancestry walk for the whole upward DAG in one call: the
+// pure model of the single WITH RECURSIVE query (`iris run show <run> --trace`).
 const FullAncestry = -1
 
 // Stamp is one journal layer of a row's write history as provenance returns
@@ -91,9 +90,9 @@ func CurrentAuthor(stamps []Stamp) (Stamp, bool) {
 }
 
 // SnapshotPin is the three-value pin naming a run's input state: the data
-// database's LSN and journal high id at
-// dispatch, and the journal high id at terminal transition. Nil models SQL
-// NULL (e.g. a run pinned before its terminal transition has no ceiling).
+// database's LSN and journal high id at dispatch, and the journal high id at
+// terminal transition. Nil models SQL NULL (e.g. a run pinned before its
+// terminal transition has no ceiling).
 type SnapshotPin struct {
 	// SnapshotLSN is the data database's LSN at dispatch.
 	SnapshotLSN *string
@@ -104,9 +103,9 @@ type SnapshotPin struct {
 }
 
 // RunRecord is the live runs-row projection the walk reads: exactly the
-// fields lookup two returns from runs. Fields the walk
-// never returns (handle, log_ref, exit_code, ...) are omitted: this is the
-// provenance projection of a run row, not a second schema.
+// fields lookup two returns from runs. Fields the walk never returns (handle,
+// log_ref, exit_code, ...) are omitted: this is the provenance projection of
+// a run row, not a second schema.
 type RunRecord struct {
 	// RunID is the run's meta identity (runs.id).
 	RunID int64
@@ -123,9 +122,8 @@ type RunRecord struct {
 }
 
 // ArchivalSummary is the run_summaries projection the walk falls back to once
-// a run row is pruned: the same
-// facts as RunRecord plus the consumed-upstream list the pruner copied out of
-// run_inputs, so ancestry never dangles.
+// a run row is pruned: the same facts as RunRecord plus the consumed-upstream
+// list the pruner copied out of run_inputs, so ancestry never dangles.
 type ArchivalSummary struct {
 	// RunID is the summarized run's identity (run_summaries.run_id).
 	RunID int64
