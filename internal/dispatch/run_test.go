@@ -148,8 +148,9 @@ const blockingScript = "#!/bin/sh\nprintf 'started\\n'\nwhile true; do sleep 1; 
 // markRunningPGID returns the process-group id recorded by the run-start write for
 // runID, if the single writer recorded one.
 func markRunningPGID(stmts []storetest.RecordedStatement, runID string) (int, bool) {
+	// The mark-running args are (state, pgid, log_ref, id, guard-state).
 	for _, s := range stmts {
-		if len(s.Args) >= 3 && s.Args[0] == store.RunRunning && s.Args[2] == runID {
+		if len(s.Args) >= 4 && s.Args[0] == store.RunRunning && s.Args[3] == runID {
 			if pgid, ok := s.Args[1].(int); ok {
 				return pgid, true
 			}

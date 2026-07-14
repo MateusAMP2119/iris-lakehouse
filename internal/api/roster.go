@@ -69,6 +69,8 @@ func (m *mux) serveRoster(w http.ResponseWriter, r *http.Request) bool {
 			m.serveRun(w, r, segs[1])
 		case len(segs) == 3 && segs[2] == "trace":
 			m.serveRunTrace(w, r, segs[1])
+		case len(segs) == 3 && segs[2] == "logs":
+			m.serveRunLogs(w, r, segs[1])
 		default:
 			return false
 		}

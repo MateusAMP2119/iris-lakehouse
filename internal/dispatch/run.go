@@ -150,7 +150,7 @@ func (m *RunManager) StartRun(ctx context.Context, spec RunSpec) (RunHandle, err
 	// unrecorded -- kill its group and drain before returning, so no orphaned,
 	// untracked process escapes and the sink is closed.
 	if err := m.disp.Submit(ctx, func(w *store.Writer) error {
-		return w.MarkRunRunning(ctx, spec.RunID, h.PGID())
+		return w.MarkRunRunning(ctx, spec.RunID, h.PGID(), ref)
 	}); err != nil {
 		_ = h.Kill()
 		_, _ = h.Wait()

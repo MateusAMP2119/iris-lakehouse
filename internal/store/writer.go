@@ -109,19 +109,20 @@ const (
 INSERT INTO dead_letters (run_id, reason, error)
 SELECT id, $4, $5 FROM updated`
 	deleteQueuedRunSQL = "DELETE FROM runs WHERE id = $1 AND state = $2"
-	markRunRunningSQL  = "UPDATE runs SET state = $1, handle = $2 WHERE id = $3 AND state = $4"
+	markRunRunningSQL  = "UPDATE runs SET state = $1, handle = $2, log_ref = NULLIF($3, '') WHERE id = $4 AND state = $5"
 )
 
 // MarkRunRunning records a started run: in one guarded statement it transitions
-// the run from queued to running and records its subprocess process-group id as
-// runs.handle (handle = process-group id, set when the subprocess starts). The
-// dispatcher submits it through the single writer the moment exec starts a run.
-// The UPDATE is guarded on the queued state, so it can only ever act on a run
-// that has not already started -- never one already running or terminal -- and it
-// is one atomic Exec, never a read-then-write that could split. It is a
-// leader-only meta write, riding the single Writer.
-func (w *Writer) MarkRunRunning(ctx context.Context, id string, pgid int) error {
-	if err := w.conn.Exec(ctx, markRunRunningSQL, RunRunning, pgid, id, RunQueued); err != nil {
+// the run from queued to running, records its subprocess process-group id as
+// runs.handle (handle = process-group id, set when the subprocess starts), and
+// records the per-run log reference as runs.log_ref (NULL when the run has no
+// captured output sink). The dispatcher submits it through the single writer the
+// moment exec starts a run. The UPDATE is guarded on the queued state, so it can
+// only ever act on a run that has not already started -- never one already
+// running or terminal -- and it is one atomic Exec, never a read-then-write that
+// could split. It is a leader-only meta write, riding the single Writer.
+func (w *Writer) MarkRunRunning(ctx context.Context, id string, pgid int, logRef string) error {
+	if err := w.conn.Exec(ctx, markRunRunningSQL, RunRunning, pgid, logRef, id, RunQueued); err != nil {
 		return fmt.Errorf("store: writer mark run running %s: %w", id, err)
 	}
 	return nil

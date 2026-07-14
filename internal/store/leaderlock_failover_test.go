@@ -270,7 +270,7 @@ func TestNoMetaWriteWithoutLock(t *testing.T) {
 			t.Fatalf("Acquire: %v", err)
 		}
 		w := store.NewWriter(conn)
-		if err := w.MarkRunRunning(ctx, "1", 4242); err != nil {
+		if err := w.MarkRunRunning(ctx, "1", 4242, ""); err != nil {
 			t.Fatalf("MarkRunRunning while leading: %v", err)
 		}
 
@@ -278,7 +278,7 @@ func TestNoMetaWriteWithoutLock(t *testing.T) {
 		// refused before it reaches meta -- the Exec path and the atomic-transaction
 		// path both.
 		lock.LoseSession()
-		if err := w.MarkRunRunning(ctx, "2", 4243); !errors.Is(err, store.ErrNoLeaderLock) {
+		if err := w.MarkRunRunning(ctx, "2", 4243, ""); !errors.Is(err, store.ErrNoLeaderLock) {
 			t.Errorf("MarkRunRunning after session loss: err = %v, want ErrNoLeaderLock", err)
 		}
 		if err := w.RewriteLane(ctx, "lane", []string{"a", "b"}); !errors.Is(err, store.ErrNoLeaderLock) {

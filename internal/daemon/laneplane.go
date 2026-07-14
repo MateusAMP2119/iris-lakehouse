@@ -122,7 +122,7 @@ func newLaneLoop(
 	passCounter *dispatch.PassCounter,
 	retention store.RetentionReader,
 	retain int64,
-	deleteLog RunLogPruneFunc,
+	runLogs *RunLogWriter,
 	logger *slog.Logger,
 ) *dispatch.Loop {
 	if logger == nil {
@@ -142,7 +142,12 @@ func newLaneLoop(
 		journal:   journal,
 		objects:   objects,
 		dataDSN:   dataDSN,
+		runLogs:   runLogs,
 		logger:    logger,
+	}
+	var deleteLog RunLogPruneFunc
+	if runLogs != nil {
+		deleteLog = runLogs.DeleteOnPrune
 	}
 	post := lanePostPass{
 		workspace: workspace,
@@ -221,6 +226,7 @@ type laneExec struct {
 	journal   dispatch.JournalHighWatermark
 	objects   *store.ObjectStore
 	dataDSN   string
+	runLogs   *RunLogWriter // per-run output capture; nil discards (shape tests)
 	logger    *slog.Logger
 }
 
@@ -257,24 +263,35 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 	}
 	runID := strconv.FormatInt(info.ID, 10)
 
+	// Open the per-run output capture: the run's stdout and stderr stream into
+	// the run-id-keyed log under .iris/logs, and its path is recorded as
+	// runs.log_ref. Capture is best-effort -- a failed open runs the pipeline
+	// uncaptured (warned) rather than blocking dispatch.
+	sink, logRef := openRunLog(m.runLogs, runID, m.logger)
+
 	argv := dispatch.ResolveRunArgv(target.Argv, rec.ArtifactHash, m.objects)
 	h, err := m.runner.Start(ctx, exec.Spec{
-		Dir:  filepath.Join(m.workspace, target.Folder),
-		Argv: argv,
-		Env:  m.childEnv(info.ID),
+		Dir:    filepath.Join(m.workspace, target.Folder),
+		Argv:   argv,
+		Env:    m.childEnv(info.ID),
+		Stdout: sink,
+		Stderr: sink,
 	})
 	if err != nil {
+		closeRunLog(sink)
 		// Nothing started: remove the queued run so meta carries no phantom.
 		if derr := m.submit.Submit(ctx, func(w *store.Writer) error { return w.DeleteQueuedRun(ctx, runID) }); derr != nil {
 			m.logger.Warn("lane run: could not delete queued run after start failure", "run", runID, "err", derr)
 		}
 		return dispatch.RunSucceeded, fmt.Errorf("lane run %q: start: %w", rec.Pipeline, err)
 	}
+	defer closeRunLog(sink)
 
-	// Record the started run running with its process-group handle. If that write
-	// fails, the subprocess is already running but unrecorded -- kill its group and
-	// drain before returning, so no orphaned, untracked process escapes.
-	if err := m.submit.Submit(ctx, func(w *store.Writer) error { return w.MarkRunRunning(ctx, runID, h.PGID()) }); err != nil {
+	// Record the started run running with its process-group handle and log
+	// reference. If that write fails, the subprocess is already running but
+	// unrecorded -- kill its group and drain before returning, so no orphaned,
+	// untracked process escapes.
+	if err := m.submit.Submit(ctx, func(w *store.Writer) error { return w.MarkRunRunning(ctx, runID, h.PGID(), logRef) }); err != nil {
 		_ = h.Kill()
 		_, _ = h.Wait()
 		return dispatch.RunSucceeded, fmt.Errorf("lane run %s: record running: %w", runID, err)

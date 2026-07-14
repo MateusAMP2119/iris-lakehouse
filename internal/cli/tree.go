@@ -133,7 +133,7 @@ func (a *app) groupStub() runE {
 // no body of its own: it dials the resolved daemon and, with none reachable,
 // reports no-daemon (exit 3) with start guidance, never auto-starting one. When the
 // daemon is reachable it reports not-implemented (exit 4) -- the honest answer for
-// the verbs still carrying this handler (run show, run logs, engine logs,
+// the verbs still carrying this handler (run show, engine logs,
 // deadletter list, endpoint remove/list/show, pat list/revoke): no client of theirs
 // was ever wired.
 func (a *app) daemonStub(op string) runE {
@@ -240,8 +240,8 @@ func (a *app) runCmd() *cobra.Command {
 	show.Flags().Bool("down", false, "with --trace, walk descendants instead of ancestors")
 
 	logs := &cobra.Command{
-		Use: "logs <run>", Short: "Tail a run's captured output",
-		Args: cobra.ExactArgs(1), RunE: a.daemonStub("run logs"),
+		Use: "logs <run>", Short: "Print a run's captured output",
+		Args: cobra.ExactArgs(1), RunE: a.runLogs(),
 	}
 	cancel := &cobra.Command{
 		Use: "cancel <run>", Short: "Cancel one running run (kills its process group)",

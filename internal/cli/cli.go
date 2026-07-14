@@ -8,7 +8,7 @@
 // the surface from the first day -- the categorical exit codes, the single-JSON
 // document on stdout under --json, and the strict separation of log output
 // (stderr) from command output (stdout). A handful of read verbs are still
-// unwired stubs (run show, run logs, engine logs, deadletter list, endpoint
+// unwired stubs (run show, engine logs, deadletter list, endpoint
 // list/show/remove, pat list/revoke): they carry the daemonStub handler, which
 // reports "no daemon reachable" (exit 3) with guidance to start the engine when
 // nothing answers, and "not implemented" (exit 4) once a daemon does.
