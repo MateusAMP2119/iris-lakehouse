@@ -298,12 +298,15 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// The lane loop build closure composes the loop over the single dispatcher on
 	// winning leadership: the walk read, the depends_on gate, the fresh cause=loop
 	// run-start (run-scoped for capture attribution, tracked in the SHARED in-flight
-	// registry so run cancel and the self-demotion kill reach it), and the failure-
-	// propagation post-pass. The run's data connection targets the engine-owned data
-	// database, retargeted from the admin DSN.
+	// registry so run cancel and the self-demotion kill reach it), and the post-pass
+	// bookkeeping (failure propagation, then count-based retention pruning down to
+	// the resolved retain, each pruned run's log dying with its row). The run's data
+	// connection targets the engine-owned data database, retargeted from the admin DSN.
+	runLogs := NewRunLogWriter(s)
 	laneBuild := func(submit dispatch.Submitter) *dispatch.Loop {
 		return newLaneLoop(submit, inflight, workspace, client.RegistryReader(), client.ManualReader(),
-			exec.NewOSRunner(), data, objects, laneDataDSN, passCounter, logger)
+			exec.NewOSRunner(), data, objects, laneDataDSN, passCounter,
+			client.RetentionReader(), s.Retain, runLogs.DeleteOnPrune, logger)
 	}
 
 	cand := NewCandidate(client.Lock(), role, client.WriteConn(), logger,
