@@ -13,15 +13,14 @@ import (
 	"github.com/MateusAMP2119/iris-engine-cli/internal/api"
 	"github.com/MateusAMP2119/iris-engine-cli/internal/dispatch"
 	"github.com/MateusAMP2119/iris-engine-cli/internal/exec"
-	"github.com/MateusAMP2119/iris-engine-cli/internal/pg"
 	"github.com/MateusAMP2119/iris-engine-cli/internal/store"
 )
 
 // This file is the daemon's leader-side manual-run plane: the composition root that
-// turns POST /pipeline/run and GET /pipeline/list into the E05.5 depends_on gate, the
-// single-writer run-record mints, and the direct subprocess exec (specification section
-// 8). It sits at the top of the import graph (daemon composes api, dispatch, exec, and
-// store) and is the one place they are wired together.
+// turns POST /pipeline/run and GET /pipeline/list into the depends_on gate, the
+// single-writer run-record mints, and the direct subprocess exec. It sits at the
+// top of the import graph (daemon composes api, dispatch, exec, and store) and is
+// the one place they are wired together.
 //
 // The listing is a plain-MVCC read, so it is served on any node (standby included) from
 // the reader pool. The manual run is a mutation -- it mints runs through the single meta
@@ -33,11 +32,12 @@ import (
 //
 // Scope note: an own-lane manual run executes synchronously here (mint cause=manual, run,
 // record terminal). A lane member is queued as a cause=manual run for the lane runner to
-// start in turn (E05.12 owns the perpetual lane loop); the manual path never starts a
-// lane member out of band, so same-lane serialization holds. Each run's IRIS_DB_URL is
-// the base data-database connection carrying the run id (the same injection the lane
-// loop applies), so a manual run's captured writes attribute to its own run; run output
-// is not captured to a log file yet (E05 run logs), so log_ref stays null.
+// start in turn -- the perpetual lane loop (dispatch.Loop, built in laneplane.go) owns
+// starting it -- so the manual path never starts a lane member out of band and same-lane
+// serialization holds. Each run's IRIS_DB_URL is the base data-database connection
+// carrying the run id (the same injection the lane loop applies), so a manual run's
+// captured writes attribute to its own run. Run output streams into the per-run log
+// (RunLogWriter, the same sink the lane loop wires), recorded as runs.log_ref.
 
 // pipelinePlane is the daemon's api.PipelineHandler: it serves the pipeline listing from
 // the reader pool always, and delegates the manual run to the live orchestrator when the
@@ -119,8 +119,8 @@ func (p *pipelinePlane) RunPipeline(ctx context.Context, req api.PipelineRunRequ
 }
 
 // manualOrchestrator runs the leader-side manual `iris pipeline run` against meta and the
-// exec seam. It composes the E05.5 depends_on gate (over the run_inputs consumed check),
-// the edge and lane read seams, and the queue (lane members) and immediate (own-lane) run
+// exec seam. It composes the depends_on gate (over the run_inputs consumed check), the
+// edge and lane read seams, and the queue (lane members) and immediate (own-lane) run
 // seams into the dispatch.ManualRunner, then translates the run's terminal state to the
 // wire outcome the CLI maps to an exit code.
 type manualOrchestrator struct {
@@ -138,7 +138,7 @@ type manualOrchestrator struct {
 // is the base scoped data-database connection each run's IRIS_DB_URL is derived from
 // (the run id rides it), the same DSN the lane loop injects, so a manual run's captured
 // writes attribute to its own run exactly like a lane run's.
-func newManualOrchestrator(workspace string, submit dispatch.Submitter, registry store.RegistryReader, manual store.ManualReader, objects *store.ObjectStore, runner exec.Runner, journal dispatch.JournalHighWatermark, dbURL string, inflight *inflightRuns, sealer *journalSealer, logger *slog.Logger) *manualOrchestrator {
+func newManualOrchestrator(workspace string, submit dispatch.Submitter, registry store.RegistryReader, manual store.ManualReader, objects *store.ObjectStore, runner exec.Runner, journal dispatch.JournalHighWatermark, runConn *runConnBuilder, inflight *inflightRuns, sealer *journalSealer, runLogs *RunLogWriter, logger *slog.Logger) *manualOrchestrator {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -149,9 +149,10 @@ func newManualOrchestrator(workspace string, submit dispatch.Submitter, registry
 		objects:   objects,
 		runner:    runner,
 		journal:   journal,
-		dbURL:     dbURL,
+		runConn:   runConn,
 		inflight:  inflight,
 		sealer:    sealer,
+		runLogs:   runLogs,
 		logger:    logger,
 	}
 	mr := dispatch.NewManualRunner(
@@ -271,9 +272,9 @@ func (l laneReader) LaneRows(ctx context.Context) ([]dispatch.LaneRow, error) {
 	return out, nil
 }
 
-// runQueue mints a lane member's manual run as a queued cause=manual run for the lane
-// runner to start in turn (E05.12), so same-lane serialization holds. It never starts the
-// run.
+// runQueue mints a lane member's manual run as a queued cause=manual run for the
+// perpetual lane loop to start in turn, so same-lane serialization holds. It never starts
+// the run.
 type runQueue struct {
 	exec *manualExec
 }
@@ -305,9 +306,10 @@ type manualExec struct {
 	objects   *store.ObjectStore // the leader's own objects_path for built run argv resolution via ResolveRunArgv
 	runner    exec.Runner
 	journal   dispatch.JournalHighWatermark
-	dbURL     string         // the run's base scoped data-database connection; the run id rides it (empty until the E04.4 scoped connection is provisioned)
+	runConn   *runConnBuilder // the run's scoped data connection builder (the pipeline's own login role); nil leaves IRIS_DB_URL empty
 	inflight  *inflightRuns  // tracks this run's live process group so a self-demotion kills it; nil in the shape tests
 	sealer    *journalSealer // the opportunistic post-pass seal step; nil in the shape tests leaves sealing off
+	runLogs   *RunLogWriter  // per-run output capture; nil discards (shape tests)
 	logger    *slog.Logger
 }
 
@@ -353,31 +355,41 @@ func (m *manualExec) runNow(ctx context.Context, rec store.RunRecord) (dispatch.
 	}
 	runID := strconv.FormatInt(info.ID, 10)
 
+	// Open the per-run output capture: the run's stdout and stderr stream into
+	// the run-id-keyed log under .iris/logs, and its path is recorded as
+	// runs.log_ref. Capture is best-effort -- a failed open runs the pipeline
+	// uncaptured (warned) rather than blocking the run.
+	sink, logRef := openRunLog(m.runLogs, runID, m.logger)
+
 	argv := dispatch.ResolveRunArgv(target.Argv, nil, m.objects)
 	// objects is this leader's (wired at candidate construction; a promoted failover
 	// leader therefore resolves built-run binaries from its own objects_path).
 	h, err := m.runner.Start(ctx, exec.Spec{
-		Dir:  filepath.Join(m.workspace, target.Folder),
-		Argv: argv,
-		Env:  m.childEnv(info.ID),
+		Dir:    filepath.Join(m.workspace, target.Folder),
+		Argv:   argv,
+		Env:    m.childEnv(ctx, rec.Pipeline, info.ID),
+		Stdout: sink,
+		Stderr: sink,
 	})
 	if err != nil {
+		closeRunLog(sink)
 		// Nothing started: remove the queued run so meta carries no phantom.
 		if derr := m.submitter.Submit(ctx, func(w *store.Writer) error { return w.DeleteQueuedRun(ctx, runID) }); derr != nil {
 			m.logger.Warn("manual run: could not delete queued run after start failure", "run", runID, "err", derr)
 		}
 		return dispatch.RunSucceeded, fmt.Errorf("start manual run for %q: %w", rec.Pipeline, err)
 	}
+	defer closeRunLog(sink)
 
-	if err := m.submitter.Submit(ctx, func(w *store.Writer) error { return w.MarkRunRunning(ctx, runID, h.PGID()) }); err != nil {
+	if err := m.submitter.Submit(ctx, func(w *store.Writer) error { return w.MarkRunRunning(ctx, runID, h.PGID(), logRef) }); err != nil {
 		_ = h.Kill()
 		_, _ = h.Wait()
 		return dispatch.RunSucceeded, fmt.Errorf("record manual run %s running: %w", runID, err)
 	}
 
 	// Track the live process group so a self-demotion (lost meta session) kills it at
-	// once (specification section 15); untrack after it is reaped so a completed run
-	// is never a kill target. A nil registry (the shape tests) skips tracking.
+	// once; untrack after it is reaped so a completed run is never a kill target. A
+	// nil registry (the shape tests) skips tracking.
 	if m.inflight != nil {
 		m.inflight.track(runID, h)
 		defer m.inflight.untrack(runID)
@@ -413,10 +425,10 @@ func (m *manualExec) runNow(ctx context.Context, rec store.RunRecord) (dispatch.
 	return dispatch.RunSucceeded, nil
 }
 
-// sealAfterPass runs the opportunistic post-terminal seal step (specification
-// section 14): it is invoked once the run is recorded terminal and its journal
-// ceiling stamped, so the just-finished run never counts itself as in-flight. A nil
-// sealer (the shape tests) or a not-due partition leaves the journal untouched.
+// sealAfterPass runs the opportunistic post-terminal seal step: it is invoked once
+// the run is recorded terminal and its journal ceiling stamped, so the
+// just-finished run never counts itself as in-flight. A nil sealer (the shape
+// tests) or a not-due partition leaves the journal untouched.
 func (m *manualExec) sealAfterPass(ctx context.Context) {
 	if m.sealer == nil {
 		return
@@ -424,29 +436,14 @@ func (m *manualExec) sealAfterPass(ctx context.Context) {
 	m.sealer.sealAfterPass(ctx)
 }
 
-// childEnv builds the manual run's environment: the inherited daemon environment plus
-// the run-scoped data-database connection injected as IRIS_DB_URL, exactly as the lane
-// path injects it (dispatch.injectedDBURL). The run id rides the base scoped DSN as the
-// iris.run_id session GUC (pg.InjectRunID), so a manual run's captured writes attribute
-// to its own run just like a lane run's -- attribution is by run id, not by cause. It
-// wins over any IRIS_DB_URL the pipeline author declared, since it is appended last.
-func (m *manualExec) childEnv(runID int64) []string {
-	return append(os.Environ(), dispatch.DBConnEnvVar+"="+m.injectedDBURL(runID))
-}
-
-// injectedDBURL rides the run id on the base scoped DSN, mirroring the lane path's
-// dispatch.injectedDBURL. An empty base DSN (before the E04.4 scoped connection is
-// provisioned) stays empty rather than becoming a malformed options-only DSN; a
-// non-positive run id leaves the base unchanged. Otherwise the run id is merged in as
-// the iris.run_id connection option the capture trigger reads in-transaction.
-func (m *manualExec) injectedDBURL(runID int64) string {
-	if m.dbURL == "" {
-		return ""
-	}
-	if runID <= 0 {
-		return m.dbURL
-	}
-	return pg.InjectRunID(m.dbURL, runID)
+// childEnv builds the manual run's environment: the inherited daemon environment
+// plus the run-scoped data connection injected as IRIS_DB_URL, exactly as the
+// lane path injects it -- the pipeline's own least-privilege login role, the run
+// id riding it as the iris.run_id session GUC (pg.InjectRunID), so a manual
+// run's captured writes attribute to its own run just like a lane run's. It wins
+// over any IRIS_DB_URL the pipeline author declared, since it is appended last.
+func (m *manualExec) childEnv(ctx context.Context, pipeline string, runID int64) []string {
+	return append(os.Environ(), dispatch.DBConnEnvVar+"="+m.runConn.dsnFor(ctx, pipeline, runID))
 }
 
 // checksum reads the pipeline's declaration file and returns its SHA-256 hex digest, the

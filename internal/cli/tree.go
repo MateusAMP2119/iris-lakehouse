@@ -8,16 +8,17 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/MateusAMP2119/iris-engine-cli/internal/buildinfo"
+	"github.com/MateusAMP2119/iris-engine-cli/internal/config"
 )
 
 // runE is the signature of a cobra command handler.
 type runE = func(cmd *cobra.Command, args []string) error
 
 // The lifecycle annotation classifies each leaf command as daemonless (runnable
-// without a daemon: the fixed roster of specification section 2) or daemon-
-// touching (must reach a running daemon, or fail fast with start guidance). It is
-// set explicitly at command construction, so later epics (and the traceability
-// sweep) read the annotation rather than a string list.
+// without a daemon: a fixed roster) or daemon-touching (must reach a running
+// daemon, or fail fast with start guidance). It is
+// set explicitly at command construction, so later epics (and the sweep tests)
+// read the annotation rather than a string list.
 const (
 	// lifecycleAnnotation is the cobra Annotations key carrying the classification.
 	lifecycleAnnotation = "iris.lifecycle"
@@ -42,14 +43,13 @@ func daemonTouching(c *cobra.Command) *cobra.Command {
 	return withLifecycle(c, lifecycleDaemonTouching)
 }
 
-// daemonless marks c as a command in the specification section 2 daemonless
-// roster.
+// daemonless marks c as a command in the daemonless roster.
 func daemonless(c *cobra.Command) *cobra.Command {
 	return withLifecycle(c, lifecycleDaemonless)
 }
 
 // newRootCommand builds the iris command tree: the root, its global persistent
-// flags, and the noun-verb subcommands of specification section 8. The tree is
+// flags, and the noun-verb subcommands. The tree is
 // built fresh per invocation from a constructor (no package globals, no init),
 // so it closes over the invocation's app for output and logging.
 func (a *app) newRootCommand() *cobra.Command {
@@ -81,7 +81,7 @@ func (a *app) newRootCommand() *cobra.Command {
 	// errors when resolving the output mode.
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return &flagError{err: err} })
 
-	// Global flags, on every command by inheritance (specification section 8).
+	// Global flags, on every command by inheritance.
 	pf := root.PersistentFlags()
 	pf.Bool("json", false, "emit a single JSON document on stdout instead of human-readable output")
 	pf.String("socket", "", "path to the engine's Unix control socket")
@@ -107,7 +107,7 @@ func (a *app) newRootCommand() *cobra.Command {
 
 // group builds a noun (or sub-noun) node: a command that owns verbs but does no
 // work itself. A bare invocation is a usage error (exit 2), consistent with the
-// resource-first tree and the spec's bare-declare rule, so no group node ever
+// resource-first tree and the bare-declare rule, so no group node ever
 // prints human help to stdout under --json.
 func (a *app) group(use, short string, children ...*cobra.Command) *cobra.Command {
 	c := &cobra.Command{
@@ -129,11 +129,13 @@ func (a *app) groupStub() runE {
 	}
 }
 
-// daemonStub is the handler of a command that must reach a running daemon: it
-// dials the resolved daemon and, with none reachable, reports no-daemon (exit 3)
-// with start guidance, never auto-starting one. When the daemon is reachable the
-// command is not wired yet, so it reports not-implemented (exit 4); the command's
-// real body lands in a later epic.
+// daemonStub is the handler of a command that must reach a running daemon but has
+// no body of its own: it dials the resolved daemon and, with none reachable,
+// reports no-daemon (exit 3) with start guidance, never auto-starting one. When the
+// daemon is reachable it reports not-implemented (exit 4) -- the honest answer for
+// the verbs still carrying this handler (run show, engine logs,
+// deadletter list, endpoint remove/list/show, pat list/revoke): no client of theirs
+// was ever wired.
 func (a *app) daemonStub(op string) runE {
 	return func(cmd *cobra.Command, _ []string) error { return a.requireDaemon(cmd, op) }
 }
@@ -238,8 +240,8 @@ func (a *app) runCmd() *cobra.Command {
 	show.Flags().Bool("down", false, "with --trace, walk descendants instead of ancestors")
 
 	logs := &cobra.Command{
-		Use: "logs <run>", Short: "Tail a run's captured output",
-		Args: cobra.ExactArgs(1), RunE: a.daemonStub("run logs"),
+		Use: "logs <run>", Short: "Print a run's captured output",
+		Args: cobra.ExactArgs(1), RunE: a.runLogs(),
 	}
 	cancel := &cobra.Command{
 		Use: "cancel <run>", Short: "Cancel one running run (kills its process group)",
@@ -285,11 +287,11 @@ func (a *app) engineCmd() *cobra.Command {
 		Use: "start", Short: "Run an engine candidate (foreground; -d to detach)",
 		Args: cobra.NoArgs, RunE: a.engineStart(),
 	}
-	// Daemon-scoped flags live only on engine start (specification section 8).
+	// Daemon-scoped flags live only on engine start.
 	start.Flags().BoolP("detach", "d", false, "detach and run the engine in the background")
 	start.Flags().String("pg-dsn", "", "DSN of an external Postgres to use instead of the managed one")
-	start.Flags().String("retain", "", "run-history retention count")
-	start.Flags().String("journal-partition-rows", "", "rows per journal partition before sealing")
+	start.Flags().Int64("retain", config.DefaultRetain, "run-history retention count")
+	start.Flags().Int64("journal-partition-rows", config.DefaultJournalPartitionRows, "rows per journal partition before sealing")
 	start.Flags().String("objects-path", "", "filesystem path for the local object store")
 	start.Flags().String("tcp", "", "address to expose the read API and control plane over TCP")
 	start.Flags().String("tls-cert", "", "TLS certificate for the TCP listener")
@@ -324,6 +326,10 @@ func (a *app) engineCmd() *cobra.Command {
 		Use: "stats", Short: "Show rollups: run, lane, and dead-letter counts",
 		Args: cobra.NoArgs, RunE: a.engineStats(),
 	}
+	connect := &cobra.Command{
+		Use: "connect [host]", Short: "Point this workspace at a remote engine: verify host and PAT, record them in .iris/iris.toml",
+		Args: cobra.MaximumNArgs(1), RunE: a.engineConnect(),
+	}
 
 	svcInstall := &cobra.Command{
 		Use: "install", Short: "Generate and install the platform service unit (systemd/launchd)",
@@ -341,7 +347,7 @@ func (a *app) engineCmd() *cobra.Command {
 	return a.group("engine", "Manage the daemon, its state, and its service unit",
 		daemonless(start), daemonTouching(stop), daemonless(install), daemonless(uninstall),
 		daemonTouching(info), daemonTouching(logs), daemonTouching(inspect), daemonTouching(stats),
-		service)
+		daemonTouching(connect), service)
 }
 
 // deadletterCmd builds `iris deadletter` (sole alias: dl). replay and drain

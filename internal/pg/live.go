@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,8 +20,8 @@ import (
 // live, distinct from the meta control database store owns. It is the one place pg
 // turns the admin-derived connection source into real connections.
 //
-// The client serves two provisioning needs (specification section 5): it Execs the
-// CREATE / ALTER / trigger DDL the provisioner emits, and it reads the live-Postgres
+// The client serves two provisioning needs: it Execs the CREATE / ALTER / trigger DDL
+// the provisioner emits, and it reads the live-Postgres
 // view the provisioner diffs the declared world against so a re-apply is a no-op. It
 // is exercised against a real Postgres at conformance tier (the one tier with a live
 // database), the single place the live-view reads and the generated DDL meet a real
@@ -119,8 +121,8 @@ func (c *Client) Exec(ctx context.Context, sql string) error {
 }
 
 // PrepareVerify prepare-verifies a derived endpoint statement against the data
-// database (specification section 7: endpoint apply prepare-verifies the derived
-// SQL). It checks one connection out of the data pool and issues a server-side
+// database: endpoint apply prepare-verifies the derived SQL. It checks one connection
+// out of the data pool and issues a server-side
 // Parse (Postgres itself vets the statement -- source present, columns real, types
 // castable), then deallocates it so a pooled reuse can re-prepare, returning
 // Postgres's refusal verbatim on failure. It runs as the engine's own data role, so
@@ -169,8 +171,8 @@ func (c *Client) JournalHighID(ctx context.Context) (int64, error) {
 // row count and its inclusive id span (min and max id), all zero when the journal
 // is empty. The seal step reads it to decide whether the live partition has crossed
 // the journal_partition_rows threshold and, when it seals, to stamp the checkpoint's
-// exact id_from/id_to from the partition's actual entries (specification section
-// 14). It is one plain-MVCC read; the count is over the resident tail only, since
+// exact id_from/id_to from the partition's actual entries. It is one plain-MVCC read;
+// the count is over the resident tail only, since
 // sealed partitions are exported and dropped.
 func (c *Client) ResidentJournalStats(ctx context.Context) (count, minID, maxID int64, err error) {
 	if err := c.pool.QueryRow(ctx,
@@ -184,8 +186,8 @@ func (c *Client) ResidentJournalStats(ctx context.Context) (count, minID, maxID 
 // ResidentRunIDs returns the distinct run ids that have written entries into the
 // resident (unsealed) journal partition. The seal step reads it to identify which
 // runs have written into the partition, so it can check whether any of them is still
-// in flight before it cuts a seal (specification section 14: a partition seals only
-// when every in-flight run writing into it has finished). A run that writes nothing
+// in flight before it cuts a seal (a partition seals only when every in-flight run
+// writing into it has finished). A run that writes nothing
 // -- an idle-lane no-op pass -- never appears here, so it never blocks a seal. It is
 // one plain-MVCC read over the resident tail.
 func (c *Client) ResidentRunIDs(ctx context.Context) ([]int64, error) {
@@ -204,6 +206,32 @@ func (c *Client) ResidentRunIDs(ctx context.Context) ([]int64, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("pg: iterate resident journal run ids: %w", err)
+	}
+	return ids, nil
+}
+
+// OpenUndoRunIDs returns the run id of every resident journal entry still undo =
+// open (written under disposable data_mode, unreleased by promotion), one element
+// per entry so the count is the wipe scope's size once attributed. The
+// destructive-op gate reads it to evaluate the un-promoted-data soft-block on a
+// teardown: the caller attributes each run id to its pipeline (meta-side) and
+// counts the entries under the teardown's scope. It is one plain-MVCC read.
+func (c *Client) OpenUndoRunIDs(ctx context.Context) ([]int64, error) {
+	rows, err := c.pool.Query(ctx, `SELECT run_id FROM public.data_journal WHERE undo = 'open'`)
+	if err != nil {
+		return nil, fmt.Errorf("pg: read open-undo journal run ids: %w", err)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("pg: scan open-undo journal run id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pg: iterate open-undo journal run ids: %w", err)
 	}
 	return ids, nil
 }
@@ -281,6 +309,50 @@ FROM public.data_journal WHERE id >= $1 AND ($2 = 0 OR id < $2) ORDER BY id`
 	return out, rows.Err()
 }
 
+// ParseCompactedRow decodes one canonical compacted-row serialization -- the
+// exact shape QueryCompactedRows produces and the archive export persists
+// (id|pg_role|run_id|schema|table|row_pk|op|pre_image|undo|recorded_at) -- back
+// into a JournalEntry, so stamps recovered from an archived partition feed the
+// same provenance walk resident stamps do. The pre_image field is JSON and may
+// itself contain the delimiter, so the head fields split from the LEFT and the
+// undo/recorded_at tail from the RIGHT, leaving everything between as the
+// pre-image. It reports false for bytes that do not parse (a foreign or
+// corrupted row is skipped, never misread). pg_role and recorded_at are not part
+// of the in-memory entry and are dropped.
+func ParseCompactedRow(b []byte) (JournalEntry, bool) {
+	head := strings.SplitN(string(b), "|", 8)
+	if len(head) != 8 {
+		return JournalEntry{}, false
+	}
+	id, err := strconv.ParseInt(head[0], 10, 64)
+	if err != nil {
+		return JournalEntry{}, false
+	}
+	runID, err := strconv.ParseInt(head[2], 10, 64)
+	if err != nil {
+		return JournalEntry{}, false
+	}
+	rest := head[7] // pre_image|undo|recorded_at, pre_image possibly containing '|'
+	i := strings.LastIndexByte(rest, '|')
+	if i < 0 {
+		return JournalEntry{}, false
+	}
+	j := strings.LastIndexByte(rest[:i], '|')
+	if j < 0 {
+		return JournalEntry{}, false
+	}
+	return JournalEntry{
+		ID:       id,
+		RunID:    runID,
+		Schema:   head[3],
+		Table:    head[4],
+		RowPK:    head[5],
+		Op:       WriteOp(head[6]),
+		PreImage: rest[:j],
+		Undo:     UndoState(rest[j+1 : i]),
+	}, true
+}
+
 // DropPartitionForRange detaches and drops the bootstrap p0 partition (the
 // sealed range, whose rows are already exported under their checkpoint digest)
 // and immediately recreates an empty p0 spanning the full range so the journal
@@ -331,8 +403,8 @@ GROUP BY n.nspname, c.relname`
 )
 
 // ReadLiveView reads the data database's current physical state into a LiveView the
-// provisioner diffs the declared world against (specification section 5). It reads
-// the existing schemas, base tables, per-table capture-trigger counts, and whether
+// provisioner diffs the declared world against. It reads the existing schemas, base
+// tables, per-table capture-trigger counts, and whether
 // the partitioned journal exists -- four plain MVCC catalog reads -- so a re-plan
 // against an already-provisioned database is empty (idempotency).
 func (c *Client) ReadLiveView(ctx context.Context) (LiveView, error) {

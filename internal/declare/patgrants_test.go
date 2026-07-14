@@ -6,12 +6,13 @@ import (
 	"github.com/MateusAMP2119/iris-engine-cli/internal/declare"
 )
 
-// This file proves data-PAT grant resolution at mint (specification section 7): the
-// three --read/--endpoint shapes a data PAT's read grants resolve from, each recorded
-// per field so a column added after mint is never silently granted. It reuses the
-// declare leaf's ExpandDataPATGrants (E04.3), the pure resolver the leader drives at
-// mint. Endpoint expansion consumes a supplied endpoints map -- the seam the store
-// builds from persisted endpoints once E09.2 lands; here the map stands in.
+// This file proves data-PAT grant resolution at mint: the three --read/--endpoint
+// shapes a data PAT's read grants resolve from, each recorded per field so a column
+// added after mint is never silently granted. It reuses the declare leaf's
+// ExpandDataPATGrants, the pure resolver the leader drives at mint. Endpoint
+// expansion consumes a supplied endpoints map, which the daemon's mint path builds
+// from the live endpoint registry (hydrated from the persisted endpoints at startup,
+// republished by each endpoint apply); here the map stands in.
 
 // grantKey renders a FieldGrant as a comparable "schema.table.field:access" string.
 func grantKey(g declare.FieldGrant) string {
@@ -32,15 +33,14 @@ func grantKeys(gs []declare.FieldGrant) map[string]bool {
 // field declared at that moment (recorded per field), and --endpoint expands to the
 // endpoint's source fields. Every grant is read-only, and a column added after mint is
 // never silently granted (the recorded set is fixed to the fields declared at mint).
-//
-// spec: S07/data-pat-grant-resolution
 func TestDataPATGrantResolution(t *testing.T) {
-	t.Run("S07/data-pat-grant-resolution", func(t *testing.T) {
+	t.Run("data-pat-grant-resolution", func(t *testing.T) {
 		// The declared world at mint time: analytics.orders declares three fields.
 		declaredFields := map[string][]string{
 			"analytics.orders": {"id", "amount", "customer"},
 		}
-		// An endpoint's persisted source and projection (the E09.2 seam supplies this map).
+		// An endpoint's persisted source and projection (at mint the daemon supplies
+		// this map from the live endpoint registry).
 		endpoints := map[string]declare.EndpointSource{
 			"orders_by_customer": {Source: "analytics.orders", Fields: []string{"id", "customer"}},
 		}

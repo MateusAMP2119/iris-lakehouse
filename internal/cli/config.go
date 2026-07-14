@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -10,14 +11,14 @@ import (
 )
 
 // resolveTarget resolves an invocation's engine/connection settings through the
-// configuration precedence of specification section 8: the global
-// --socket/--host/--token flags override the IRIS_* environment, which overrides
-// an optional .iris/iris.toml under the workspace, which overrides the built-in
-// defaults (the local socket + managed Postgres of the zero-config path). Full
-// consumption -- actually dialing the resolved target -- arrives with the daemon
-// client in E02/E03; today the exit-3 dial path resolves through it so the
-// precedence is real rather than a library sitting unused, and a misconfigured
-// iris.toml or IRIS_* value surfaces as a warning instead of silently.
+// configuration precedence: the global --socket/--host/--token flags override
+// the IRIS_* environment, which overrides an optional .iris/iris.toml under the
+// workspace, which overrides the built-in defaults (the local socket + managed
+// Postgres of the zero-config path). Full consumption -- actually dialing the
+// resolved target -- arrives with the daemon client; today the exit-3 dial path
+// resolves through it so the precedence is real rather than a library sitting
+// unused, and a misconfigured iris.toml or IRIS_* value surfaces as a warning
+// instead of being silently ignored.
 func (a *app) resolveTarget(cmd *cobra.Command) config.Settings {
 	workspace, err := os.Getwd()
 	if err != nil {
@@ -67,9 +68,15 @@ func flagLayer(cmd *cobra.Command) config.Layer {
 	}
 	// The daemon-scoped flags live only on `engine start`; on any other command
 	// the Lookup misses and contributes nothing. They configure the running engine
-	// the daemon starts (specification section 8).
+	// the daemon starts.
 	if v, ok := changedString(cmd, "pg-dsn"); ok {
 		l.PgDSN = &v
+	}
+	if v, ok := changedInt64(cmd, "retain"); ok {
+		l.Retain = &v
+	}
+	if v, ok := changedInt64(cmd, "journal-partition-rows"); ok {
+		l.JournalPartitionRows = &v
 	}
 	if v, ok := changedString(cmd, "objects-path"); ok {
 		l.ObjectsPath = &v
@@ -95,4 +102,19 @@ func changedString(cmd *cobra.Command, name string) (string, bool) {
 		return "", false
 	}
 	return f.Value.String(), true
+}
+
+// changedInt64 returns the value of an int64 flag and whether the invocation
+// explicitly set it. Cobra already rejected a non-integer value at parse time,
+// so the re-parse of the flag's canonical string form is total.
+func changedInt64(cmd *cobra.Command, name string) (int64, bool) {
+	f := cmd.Flags().Lookup(name)
+	if f == nil || !f.Changed {
+		return 0, false
+	}
+	v, err := strconv.ParseInt(f.Value.String(), 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
 }

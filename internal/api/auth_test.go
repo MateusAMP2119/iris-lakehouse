@@ -36,15 +36,13 @@ func okHandler() http.Handler {
 	})
 }
 
-// TestRequirePATGatesTCP proves the TCP-side PAT gate (specification sections 2
-// and 7): every request must carry Authorization: Bearer <pat>; a missing or
-// rejected token is 401 and never reaches the downstream handler, a valid token
-// passes through, and the default reject-all verifier -- the honest deployment
-// state before any PAT is minted -- 401s even a well-formed bearer with a clear
-// "no PATs minted yet" detail.
+// TestRequirePATGatesTCP proves the TCP-side PAT gate: every request must carry
+// Authorization: Bearer <pat>; a missing or rejected token is 401 and never
+// reaches the downstream handler, a valid token passes through, and the default
+// reject-all verifier -- the honest deployment state before any PAT is minted
+// -- 401s even a well-formed bearer with a clear "no PATs minted yet" detail.
 func TestRequirePATGatesTCP(t *testing.T) {
-	// spec: S02/tcp-opt-in-pat-gated
-	t.Run("S02/tcp-opt-in-pat-gated", func(t *testing.T) {
+	t.Run("tcp-opt-in-pat-gated", func(t *testing.T) {
 		guarded := RequirePAT(fakeVerifier{good: "secret"}, okHandler())
 
 		// No Authorization header: 401, downstream never reached.
@@ -83,9 +81,10 @@ func TestRequirePATGatesTCP(t *testing.T) {
 			t.Errorf("401 envelope code = %q, want unauthorized", env.Error.Code)
 		}
 
-		// The default deployment verifier rejects every token: no PAT exists yet, so
-		// even a well-formed bearer is 401 with an honest "no PATs" detail (E09.1
-		// supplies the real verifier).
+		// The fallback verifier rejects every token: with no PAT store behind it
+		// there is nothing to authenticate against, so even a well-formed bearer is
+		// 401 with an honest "no PATs" detail. The daemon wires the store-backed
+		// verifier in its place.
 		rejectAll := RequirePAT(RejectAllVerifier(), okHandler())
 		code, body := do(t, rejectAll, "Bearer anything")
 		if code != http.StatusUnauthorized {

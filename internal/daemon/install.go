@@ -12,31 +12,29 @@ import (
 	"github.com/MateusAMP2119/iris-engine-cli/internal/store"
 )
 
-// This file wires the full `iris engine install` bootstrap over the pieces the
-// earlier E02 tasks built (specification section 4, bootstrap Q/A): probe for the
-// meta database and create it with a plain CREATE DATABASE if missing, ensure its
+// This file wires the full `iris engine install` bootstrap: probe for the meta
+// database and create it with a plain CREATE DATABASE if missing, ensure its
 // tables, create the partitioned public.data_journal on the data connection, store
 // the minted ed25519 engine key on the meta connection, and set up the socket.
 //
-// BootstrapEngine is the orchestration; it composes store.Bootstrap/EnsureSchema,
-// pg.EnsureJournal, the engine key (enginekey.go), and the socket setup
-// (socket.go) over injected seams, so the whole sequence is proven with recording
-// fakes and no live Postgres. The seams are exactly the E02.1/E02.2 connection
-// seams (store.Execer, pg.DB) plus the small MetaProbe and SocketPreparer here;
-// the pgx-backed implementations of the DB seams land with the daemon's live
-// connection wiring, at which point the CLI drives this same function against a
-// real cluster.
+// Two entry points run that one sequence. InstallEngine is the live path the CLI
+// drives against a real cluster: it brings Postgres up through the Manager and runs
+// the legs over the pgx-backed clients (store.OpenInstallConns, pg.Connect), which
+// the daemon composes without ever importing pgx itself. BootstrapEngine is the
+// same sequence over injected seams -- the connection seams (store.Execer, pg.DB)
+// plus the small MetaProbe and SocketPreparer here, with the engine key
+// (enginekey.go) and the socket setup (socket.go) -- so the ordering is proven with
+// recording fakes and no live Postgres.
 
-// InstallEngine runs the `iris engine install` bootstrap against a live cluster
-// (specification section 4): it brings up Postgres for the configured mode -- the
-// managed local subprocess or the external cluster -- through the one Manager code
-// path, creates meta alongside the dedicated data database, ensures meta's control
-// tables and the partitioned data journal, and sets up the control socket, then shuts
-// a managed instance back down. The pgx-backed connection seams live in store and pg
-// (the daemon never imports pgx); this composes them. Every leg is create-if-missing,
-// so InstallEngine is idempotent and a later `iris engine start` that re-checks the
-// same legs (meta schema at election, journal at apply) touches nothing already
-// present.
+// InstallEngine runs the `iris engine install` bootstrap against a live cluster: it
+// brings up Postgres for the configured mode -- the managed local subprocess or the
+// external cluster -- through the one Manager code path, creates meta alongside the
+// dedicated data database, ensures meta's control tables and the partitioned data
+// journal, and sets up the control socket, then shuts a managed instance back down.
+// The pgx-backed connection seams live in store and pg (the daemon never imports
+// pgx); this composes them. Every leg is create-if-missing, so InstallEngine is
+// idempotent and a later `iris engine start` that re-checks the same legs (meta
+// schema at election, journal at apply) touches nothing already present.
 //
 // It mints the ed25519 engine key into the engine_key meta table (a single-row
 // create-once INSERT on the meta connection, superuser-free), superseding the
@@ -65,6 +63,15 @@ func InstallEngine(ctx context.Context, s config.Settings, logger *slog.Logger) 
 	defer func() { _ = mgr.Shutdown() }()
 
 	src := adminDSN.Source()
+
+	// Preflight the admin DSN's privileges before the first CREATE DATABASE, so a
+	// misconfigured role fails install with the missing grant named (CREATEROLE is
+	// otherwise first needed only at daemon start, letting install report success
+	// on a DSN that was never viable).
+	if err := CheckPrivileges(ctx, NewAdminPrivilegeReader(src.ConnString())); err != nil {
+		return InstallReport{}, err
+	}
+	logger.Info("engine install: admin DSN privileges verified")
 
 	// Open the admin and meta connections the meta bootstrap rides. Close on a
 	// background context so a cancelled install still tears the connections down.
@@ -118,13 +125,13 @@ func InstallEngine(ctx context.Context, s config.Settings, logger *slog.Logger) 
 	}
 	logger.Info("engine install: control socket ready")
 
-	// Mint the engine key at install (specification section 14) and persist it into the
-	// engine_key meta table: a create-once INSERT (ON CONFLICT DO NOTHING) on the meta
-	// connection, superuser-free -- superseding the per-database GUC (needs SUPERUSER)
-	// and the workspace key file (needs a shared filesystem for HA). Re-running install
-	// never overwrites an existing key (the conflict is a no-op); the report's public
-	// half is read back from meta so a re-install reports the stored key's public half,
-	// not the discarded fresh mint. The INSERT carries the private half, so it is issued
+	// Mint the engine key at install and persist it into the engine_key meta table: a
+	// create-once INSERT (ON CONFLICT DO NOTHING) on the meta connection,
+	// superuser-free -- superseding the per-database GUC (needs SUPERUSER) and the
+	// workspace key file (needs a shared filesystem for HA). Re-running install never
+	// overwrites an existing key (the conflict is a no-op); the report's public half
+	// is read back from meta so a re-install reports the stored key's public half, not
+	// the discarded fresh mint. The INSERT carries the private half, so it is issued
 	// directly and never logged.
 	minted, err := MintEngineKey()
 	if err != nil {
@@ -198,12 +205,12 @@ type InstallReport struct {
 	EngineKeyPublic string
 }
 
-// BootstrapEngine performs the `iris engine install` bootstrap over deps
-// (specification section 4): probe for meta and create it if missing, ensure its
-// tables, create the partitioned journal on the data connection, store the engine
-// key on the meta connection, and set up the socket -- in that order. It never
-// logs the engine key: only the meta-connection statement that persists it carries
-// the private half, and that statement is never handed to the logger.
+// BootstrapEngine performs the `iris engine install` bootstrap over deps: probe for
+// meta and create it if missing, ensure its tables, create the partitioned journal
+// on the data connection, store the engine key on the meta connection, and set up
+// the socket -- in that order. It never logs the engine key: only the
+// meta-connection statement that persists it carries the private half, and that
+// statement is never handed to the logger.
 func BootstrapEngine(ctx context.Context, deps InstallDeps) (InstallReport, error) {
 	if err := deps.validate(); err != nil {
 		return InstallReport{}, err
@@ -215,7 +222,7 @@ func BootstrapEngine(ctx context.Context, deps InstallDeps) (InstallReport, erro
 
 	var report InstallReport
 
-	// Mint the engine key at install time if none was supplied (S14/engine-key-minted-at-install).
+	// Mint the engine key at install time if none was supplied.
 	// The private half is stored in meta; only the public is reported.
 	key := deps.Key
 	if !key.valid() {

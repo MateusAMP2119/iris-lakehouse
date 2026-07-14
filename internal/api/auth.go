@@ -7,12 +7,13 @@ import (
 	"strings"
 )
 
-// TokenVerifier resolves a PAT presented over a TCP request (specification
-// section 7: "TCP: Authorization: Bearer <token> per request") to the
-// authority it carries. It is the seam the real PAT store (argon2id
-// prefix+hash lookup over the E09.1 store) plugs into; until that wiring lands
-// the daemon uses RejectAllVerifier, the honest state of a fresh deployment
-// with no PAT minted.
+// TokenVerifier resolves a PAT presented over a TCP request (TCP carries
+// Authorization: Bearer <token> per request) to the authority it carries. It is
+// the seam the PAT store plugs into: the production verifier is the daemon's
+// store verifier (internal/daemon/verifier.go), an argon2id prefix+hash lookup
+// over the meta PAT store, which the daemon wires onto the TCP listener. A
+// server built without a verifier falls back to RejectAllVerifier, the honest
+// state of a deployment with no PAT store behind it.
 type TokenVerifier interface {
 	// VerifyToken resolves the bearer token: on success it returns the PAT's
 	// authority (identity plus minted scopes) the mux scope-checks each route
@@ -22,17 +23,18 @@ type TokenVerifier interface {
 	VerifyToken(ctx context.Context, token string) (Authority, error)
 }
 
-// ErrNoPATsMinted is the rejection the default verifier returns: TCP control is
+// ErrNoPATsMinted is the rejection the fallback verifier returns: TCP control is
 // authenticated-only, and no PAT exists yet, so every TCP request is 401 until
-// one is minted (`iris pat create`, E09.1). It is a sentinel callers may match
-// with errors.Is.
+// one is minted (`iris pat create`). It is a sentinel callers may match with
+// errors.Is.
 var ErrNoPATsMinted = errors.New("no PATs minted yet: TCP access requires a PAT (mint one with `iris pat create`)")
 
-// RejectAllVerifier is the default TCP token verifier: it rejects every token
-// with ErrNoPATsMinted. It is deliberately honest -- the TCP listener is
-// authenticated-only, and before E09.1 mints the first PAT there is nothing to
-// authenticate against -- so every TCP request answers 401 until the real
-// verifier lands.
+// RejectAllVerifier is the fallback TCP token verifier, the one a server gets
+// when no verifier is wired: it rejects every token with ErrNoPATsMinted. It is
+// deliberately honest -- the TCP listener is authenticated-only, and with no PAT
+// store behind it there is nothing to authenticate against -- so every TCP
+// request answers 401. The running daemon replaces it with the store-backed
+// verifier (internal/daemon/verifier.go).
 func RejectAllVerifier() TokenVerifier { return rejectAllVerifier{} }
 
 // rejectAllVerifier rejects every token.
@@ -44,8 +46,8 @@ func (rejectAllVerifier) VerifyToken(context.Context, string) (Authority, error)
 }
 
 // RequirePAT wraps h so every request must present a valid PAT as
-// Authorization: Bearer <token>, verified by v (specification sections 2 and 7).
-// A missing/malformed header or a rejected token is 401 unauthorized and the
+// Authorization: Bearer <token>, verified by v. A missing/malformed header or a
+// rejected token is 401 unauthorized and the
 // wrapped handler is never reached; an accepted token passes the request through
 // carrying the PAT's resolved authority in its context, which the mux
 // scope-checks per route. The daemon wraps this around the shared mux for the

@@ -14,12 +14,12 @@ import (
 	"github.com/MateusAMP2119/iris-engine-cli/internal/store"
 )
 
-// This file wires the full `iris engine uninstall` teardown (specification
-// sections 4 and 12): drop the meta database (all captured provenance, endpoints,
-// and access ledger with it), drop the data journal and its dependent triggers on
-// the data connection, delete the object store under objects_path (artifact bytes
-// and archived partitions), and remove the control socket and the service unit --
-// leaving nothing behind. It is a daemonless, local-machine-only teardown.
+// This file wires the full `iris engine uninstall` teardown: drop the meta database
+// (all captured provenance, endpoints, and access ledger with it), drop the data
+// journal and its dependent triggers on the data connection, delete the object
+// store under objects_path (artifact bytes and archived partitions), and remove the
+// control socket and the service unit -- leaving nothing behind. It is a
+// daemonless, local-machine-only teardown.
 //
 // The database drops go through the same connection seams install uses (store.Execer,
 // pg.DB); the filesystem teardown is real. UninstallEngine composes both. The CLI
@@ -28,40 +28,67 @@ import (
 // is wired; the object-store, socket, and service-unit removal is real from now.
 
 // ServiceUnitName is the filename of the local service unit under the workspace
-// .iris directory. It is a convention seam: `iris engine service install` (E02.8)
-// generates the real platform unit (systemd/launchd) and may place it elsewhere;
-// until then this workspace-local path is the single agreed location uninstall
-// removes, so the two never disagree on where the unit lives.
+// .iris directory. It is the convention the two halves agree on: `iris engine
+// service install` (service.go) generates the real platform unit (systemd/launchd)
+// and may place it elsewhere when given an explicit path, but its default target is
+// this workspace-local path -- the single location uninstall removes, so the two
+// never disagree on where the unit lives.
 const ServiceUnitName = "iris.service"
 
 // ErrLiveCandidate is returned when uninstall refuses because a daemon candidate
-// still holds a meta connection: the shared meta database is never dropped under a
-// live candidate (specification section 12). The predicate that detects this is a
-// seam a later task fills; the default predicate proceeds.
-var ErrLiveCandidate = errors.New("daemon: refusing engine uninstall while a daemon candidate holds a meta connection")
+// is still live: engine state is never torn down out from under a running
+// candidate. The CLI backs the check with its daemon probe and the pidfile
+// predicate (PIDFileLiveCheck).
+var ErrLiveCandidate = errors.New("daemon: refusing engine uninstall while a daemon candidate is running")
 
 // LiveCandidatePredicate reports whether any daemon candidate currently holds a
-// meta connection, so uninstall can refuse rather than drop meta out from under a
-// live candidate (specification section 12). The real predicate lands with the
-// leadership/liveness wiring (E02.5+); ProceedWithoutLiveCheck is the default until
-// then.
+// meta connection, so uninstall can refuse rather than tear the engine down out
+// from under a live candidate. The CLI composes two live implementations: its
+// daemon probe (GET /healthz over the resolved socket/TCP target, catching any
+// serving daemon) and PIDFileLiveCheck below (catching a detached daemon whose
+// listener is wedged or still starting). ProceedWithoutLiveCheck remains for
+// compositions that deliberately skip the check.
 type LiveCandidatePredicate interface {
 	// LiveCandidateHoldsMeta reports whether a daemon candidate holds a meta
 	// connection right now.
 	LiveCandidateHoldsMeta(ctx context.Context) (bool, error)
 }
 
-// ProceedWithoutLiveCheck returns the default live-candidate predicate: it reports
-// no live candidate, so uninstall proceeds. It is the documented seam the
-// leadership/liveness wiring (E02.5+) replaces with a real meta-connection check.
+// ProceedWithoutLiveCheck returns the always-open live-candidate predicate: it
+// reports no live candidate, so uninstall proceeds. It exists for compositions
+// that deliberately skip the check; the CLI's uninstall path uses the real
+// probes instead.
 func ProceedWithoutLiveCheck() LiveCandidatePredicate { return proceedPredicate{} }
 
-// proceedPredicate is the default LiveCandidatePredicate: it always reports no live
-// candidate.
+// proceedPredicate is the always-open LiveCandidatePredicate: it always reports no
+// live candidate.
 type proceedPredicate struct{}
 
 // LiveCandidateHoldsMeta always reports no live candidate (proceed).
 func (proceedPredicate) LiveCandidateHoldsMeta(context.Context) (bool, error) { return false, nil }
+
+// PIDFileLiveCheck returns a LiveCandidatePredicate over the workspace pidfile: a
+// live candidate is reported when the pidfile a detached daemon recorded names a
+// process that is still running. It catches the daemon the socket probe can miss
+// -- one mid-start (socket not yet bound) or wedged (listener dead, process
+// alive) -- and reports nothing when no pidfile exists (no detached daemon) or
+// the recorded process is gone (a stale pidfile never blocks an uninstall).
+func PIDFileLiveCheck(s config.Settings) LiveCandidatePredicate {
+	return pidfilePredicate{settings: s}
+}
+
+// pidfilePredicate is the pidfile-backed LiveCandidatePredicate.
+type pidfilePredicate struct{ settings config.Settings }
+
+// LiveCandidateHoldsMeta reports whether the workspace pidfile names a running
+// process.
+func (p pidfilePredicate) LiveCandidateHoldsMeta(context.Context) (bool, error) {
+	pid, err := ReadPIDFile(p.settings)
+	if err != nil {
+		return false, nil // no (or unreadable) pidfile: no detached daemon recorded
+	}
+	return processAlive(pid), nil
+}
 
 // UninstallDeps bundles the seams `iris engine uninstall` orchestrates over.
 type UninstallDeps struct {
@@ -89,11 +116,11 @@ type UninstallReport struct {
 	Removed []string
 }
 
-// UninstallEngine performs the full `iris engine uninstall` teardown over deps
-// (specification sections 4 and 12): refuse if a daemon candidate holds meta, then
-// drop the meta database, drop the journal on the data connection, and delete the
-// object store, socket, and service unit on disk. It returns ErrLiveCandidate
-// unchanged when the guard refuses, so the caller can surface its guidance.
+// UninstallEngine performs the full `iris engine uninstall` teardown over deps:
+// refuse if a daemon candidate holds meta, then drop the meta database, drop the
+// journal on the data connection, and delete the object store, socket, and service
+// unit on disk. It returns ErrLiveCandidate unchanged when the guard refuses, so
+// the caller can surface its guidance.
 func UninstallEngine(ctx context.Context, deps UninstallDeps) (UninstallReport, error) {
 	log := deps.Logger
 	if log == nil {
@@ -145,8 +172,8 @@ func UninstallEngine(ctx context.Context, deps UninstallDeps) (UninstallReport, 
 }
 
 // ServiceUnitPath returns the workspace-local service-unit path for the settings:
-// <workspace>/.iris/iris.service. See ServiceUnitName for why this is a convention
-// seam E02.8 refines.
+// <workspace>/.iris/iris.service. See ServiceUnitName for why this path is the
+// convention service install and engine uninstall share.
 func ServiceUnitPath(s config.Settings) string {
 	return filepath.Join(irisDir(s), ServiceUnitName)
 }

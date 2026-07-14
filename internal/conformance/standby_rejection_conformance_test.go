@@ -4,7 +4,6 @@ package conformance
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,12 +28,11 @@ func waitForStandby(t *testing.T, socket string) bool {
 
 // TestStandbyMutationRejection is the end-to-end proof, against a real Postgres
 // and the shipped binary, that mutations are the leader's alone and a standby
-// rejects them with leader guidance and exit 6 (specification sections 7, 8 and
-// 15). It stands up two real daemon candidates sharing one external meta: the
-// first wins the advisory lock and leads; the second, blocked on that lock, stays
-// a standby. A mutation run through the shipped CLI against the standby's socket
-// must exit 6, and its message (and --json envelope) must carry the leader
-// guidance for retargeting.
+// rejects them with leader guidance and exit 6. It stands up two real daemon
+// candidates sharing one external meta: the first wins the advisory lock and
+// leads; the second, blocked on that lock, stays a standby. A mutation run
+// through the shipped CLI against the standby's socket must exit 6, and its
+// message (and --json envelope) must carry the leader guidance for retargeting.
 //
 // The scenario needs two candidates on one shared meta, so it runs only in
 // external mode (IRIS_PG_DSN set, the conformance/CI configuration): under
@@ -42,9 +40,9 @@ func waitForStandby(t *testing.T, socket string) bool {
 // there is no standby to reject against. It is skipped when no external DSN is
 // present.
 func TestStandbyMutationRejection(t *testing.T) {
-	if os.Getenv("IRIS_PG_DSN") == "" {
-		t.Skip("standby rejection needs two candidates on one shared meta; set IRIS_PG_DSN (external mode) to run it")
-	}
+	// Two candidates share one meta: the suite-owned embedded cluster (or an
+	// ambient IRIS_PG_DSN).
+	requireSharedCluster(t)
 	// Freshen the shared external cluster first: FORCE-dropping meta/data evicts a prior
 	// test's lingering daemon sessions (including a still-held leader advisory lock), so
 	// the first candidate here wins the lock and leads instead of timing out behind a
@@ -100,23 +98,22 @@ func TestStandbyMutationRejection(t *testing.T) {
 
 	// The standby reads the leader's advertisement from the shared meta and names the
 	// leader's concrete TCP address on GET /leader -- the guidance is a real retarget
-	// address, not "unknown" (the gap E11.2 flagged). Wait for the poll to pick it up
-	// before asserting the exit-6 envelope carries the same address.
+	// address, not the bare "unknown" a standby falls back to with no advertisement to
+	// read. Wait for the poll to pick it up before asserting the exit-6 envelope
+	// carries the same address.
 	if !waitLeaderReport(t, standbySock, leaderAddr) {
 		_, got := leaderReport(t, standbySock)
 		t.Fatalf("standby GET /leader named %q, want the live leader's advertised address %q", got, leaderAddr)
 	}
 
-	// spec: S15/standby-mutation-exit-6
-	t.Run("S15/standby-mutation-exit-6", func(t *testing.T) {
+	t.Run("standby-mutation-exit-6", func(t *testing.T) {
 		// A control mutation POSTed to the standby's socket is gated to the leader:
 		// the shipped CLI maps the not_leader rejection to exit 6.
 		res := bin.Run(t, RunOptions{Args: []string{"--socket", standbySock, "pipeline", "promote", "any_pipeline"}, Dir: standbyWS})
 		res.RequireExit(t, 6)
 	})
 
-	// spec: S07/standby-mutations-rejected-exit-6
-	t.Run("S07/standby-mutations-rejected-exit-6", func(t *testing.T) {
+	t.Run("standby-mutations-rejected-exit-6", func(t *testing.T) {
 		res := bin.Run(t, RunOptions{Args: []string{"--socket", standbySock, "pipeline", "promote", "any_pipeline"}, Dir: standbyWS})
 		res.RequireExit(t, 6)
 		// The rejection guides the operator to the leader (only the leader accepts
@@ -127,15 +124,15 @@ func TestStandbyMutationRejection(t *testing.T) {
 		}
 	})
 
-	// spec: S08/exit6-names-leader
-	t.Run("S08/exit6-names-leader", func(t *testing.T) {
+	t.Run("exit6-names-leader", func(t *testing.T) {
 		res := bin.Run(t, RunOptions{Args: []string{"--socket", standbySock, "--json", "pipeline", "promote", "any_pipeline"}, Dir: standbyWS})
 		res.RequireExit(t, 6)
 		// Under --json the single stdout document is the not_leader error envelope: its
 		// machine code is not_leader and its message names the leader by its concrete
-		// advertised TCP address for retargeting -- no longer "unknown" (the gap E11.2
-		// flagged, now closed by leader advertisement). The CLI folds the daemon's leader
-		// hint into the retarget guidance, so the address appears in the message text.
+		// advertised TCP address for retargeting -- not the bare "unknown" hint, since
+		// the leader advertises its address into the shared meta and the standby polls
+		// it. The CLI folds the daemon's leader hint into the retarget guidance, so the
+		// address appears in the message text.
 		var env struct {
 			Error struct {
 				Code    string `json:"code"`

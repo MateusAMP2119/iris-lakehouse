@@ -9,14 +9,13 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// This file is the live half of `iris workload wipe [<pipeline>]` (specification
-// sections 5, 12 and 14): the executor that takes the pure wipe plan (wipe.go's
-// PlanWipe, the decided outcome) and applies it to the real data database in ONE
-// transaction, so a mid-wipe failure leaves no partial wipe (journal and tables
-// co-reside). It is to wipe what ExecutePromotionFlip is to promotion: the live
-// interpreter of an already-decided plan, kept apart from the pure model so the
-// algorithm stays unit-testable with no database and the executor stays a dumb
-// applier.
+// This file is the live half of `iris workload wipe [<pipeline>]`: the executor
+// that takes the pure wipe plan (wipe.go's PlanWipe, the decided outcome) and
+// applies it to the real data database in ONE transaction, so a mid-wipe failure
+// leaves no partial wipe (journal and tables co-reside). It is to wipe what
+// ExecutePromotionFlip is to promotion: the live interpreter of an already-decided
+// plan, kept apart from the pure model so the algorithm stays unit-testable with
+// no database and the executor stays a dumb applier.
 //
 // The one transaction does exactly four things, in order:
 //
@@ -26,8 +25,8 @@ import (
 //
 //  2. Suppress capture on the tables the reverts touch. A wipe's own reverts must
 //     NOT be captured: a new stamp would become the row's latest surviving entry
-//     and corrupt authorship (spec section 14: the latest surviving stamp names the
-//     current author). Capture is suppressed by disabling the tables' user triggers
+//     and corrupt authorship (the latest surviving stamp names the current
+//     author). Capture is suppressed by disabling the tables' user triggers
 //     (the capture triggers -- triggers cannot be declared, so a declared table's
 //     user triggers are exactly its capture set) for the transaction. DISABLE
 //     TRIGGER is a transactional catalog change owned by the table owner (the engine
@@ -61,11 +60,10 @@ type WipeResult struct {
 }
 
 // ExecuteWipe runs one wipe over the data database in a single transaction and
-// returns its summary (specification sections 5, 12 and 14). target is the pure
-// model's scope selector: the zero value is the bare `iris workload wipe` over the
-// whole wipe scope, and a populated target (Pipeline plus RunPipeline) is a named
-// `iris workload wipe <pipeline>` or declare destroy's data revert, narrowed to one
-// pipeline's entries.
+// returns its summary. target is the pure model's scope selector: the zero value
+// is the bare `iris workload wipe` over the whole wipe scope, and a populated
+// target (Pipeline plus RunPipeline) is a named `iris workload wipe <pipeline>` or
+// declare destroy's data revert, narrowed to one pipeline's entries.
 //
 // It reads the journal, plans the wipe with PlanWipe, disables capture on the
 // affected tables, applies the reverts and undo retirements, re-enables capture,

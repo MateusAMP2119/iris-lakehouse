@@ -13,24 +13,28 @@ import (
 var ErrNilDeclaredTable = errors.New("declare: classify drift: nil declared table")
 
 // This file holds drift classification as pure diffing logic under the
-// additive-only doctrine of specification section 5. Three comparisons -- schema
+// additive-only doctrine. Three comparisons -- schema
 // (live Postgres vs the declared head), ledger (table.yaml vs the migration-ledger
 // head), and grant (Postgres grants vs the meta access ledger's bounds) -- each
 // reduce to the same rule: only additive gaps auto-resolve; every other
 // discrepancy is reported without automatic action, and non-additive schema and
-// ledger changes are refused outright (specification sections 5, 12, 14).
+// ledger changes are refused outright.
 //
 // The classifier is pure and holds no database knowledge. It consumes declared
 // Table heads (this package) and abstract views of the live world -- LiveTable,
-// LedgerState, GrantView -- that later tasks (E03.7 ledger sync, E03.8 schema
-// provisioning, E04.3 grant reconcile) fill from real reads. This leaf owns the
-// classification vocabulary and its rules; execution of the resolved actions
-// belongs to those tasks.
+// LedgerState, GrantView -- that its callers in internal/pg fill: the sync engine
+// (pg/sync.go) drives the schema and ledger comparisons, the grant reconcile
+// (pg/grants.go) drives the grant comparison. This leaf owns the classification
+// vocabulary and its rules; executing the resolved actions -- the ADD COLUMN DDL,
+// the migration file, the GRANT -- belongs to internal/pg. Who supplies each view
+// is documented on its type below; several are still assembled only by their
+// consumers' tests, the daemon's apply path driving provisioning's own coarser
+// views instead.
 
 // journalSchema and journalTableName name the engine-owned data journal
 // (public.data_journal), the one surface the schema-drift comparison always
 // excludes. They mirror internal/pg's JournalName without importing it: declare is
-// a leaf package (specification section 10) and must not depend on the data-database
+// a leaf package and must not depend on the data-database
 // client, so the doctrine constant is restated here.
 const (
 	journalSchema    = "public"
@@ -39,7 +43,7 @@ const (
 
 // DriftKind is the closed additive/non-additive classification of a drift. Only
 // additive gaps auto-resolve; everything else is reported without automatic
-// action (specification section 5).
+// action.
 type DriftKind string
 
 // The two drift kinds.
@@ -54,7 +58,7 @@ const (
 
 // DriftAction is the closed set of outcomes a classified drift carries. It is
 // deliberately gate-free: a non-additive change is refused or reported outright,
-// never offered a confirmation gate (specification section 12).
+// never offered a confirmation gate.
 type DriftAction string
 
 // The three drift actions.
@@ -100,7 +104,7 @@ const (
 // produced it, the object name, its additive/non-additive kind, the action the
 // engine takes, and a human-readable detail. By construction it carries no
 // confirmation field: a non-additive change is refused or reported outright, so
-// there is no gate to offer (specification section 12).
+// there is no gate to offer.
 type Drift struct {
 	// Domain is the comparison that produced this drift.
 	Domain DriftDomain
@@ -118,8 +122,7 @@ type Drift struct {
 
 // DriftReport is the outcome of classifying one or more drift comparisons: the
 // drifts found, closed over the additive-only doctrine. Like Drift, it carries no
-// confirmation gate -- a non-additive change is refused outright (specification
-// section 12).
+// confirmation gate -- a non-additive change is refused outright.
 type DriftReport struct {
 	// Drifts are the classified discrepancies, in a deterministic order (declared
 	// order first, then extra objects sorted by name).
@@ -162,11 +165,11 @@ func (r DriftReport) filter(keep func(Drift) bool) []Drift {
 
 // IsEngineOwnedTable reports whether (schema, table) names an engine-owned surface
 // excluded from the schema-drift comparison: the partitioned data journal in
-// public (specification section 5). Engine-owned objects -- the journal and the
+// public. Engine-owned objects -- the journal and the
 // capture triggers -- are never flagged as drift; table.yaml governs only declared
 // user tables, while the journal is undeclared and engine-ensured. Column-level
 // exclusion is deliberately absent: an engine-added column on a user table is
-// non-additive drift, refused (specification section 14).
+// non-additive drift, refused.
 func IsEngineOwnedTable(schema, table string) bool {
 	return schema == journalSchema && table == journalTableName
 }
@@ -185,8 +188,12 @@ type LiveColumn struct {
 // classification: the columns physically present and whether the engine's capture
 // trigger is installed. Engine-owned surfaces never enter the column set -- the
 // journal is a separate table (IsEngineOwnedTable) and the capture trigger is a
-// trigger object tracked by HasCaptureTrigger, never a column. E03.8 supplies the
-// real view from an information_schema read; the classifier is pure over it.
+// trigger object tracked by HasCaptureTrigger, never a column. The classifier is
+// pure over the view, and no production reader assembles one today: its only
+// consumer is the sync engine's schema-fix planner (pg.PlanSchemaFix), whose tests
+// build the view, while the apply path the daemon drives goes through provisioning,
+// which reads a coarser live view of its own (pg.LiveView: which schemas, tables,
+// and capture triggers exist) from information_schema and pg_trigger.
 type LiveTable struct {
 	// Schema is the table's schema name.
 	Schema string
@@ -198,14 +205,13 @@ type LiveTable struct {
 	HasCaptureTrigger bool
 }
 
-// ClassifySchema classifies live Postgres against a set of declared table heads
-// (specification section 5). It walks the declared tables, matches each to its
+// ClassifySchema classifies live Postgres against a set of declared table heads.
+// It walks the declared tables, matches each to its
 // live counterpart by (schema, table), and classifies per ClassifySchemaDrift.
 // Engine-owned live tables (the journal) never enter the comparison: they are
 // filtered before any diff, so they are never flagged even when present in the
 // live view. A declared table with no live counterpart is created wholesale by
-// provisioning (specification section 5, a separate contract), not a drift, so it
-// contributes nothing here.
+// provisioning, not a drift, so it contributes nothing here.
 func ClassifySchema(declared []*Table, live []LiveTable) (DriftReport, error) {
 	byName := make(map[string]LiveTable, len(live))
 	for _, lt := range live {
@@ -234,14 +240,14 @@ func ClassifySchema(declared []*Table, live []LiveTable) (DriftReport, error) {
 }
 
 // ClassifySchemaDrift classifies live Postgres against the declared head of one
-// table (specification section 5). A declared column absent from live is an
+// table. A declared column absent from live is an
 // additive gap (auto ADD COLUMN); an extra live column, or one whose live type no
 // longer matches the declared head (a rename leaves the old name extra, a retype
 // changes the type), is non-additive and refuses apply, never auto-dropped. The
 // engine's capture trigger is engine-owned: a missing one is additive/autofix
 // (like a missing column), and its presence is never flagged. An engine-added
 // column on a user table is not engine-owned -- it is an extra live column,
-// non-additive drift, refused (specification section 14: table.yaml stays
+// non-additive drift, refused (table.yaml stays
 // authoritative). A declared column whose YAML type is outside the closed type set
 // returns an error naming the table and column (apply refuses on it separately).
 func ClassifySchemaDrift(declared *Table, live LiveTable) (DriftReport, error) {
@@ -326,21 +332,25 @@ type LedgerColumn struct {
 }
 
 // LedgerState is the ledger-head view of one table: the columns the applied
-// migration chain has established (specification section 5). E03.7 reconstructs it
-// from the migrations/ files and the migrations table; the classifier is pure over
-// it.
+// migration chain has established, reconstructed from the migrations/ files and the
+// meta migrations table. The classifier is pure over it. Its only consumer is the
+// sync engine (pg.PlanLedgerSync), which takes it inside a pg.LedgerView that only
+// the sync engine's own tests assemble; the apply path the daemon drives
+// reconstructs the same two facts into provisioning's own view (pg.TableLedger)
+// instead.
 type LedgerState struct {
 	// Columns are the ledger-head columns.
 	Columns []LedgerColumn
 }
 
 // ClassifyLedgerDrift classifies a table's declared head (table.yaml) against its
-// migration-ledger head (specification section 5). A declared column absent from
-// the ledger is an additive gap: the next migration is generated to add it (E03.7
-// executes). A ledger column absent from the declared head -- a column removed from
-// table.yaml -- is non-additive and refused, never dropped. A column whose declared
-// YAML type differs from the ledger's is a non-additive retype, also refused. A nil
-// declared head returns ErrNilDeclaredTable, consistent with ClassifySchemaDrift.
+// migration-ledger head. A declared column absent from the ledger is an additive
+// gap: the next migration is generated to add it (the sync engine in internal/pg
+// writes the immutable migration file and records the new head). A ledger column
+// absent from the declared head -- a column removed from table.yaml -- is
+// non-additive and refused, never dropped. A column whose declared YAML type
+// differs from the ledger's is a non-additive retype, also refused. A nil declared
+// head returns ErrNilDeclaredTable, consistent with ClassifySchemaDrift.
 func ClassifyLedgerDrift(declared *Table, ledger LedgerState) (DriftReport, error) {
 	if declared == nil {
 		return DriftReport{}, ErrNilDeclaredTable
@@ -412,12 +422,16 @@ func (g Grant) key() string {
 	return strings.Join([]string{g.Role, g.Schema, g.Object, g.Privilege}, ":")
 }
 
-// GrantView is the bounds-check input for grant drift (specification section 5):
-// the grants the meta access ledger asserts (Bounds) and the grants Postgres
-// currently holds (Live). On public, pipeline and data-PAT roles may hold read
-// only, and none may connect to meta; a grant Postgres holds beyond Bounds is a
-// stray grant. E04.3 supplies the real view from a pg_catalog read; the classifier
-// is pure over it.
+// GrantView is the bounds-check input for grant drift: the grants the meta access
+// ledger asserts (Bounds) and the grants Postgres currently holds (Live). On public,
+// pipeline and data-PAT roles may hold read only, and none may connect to meta; a
+// grant Postgres holds beyond Bounds is a stray grant. The classifier is pure over
+// the view. pg's grant reconcile (pg.ReconcileGrants, through
+// ClassifyFieldGrantDrift) is its consumer, and reads the Live half through the
+// pg.LiveGrantReader seam -- a pg_catalog / information_schema.column_privileges
+// read. No production reader implements that seam today: a fake stands in at test
+// tier, and the engine's role provisioning applies the ledger's grants without
+// consulting a live read.
 type GrantView struct {
 	// Bounds are the grants the meta access ledger asserts (the allowed set).
 	Bounds []Grant
@@ -426,7 +440,7 @@ type GrantView struct {
 }
 
 // ClassifyGrantDrift classifies Postgres grants against the meta access ledger's
-// bounds (specification section 5). A bound grant Postgres lacks is an additive
+// bounds. A bound grant Postgres lacks is an additive
 // gap: reconciliation grants it (autofix). A grant Postgres holds beyond the
 // bounds is a stray grant: non-additive, reported, never silently fixed. Only
 // additive gaps auto-resolve; all else is reported.
@@ -476,8 +490,8 @@ func grantName(g Grant) string {
 	return fmt.Sprintf("%s on %s.%s to %s", g.Privilege, g.Schema, g.Object, g.Role)
 }
 
-// DataMode is a pipeline's data mode in meta: disposable or permanent
-// (specification sections 1 and 4). It governs wipe eligibility, never capture.
+// DataMode is a pipeline's data mode in meta: disposable or permanent. It
+// governs wipe eligibility, never capture.
 type DataMode string
 
 // The two data modes.
@@ -505,7 +519,7 @@ type WarningKind string
 const (
 	// WarnCrossModeRead is raised when a permanent-data pipeline declares reads on
 	// a disposable-mode upstream table: legitimate mid-promotion, so apply warns and
-	// never refuses (specification section 5).
+	// never refuses.
 	WarnCrossModeRead WarningKind = "cross_mode_read"
 )
 
@@ -523,8 +537,8 @@ type Warning struct {
 
 // CheckCrossModeReads returns a warning for each disposable-mode upstream table a
 // permanent-data reader declares reads on: the legitimate mid-promotion state
-// where a promoted pipeline consumes an as-yet-disposable upstream (specification
-// section 5). It warns, never refuses -- the return is warnings only, with no error
+// where a promoted pipeline consumes an as-yet-disposable upstream.
+// It warns, never refuses -- the return is warnings only, with no error
 // path -- and a disposable reader or a permanent upstream yields nothing. promote
 // repeats the same warning while the upstream stays disposable.
 func CheckCrossModeReads(reader DataMode, upstreams []UpstreamRead) []Warning {

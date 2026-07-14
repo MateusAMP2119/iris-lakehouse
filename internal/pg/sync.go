@@ -12,8 +12,8 @@ import (
 	"github.com/MateusAMP2119/iris-engine-cli/internal/declare"
 )
 
-// This file is the additive-only migration sync engine of specification section 5:
-// the execution half of the migration machinery whose classification lives in the
+// This file is the additive-only migration sync engine: the execution half of the
+// migration machinery whose classification lives in the
 // declare leaf. It diffs a declared table.yaml against its migration-ledger head
 // and its live-Postgres head, and renders an additive-only plan -- the immutable
 // migration files to append, the ADD COLUMN and capture-trigger DDL to run, and the
@@ -35,9 +35,12 @@ const migrationsDirName = "migrations"
 // LedgerView is the migration-ledger head of one declared table the sync engine
 // diffs table.yaml against: the head migration id (the greatest applied
 // migration_id, e.g. "0001") that seeds the next migration's sequence and parent,
-// and the reconstructed ledger columns the additive diff runs over. E03.8
-// provisioning builds it from the migrations/ files and the meta migrations table;
-// the sync engine is pure over it.
+// and the reconstructed ledger columns the additive diff runs over. The sync engine
+// is pure over it -- it reads no file and no database to build one. The seam has no
+// production supplier: provisioning (provision.go) reconstructs the same two facts
+// from the migrations/ files and the meta migrations table, but into its own
+// TableLedger view, and it is provisioning that the daemon's apply path drives; a
+// LedgerView is assembled only by the sync engine's own tests.
 type LedgerView struct {
 	// HeadID is the current ledger head's zero-padded migration id (e.g. "0001").
 	// An empty head is treated as sequence zero, so the first generated migration is
@@ -49,7 +52,7 @@ type LedgerView struct {
 
 // MigrationHead is one applied-migration ledger row the sync engine records through
 // the LedgerRecorder seam: the (schema, table, migration_id) key, the parent id,
-// and the checksum of table.yaml at that revision (specification section 4). It
+// and the checksum of table.yaml at that revision. It
 // mirrors store.MigrationHead field-for-field without importing store (two clients,
 // two databases, never crossed); the apply pipeline adapts one to the other.
 type MigrationHead struct {
@@ -128,8 +131,8 @@ type MigrationSink interface {
 }
 
 // PlanLedgerSync diffs a declared table.yaml (the desired head) against its
-// migration-ledger head and returns the additive-only migration plan (specification
-// section 5). Each column present in the declared head but beyond the ledger head is
+// migration-ledger head and returns the additive-only migration plan.
+// Each column present in the declared head but beyond the ledger head is
 // an additive delta: the next numbered migration file, its ADD COLUMN ALTER, and the
 // applied head that advances the ledger. Deltas are numbered in declared-column
 // order from HeadID, each chained to the prior as its parent. A non-additive ledger
@@ -198,7 +201,7 @@ func PlanLedgerSync(declared *declare.Table, raw []byte, ledger LedgerView) (Pla
 }
 
 // PlanSchemaFix diffs a declared table.yaml against its live-Postgres head and
-// returns the additive-only schema-drift autofix plan (specification section 5). A
+// returns the additive-only schema-drift autofix plan. A
 // declared column missing from live is auto-fixed with ADD COLUMN; a missing capture
 // trigger is auto-fixed with CREATE TRIGGER, additively, like a missing column.
 // Every other discrepancy -- an extra, renamed, or retyped column -- is non-additive
@@ -282,7 +285,7 @@ func (p Plan) Apply(ctx context.Context, sink MigrationSink, db DB, rec LedgerRe
 	return nil
 }
 
-// Preview renders the plan as the --dry-run text of specification section 5: the
+// Preview renders the plan as --dry-run text: the
 // intended ALTERs and migration files, and the schema-drift autofix DDL. It invokes
 // no executor and is pure over the plan, so --dry-run is exactly Preview with Apply
 // never called. The output is deterministic, so a golden diff is a contract diff.
@@ -364,8 +367,7 @@ func (s *DirMigrationSink) AppendMigration(schema, table, filename string, data 
 }
 
 // migrationFilename is a migration file's name: the zero-padded id, "_add_", the
-// added column name, and the .yaml extension (e.g. "0002_add_status.yaml"),
-// matching the specification section 5 example.
+// added column name, and the .yaml extension (e.g. "0002_add_status.yaml").
 func migrationFilename(id, column string) string {
 	return id + "_add_" + column + ".yaml"
 }

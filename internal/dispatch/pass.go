@@ -10,21 +10,21 @@ import (
 	"github.com/MateusAMP2119/iris-engine-cli/internal/store"
 )
 
-// idleReadInterval bounds how long the perpetual loop waits before re-reading the walk
-// while WHOLLY idle (no lane running). It is not a dispatch timer and gates nothing on a
-// clock: the running path is event-driven on pass completions (clock doctrine), and this
-// bounded wait only wakes an otherwise-idle loop so a graph applied to a cold leader --
-// which has no in-flight pass whose completion could drive a re-read -- is picked up
-// promptly rather than never (specification section 6.3 apply-while-lanes-loop).
+// idleReadInterval bounds how long the perpetual loop waits before re-reading the
+// walk while WHOLLY idle (no lane running). It is not a dispatch timer and gates
+// nothing on a clock: the running path is event-driven on pass completions (clock
+// doctrine), and this bounded wait only wakes an otherwise-idle loop so a graph
+// applied to a cold leader -- which has no in-flight pass whose completion could
+// drive a re-read -- is picked up promptly rather than never.
 const idleReadInterval = 250 * time.Millisecond
 
 // This file is the perpetual lane loop: the leader-owned dispatch runtime that turns
-// the persisted walk into runs (specification sections 1, 6.1, and 6.3). It composes
-// the E05.4 lane walk (BuildWalk / one goroutine per lane), the E05.5 depends_on gate
-// (pass eligibility), and the E05.1 run-start seam into the pass semantics the engine
-// runs forever once a leader wins the lock.
+// the persisted walk into runs. It composes the lane walk (lane.go's BuildWalk, one
+// goroutine per lane), the depends_on gate (gate.go, pass eligibility), and the
+// run-start seam (run.go's RunManager, behind FreshRunner) into the pass semantics
+// the engine runs forever once a leader wins the lock.
 //
-// Pass semantics (specification section 6.3):
+// Pass semantics:
 //   - One goroutine per lane, a perpetual per-lane loop. Distinct lanes run in
 //     parallel with no engine cap; a laneless pipeline is its own lane (BuildWalk).
 //   - Each pass reads the walk at pass start (a snapshot): a graph change mid-pass
@@ -40,41 +40,41 @@ const idleReadInterval = 250 * time.Millisecond
 //     lanes keep dispatching.
 //   - Dispatcher-owned bookkeeping (failure propagation, replay, snapshot pin,
 //     pruning, journal lifecycle) runs opportunistically AFTER a lane pass completes,
-//     never mid-pass (specification section 6.1).
+//     never mid-pass.
 
 // WalkReader reads the current lane walk from meta. The loop calls it once at each
 // pass's start, so the pass runs on that snapshot even if the graph changes mid-pass:
-// an in-flight pass finishes on the old graph and the next pass reads the new one
-// (specification section 6.3 apply-while-lanes-loop). A meta-backed implementation
-// (lane rows plus the registered-pipeline set, fed through BuildWalk) and a fake both
-// satisfy it.
+// an in-flight pass finishes on the old graph and the next pass reads the new one. A
+// meta-backed implementation (lane rows plus the registered-pipeline set, fed through
+// BuildWalk) and a fake both satisfy it.
 type WalkReader interface {
 	// Walk returns the current per-lane runnable walk, in BuildWalk's stable order.
 	Walk(ctx context.Context) ([]Lane, error)
 }
 
-// PassGate resolves a pipeline's depends_on eligibility at its turn in a pass, exactly
-// like the manual path (E05.5): an ungated pipeline is always eligible, an open gate
-// runs and consumes the resolved upstreams 1:1, a closed gate mints no run, and a
-// poisoned gate defers to post-pass failure propagation. The loop evaluates it at each
-// member's turn -- after the previous same-lane member reached terminal -- so a
-// same-lane dependent sees the upstream's run of this pass. A meta-backed
-// implementation (edges joined to each upstream's latest run, over the run_inputs
-// consumed check) and a fake both satisfy it.
+// PassGate resolves a pipeline's depends_on eligibility at its turn in a pass,
+// exactly like the manual path (manual.go): an ungated pipeline is always eligible,
+// an open gate runs and consumes the resolved upstreams 1:1, a closed gate mints no
+// run, and a poisoned gate defers to post-pass failure propagation. The loop
+// evaluates it at each member's turn -- after the previous same-lane member reached
+// terminal -- so a same-lane dependent sees the upstream's run of this pass. The
+// daemon's lane plane supplies the meta-backed implementation (edges joined to each
+// upstream's latest run, over the run_inputs consumed check); a fake satisfies it in
+// tests.
 type PassGate interface {
 	// Eligible resolves the pipeline's gate for this pass turn.
 	Eligible(ctx context.Context, pipeline string) (Decision, error)
 }
 
-// FreshRunner starts a fresh cause=loop run of an open-gated pipeline and blocks until
-// it reaches a terminal state, returning that disposition. It is the loop's seam onto
-// E05.1 run execution: the production adapter mints the run (pinning its snapshot at
-// dispatch), execs the subprocess, and records the terminal transition through the
-// single writer, while a test fakes it. A returned error means the run could not be
-// carried out at all (for example ctx was cancelled) and stops the lane's pass; a run
-// that executes and then dead-letters is not an error -- it returns (RunDeadLettered,
-// nil), and the lane proceeds to its next member, because composer order never gates
-// (specification section 6.1).
+// FreshRunner starts a fresh cause=loop run of an open-gated pipeline and blocks
+// until it reaches a terminal state, returning that disposition. It is the loop's
+// seam onto run execution (run.go): the daemon's lane-plane adapter mints the run
+// (pinning its snapshot at dispatch), execs the subprocess, and records the terminal
+// transition through the single writer, while a test fakes it. A returned error
+// means the run could not be carried out at all (for example ctx was cancelled) and
+// stops the lane's pass; a run that executes and then dead-letters is not an error --
+// it returns (RunDeadLettered, nil), and the lane proceeds to its next member,
+// because composer order never gates.
 type FreshRunner interface {
 	// StartFresh mints and runs rec (cause=loop), blocking until it is terminal.
 	StartFresh(ctx context.Context, rec store.RunRecord) (RunOutcome, error)
@@ -88,6 +88,11 @@ type FreshRunner interface {
 type PassReport struct {
 	// Lane is the lane the pass walked.
 	Lane string
+	// Pipelines are the lane's members in composer order -- the walked set, whether
+	// or not each started a run this pass. Post-pass retention scopes to it: the
+	// lane's pipelines are pruned on the lane's own pass boundary, and lanes never
+	// share a pipeline, so concurrent lane post-passes never prune the same run.
+	Pipelines []string
 	// Started are the pipelines started as fresh cause=loop runs this pass, in
 	// composer order.
 	Started []string
@@ -107,25 +112,25 @@ type PoisonedMember struct {
 	Decision Decision
 }
 
-// PostPass is the dispatcher-owned bookkeeping the loop runs opportunistically after a
-// lane pass completes, never mid-pass (specification section 6.1): failure propagation
-// for the pass's poisoned gates, replay processing, snapshot-pin and journal-ceiling
-// stamping, count-based pruning, and journal lifecycle. The loop hands it the pass
-// report and invokes it exactly once per lane pass, after every one of that lane's runs
-// reached a terminal state. A meta-backed implementation (the single writer) and a fake
-// both satisfy it; a nil PostPass runs no bookkeeping (the walk-only wiring tests use).
+// PostPass is the dispatcher-owned bookkeeping the loop runs opportunistically after
+// a lane pass completes, never mid-pass: failure propagation for the pass's poisoned
+// gates, replay processing, snapshot-pin and journal-ceiling stamping, count-based
+// pruning, and journal lifecycle. The loop hands it the pass report and invokes it
+// exactly once per lane pass, after every one of that lane's runs reached a terminal
+// state. A meta-backed implementation (the single writer) and a fake both satisfy it;
+// a nil PostPass runs no bookkeeping (the walk-only wiring tests use).
 type PostPass interface {
 	// AfterPass runs the dispatcher-owned bookkeeping for a completed lane pass.
 	AfterPass(ctx context.Context, report PassReport) error
 }
 
 // freshRunRecord builds the run record for an open-gated pipeline's fresh loop run: a
-// cause=loop run consuming exactly the upstream runs the gate resolved (Decision.Consume,
-// one run_inputs row per edge, 1:1). It is the loop-owned shape only; the dispatch-time
-// snapshot pin and declaration checksum are filled by the run-start adapter, never here.
-// It carries no replayed_from and no reference to any prior run, so a loop run is always
-// fresh -- never a retry (specification sections 1, 6.3).
-// If artifactHash is non-nil it is recorded (built run); nil for dev.
+// cause=loop run consuming exactly the upstream runs the gate resolved
+// (Decision.Consume, one run_inputs row per edge, 1:1). It is the loop-owned shape
+// only; the dispatch-time snapshot pin and declaration checksum are filled by the
+// run-start adapter, never here. It carries no replayed_from and no reference to any
+// prior run, so a loop run is always fresh -- never a retry. If artifactHash is
+// non-nil it is recorded (built run); nil for dev.
 func freshRunRecord(pipeline string, d Decision, artifactHash *string) store.RunRecord {
 	rec := store.RunRecord{
 		Pipeline:               pipeline,
@@ -137,14 +142,14 @@ func freshRunRecord(pipeline string, d Decision, artifactHash *string) store.Run
 }
 
 // PlanFreshRuns computes the fresh cause=loop runs a lane pass starts, in composer
-// order, from each member's depends_on gate decision alone (specification sections 1 and
-// 6.3). It is pure -- no I/O -- and, crucially, a function of the walk and the gate
-// alone: it takes no prior run outcome, holds no retry queue, and applies no backoff, so
-// a failed or dead-lettered run is never re-dispatched here. The next pass starts a
-// pipeline again only when its gate re-opens (an ungated pipeline every pass on current
-// data; a gated one on a new upstream success), which a failed run never triggers on its
-// own; re-executing a dead-lettered run is only ever an explicit replay (cause=replay),
-// which this function never emits.
+// order, from each member's depends_on gate decision alone. It is pure -- no I/O --
+// and, crucially, a function of the walk and the gate alone: it takes no prior run
+// outcome, holds no retry queue, and applies no backoff, so a failed or dead-lettered
+// run is never re-dispatched here. The next pass starts a pipeline again only when
+// its gate re-opens (an ungated pipeline every pass on current data; a gated one on a
+// new upstream success), which a failed run never triggers on its own; re-executing a
+// dead-lettered run is only ever an explicit replay (cause=replay), which this
+// function never emits.
 //
 // An open gate (Decision.Run) yields exactly one fresh run consuming the resolved
 // upstreams 1:1; a closed gate (nothing new to consume, or an unmet dependency) yields
@@ -168,11 +173,11 @@ func PlanFreshRuns(members []string, decide map[string]Decision) []store.RunReco
 }
 
 // Loop is the engine's perpetual lane dispatch runtime: one goroutine per lane, each
-// running its lane's pass in a perpetual loop, distinct lanes in parallel with no engine
-// cap (specification sections 6.1 and 6.3). It reads the walk at each pass start, gates
-// and starts each lane's members serially in composer order, and runs the dispatcher-
-// owned bookkeeping after every lane pass. It holds only seams, so it is composed with
-// fakes or the real meta+exec stack alike.
+// running its lane's pass in a perpetual loop, distinct lanes in parallel with no
+// engine cap. It reads the walk at each pass start, gates and starts each lane's
+// members serially in composer order, and runs the dispatcher-owned bookkeeping
+// after every lane pass. It holds only seams, so it is composed with fakes or the
+// real meta+exec stack alike.
 type Loop struct {
 	walk   WalkReader
 	gate   PassGate
@@ -225,7 +230,7 @@ func NewLoop(walk WalkReader, gate PassGate, runner FreshRunner, logger *slog.Lo
 // operational error), stopping the pass so the runner is reusable rather than left
 // mid-lane.
 func (l *Loop) runLanePass(ctx context.Context, lane Lane) (PassReport, error) {
-	report := PassReport{Lane: lane.Name}
+	report := PassReport{Lane: lane.Name, Pipelines: append([]string(nil), lane.Pipelines...)}
 	for _, pipeline := range lane.Pipelines {
 		if err := ctx.Err(); err != nil {
 			return report, err
@@ -270,14 +275,18 @@ func (l *Loop) RunLanePass(ctx context.Context, lane Lane) error {
 		return err
 	}
 	// POST-PASS: dispatcher-owned bookkeeping runs opportunistically now that every run
-	// of this pass has reached a terminal state -- never interleaved mid-pass
-	// (specification section 6.1).
+	// of this pass has reached a terminal state -- never interleaved mid-pass.
 	if l.post != nil {
 		if err := l.post.AfterPass(ctx, report); err != nil {
 			return fmt.Errorf("dispatch: lane %q post-pass: %w", lane.Name, err)
 		}
 	}
-	if l.onPass != nil {
+	// The per-pass hook fires only while the pass's term is still live: Run
+	// deliberately never joins in-flight lane goroutines on shutdown, so a pass
+	// completing after its context was cancelled would otherwise increment a
+	// LATER term's counter (the pass counter resets on leader change, and a
+	// deposed term's stragglers must not leak into the new term's counts).
+	if l.onPass != nil && ctx.Err() == nil {
 		l.onPass(report)
 	}
 	return nil
@@ -286,14 +295,14 @@ func (l *Loop) RunLanePass(ctx context.Context, lane Lane) error {
 // laneDone signals that a lane's perpetual-loop goroutine finished one pass.
 type laneDone struct{ lane string }
 
-// Run drives the perpetual dispatch loop until ctx is cancelled: one goroutine per lane,
-// each running that lane's pass, distinct lanes in parallel with no engine cap
-// (specification sections 6.1 and 6.3). It reads the walk at each reconcile point (a
-// pass boundary), starts a pass goroutine for every walk lane not already running, then
-// blocks until one lane finishes its pass and reconciles again -- so the walk is re-read
-// at each pass boundary, a new lane starts looping, and a removed lane is not re-spawned
-// once its current pass finishes (its in-flight run finishes first). A lane whose run
-// hangs holds its lane indefinitely (its goroutine never finishes, so it is never
+// Run drives the perpetual dispatch loop until ctx is cancelled: one goroutine per
+// lane, each running that lane's pass, distinct lanes in parallel with no engine cap.
+// It reads the walk at each reconcile point (a pass boundary), starts a pass
+// goroutine for every walk lane not already running, then blocks until one lane
+// finishes its pass and reconciles again -- so the walk is re-read at each pass
+// boundary, a new lane starts looping, and a removed lane is not re-spawned once its
+// current pass finishes (its in-flight run finishes first). A lane whose run hangs
+// holds its lane indefinitely (its goroutine never finishes, so it is never
 // re-spawned), while every other lane keeps dispatching -- a hung or failed run is
 // isolated, never globally fatal, and no engine timer frees it (clock doctrine).
 //

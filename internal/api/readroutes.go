@@ -4,15 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 )
 
-// This file is the E14 read-route surface (specification section 7): the runs
-// collection with its ?include=inputs lineage attributes and the trace, gate,
-// and impact triage walks an IDE-style renderer consumes. Each route is GET-only
-// and served on any role (reads work anywhere). Like the other read surfaces api
-// stays a leaf: it defines the seam and the wire shape but reaches nothing up the
-// stack -- the daemon composes the real walk (the same one the CLI prints) behind
+// This file is the E14 read-route surface: the runs collection with its
+// ?include=inputs lineage attributes and the trace, gate, and impact triage
+// walks an IDE-style renderer consumes. Each route is GET-only and served on
+// any role (reads work anywhere). Like the other read surfaces api stays a
+// leaf: it defines the seam and the wire shape but reaches nothing up the stack
+// -- the daemon composes the real walk (the same one the CLI prints) behind
 // each handler, and the mux renders exactly what it returns.
 //
 // GET /runs[?include=inputs] serves the run history. With include=inputs each row
@@ -27,9 +28,9 @@ import (
 
 // RunsHandler serves the runs collection (GET /runs and GET /runs/{id}).
 // includeInputs requests embedding each run's consumed upstream ids and
-// replayed_from as plain row attributes (S07/runs-include-inputs). The daemon
-// implements it over the meta run reads and the run_inputs consumption ledger;
-// the mux depends only on this interface.
+// replayed_from as plain row attributes. The daemon implements it over the meta
+// run reads and the run_inputs consumption ledger; the mux depends only on this
+// interface.
 type RunsHandler interface {
 	// ListRuns returns the run history as a collection payload. When includeInputs
 	// is set each row carries its consumed upstream ids and replayed_from.
@@ -59,6 +60,16 @@ type DeadImpactHandler interface {
 	Impact(ctx context.Context, runID string) (any, error)
 }
 
+// RunLogsHandler serves GET /runs/{id}/logs: the run's captured stdout/stderr,
+// streamed as plain text (a log is raw process output, never an envelope). The
+// daemon implements it over the per-run log files under its own workspace; the
+// mux depends only on this interface.
+type RunLogsHandler interface {
+	// Logs opens the run's captured output for streaming. The mux closes the
+	// returned reader. A run with no captured output is an error naming why.
+	Logs(ctx context.Context, id string) (io.ReadCloser, error)
+}
+
 // The default (unwired) read-route faults. A route reaching its no* handler means
 // the daemon has not wired the reader, so the request is a 500 internal fault
 // naming the missing reader -- never a 404 (the route exists) and never a
@@ -72,6 +83,8 @@ var (
 	ErrGateUnavailable = errors.New("api: pipeline gate reader not wired")
 	// ErrImpactUnavailable signals the dead letter impact reader is not wired.
 	ErrImpactUnavailable = errors.New("api: dead letter impact reader not wired")
+	// ErrRunLogsUnavailable signals the run logs reader is not wired.
+	ErrRunLogsUnavailable = errors.New("api: run logs reader not wired")
 )
 
 // noRuns is the default RunsHandler before one is wired: every read is an
@@ -97,6 +110,13 @@ func (noPipelineGate) Gate(context.Context, string) (any, error) { return nil, E
 type noDeadImpact struct{}
 
 func (noDeadImpact) Impact(context.Context, string) (any, error) { return nil, ErrImpactUnavailable }
+
+// noRunLogs is the default RunLogsHandler before one is wired.
+type noRunLogs struct{}
+
+func (noRunLogs) Logs(context.Context, string) (io.ReadCloser, error) {
+	return nil, ErrRunLogsUnavailable
+}
 
 // WithRuns wires the runs collection handler for GET /runs and GET /runs/{id}. A
 // nil handler is ignored, keeping the safe default (the route faults internal
@@ -139,10 +159,20 @@ func WithDeadImpact(h DeadImpactHandler) MuxOption {
 	}
 }
 
-// serveRuns handles GET /runs[?include=inputs]. It renders the collection as the
-// section-7 data envelope, or -- when the client asks for NDJSON -- one JSON row
-// per line with no envelope, like any collection route. An unwired reader is a
-// 500 internal fault.
+// WithRunLogs wires the run logs handler for GET /runs/{id}/logs. A nil handler
+// is ignored.
+func WithRunLogs(h RunLogsHandler) MuxOption {
+	return func(m *mux) {
+		if h != nil {
+			m.runLogs = h
+		}
+	}
+}
+
+// serveRuns handles GET /runs[?include=inputs]. It renders the collection as
+// the data envelope, or -- when the client asks for NDJSON -- one JSON row per
+// line with no envelope, like any collection route. An unwired reader is a 500
+// internal fault.
 func (m *mux) serveRuns(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET "+r.URL.Path+" only")
@@ -213,6 +243,33 @@ func (m *mux) serveRunTrace(w http.ResponseWriter, r *http.Request, id string) {
 	WriteData(w, http.StatusOK, res)
 }
 
+// serveRunLogs handles GET /runs/{id}/logs: the run's captured stdout/stderr,
+// streamed as plain text -- raw process output, never a JSON envelope. An
+// unwired reader is a 500 internal fault; a run with no captured output is an
+// operation failure naming why.
+func (m *mux) serveRunLogs(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET "+r.URL.Path+" only")
+		return
+	}
+	if !noParams(w, r) {
+		return
+	}
+	rc, err := m.runLogs.Logs(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, ErrRunLogsUnavailable) {
+			WriteError(w, http.StatusInternalServerError, string(CodeInternal), err.Error())
+			return
+		}
+		WriteError(w, http.StatusUnprocessableEntity, CodeOpFailed, err.Error())
+		return
+	}
+	defer func() { _ = rc.Close() }()
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, rc)
+}
+
 // servePipelineGate handles GET /pipelines/{name}/gate: the depends_on gate ledger.
 func (m *mux) servePipelineGate(w http.ResponseWriter, r *http.Request, name string) {
 	if r.Method != http.MethodGet {
@@ -248,10 +305,10 @@ func (m *mux) serveDeadImpact(w http.ResponseWriter, r *http.Request, runID stri
 }
 
 // includeInputs reads the runs route's sole optional param, include=inputs: the
-// flag that embeds each run's consumed upstream ids and replayed_from. Any other
-// param -- or include with any value other than inputs -- is a 400 naming it
-// (specification section 7: unknown or unparseable params are rejected, never
-// ignored). It reports the resolved flag and whether the request may proceed.
+// flag that embeds each run's consumed upstream ids and replayed_from. Any
+// other param -- or include with any value other than inputs -- is a 400 naming
+// it (unknown or unparseable params are rejected, never ignored). It reports
+// the resolved flag and whether the request may proceed.
 func includeInputs(w http.ResponseWriter, r *http.Request) (include, ok bool) {
 	q := r.URL.Query()
 	if err := checkKnownSingle(q, map[string]struct{}{"include": {}}); err != nil {
@@ -269,10 +326,9 @@ func includeInputs(w http.ResponseWriter, r *http.Request) (include, ok bool) {
 	}
 }
 
-// writeRunsNDJSON streams a runs collection payload as NDJSON: one JSON row object
-// per line, no envelope (specification section 7). The header is set before the
-// first row; a late marshal fault ends the stream, since the 200 is already
-// committed.
+// writeRunsNDJSON streams a runs collection payload as NDJSON: one JSON row
+// object per line, no envelope. The header is set before the first row; a late
+// marshal fault ends the stream, since the 200 is already committed.
 func writeRunsNDJSON(w http.ResponseWriter, res any) {
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	for _, row := range asRows(res) {

@@ -9,15 +9,15 @@ import (
 // Graph is a read-only view of the registered dependency graph: which pipeline
 // names are registered and, for each, the pipelines it depends on (its direct
 // upstreams -- the depends_on edges, "from depends_on to" with from the
-// dependent, specification section 4). ValidateDependencies reads a declaration
-// against this view.
+// dependent). ValidateDependencies reads a declaration against this view.
 //
-// The view is deliberately minimal so more than one backing satisfies it: the
-// in-memory Registry here (used to validate a declaration before it is
-// persisted, and in tests), and E03.9's persisted registry (the pipelines and
-// dependencies meta tables). Lane membership is intentionally absent: depends_on
-// is a data gate that may cross lanes (specification section 3), so lane never
-// enters this check.
+// The view is deliberately minimal so any backing satisfies it, though the
+// in-memory Registry here is the only implementation today: apply rebuilds one from
+// the persisted registry -- the pipelines and dependencies meta tables -- and
+// validates the declaration against it before persisting (buildGraph, in
+// internal/dispatch/apply.go); tests build one directly. Lane membership is
+// intentionally absent: depends_on is a data gate that may cross lanes, so lane
+// never enters this check.
 type Graph interface {
 	// Registered reports whether name is a registered pipeline.
 	Registered(name string) bool
@@ -66,8 +66,8 @@ func (r *Registry) DependsOn(name string) []string {
 }
 
 // ValidateDependencies checks a pipeline declaration's depends_on edges against
-// the registered graph, the check every apply runs (specification sections 3 and
-// 6.3). It enforces two rules and returns the first violation:
+// the registered graph, the check every apply runs. It enforces two rules and
+// returns the first violation:
 //
 //   - upstream-first: every depends_on name must already be registered.
 //     A reference to an unregistered pipeline is rejected immediately, naming the

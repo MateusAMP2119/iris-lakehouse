@@ -12,18 +12,13 @@ import (
 )
 
 // TestObjectStoreContentAddressed proves the object-store half of the build
-// contract (specification sections 4 and 9, plus the spec's Naming block:
-// "object store" at objects_path holds content-addressed artifact bytes). A
-// successful build stores the produced binary's bytes as one plain file under
-// the binary's content hash: Put returns the SHA-256 hex hash of exactly the
-// bytes written, the bytes land at <root>/<hash> byte-for-byte, objects are
-// write-once (re-storing identical bytes is idempotent, never a rewrite), and
-// distinct bytes land under distinct hashes with earlier objects untouched.
-//
-// spec: S09/build-records-hash-and-bytes
-// spec: S10/objects-store-hash-keyed
-// spec: S14/object-store-content-addressed
-// spec: S14/objects-immutable-write-once
+// contract: the object store at objects_path holds content-addressed artifact
+// bytes. A successful build stores the produced binary's bytes as one plain file
+// under the binary's content hash: Put returns
+// the SHA-256 hex hash of exactly the bytes written, the bytes land at
+// <root>/<hash> byte-for-byte, objects are write-once (re-storing identical bytes
+// is idempotent, never a rewrite), and distinct bytes land under distinct hashes
+// with earlier objects untouched.
 func TestObjectStoreContentAddressed(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "objects")
 	s := store.NewObjectStore(root)
@@ -91,4 +86,37 @@ func TestObjectStoreContentAddressed(t *testing.T) {
 		}
 		t.Errorf("object-store root holds %v, want exactly the two hashed objects", names)
 	}
+}
+
+// TestObjectStoreDelete proves the teardown deletion: Delete removes exactly the
+// named object, leaves other objects standing, and treats an already-absent
+// object as success (idempotent re-run teardowns).
+func TestObjectStoreDelete(t *testing.T) {
+	t.Run("object-store-delete", func(t *testing.T) {
+		root := t.TempDir()
+		s := store.NewObjectStore(root)
+		hashA, _, err := s.Put(bytes.NewReader([]byte("artifact-a")))
+		if err != nil {
+			t.Fatalf("Put a: %v", err)
+		}
+		hashB, _, err := s.Put(bytes.NewReader([]byte("artifact-b")))
+		if err != nil {
+			t.Fatalf("Put b: %v", err)
+		}
+
+		if err := s.Delete(hashA); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+		if _, err := os.Stat(s.Path(hashA)); !os.IsNotExist(err) {
+			t.Errorf("deleted object still present (stat err %v)", err)
+		}
+		if _, err := os.Stat(s.Path(hashB)); err != nil {
+			t.Errorf("unrelated object was disturbed: %v", err)
+		}
+
+		// Idempotent: deleting the already-absent object is not an error.
+		if err := s.Delete(hashA); err != nil {
+			t.Errorf("Delete of an absent object errored: %v", err)
+		}
+	})
 }

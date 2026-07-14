@@ -1,16 +1,17 @@
 // Package cli builds the Iris command-line surface: the cobra noun-verb command
-// tree, the global flags, and the exit-code and --json output contracts of
-// specification section 8. It sits at the top of the product import graph
-// (nothing imports it), and cmd/iris is a thin entrypoint over Execute.
+// tree, the global flags, and the exit-code and --json output contracts. It sits
+// at the top of the product import graph (nothing imports it), and cmd/iris is a
+// thin entrypoint over Execute.
 //
-// The command handlers are stubs during epic E01. What is real from day one is
-// the contract around those stubs: the categorical exit codes, the single-JSON
+// Nearly every command handler is real: it resolves its target, dials the daemon
+// over the unix socket or TCP, and maps the reply onto the contract that framed
+// the surface from the first day -- the categorical exit codes, the single-JSON
 // document on stdout under --json, and the strict separation of log output
-// (stderr) from command output (stdout). A stub that would reach a running
-// daemon reports "no daemon reachable" (exit 3) with guidance to start the
-// engine -- the honest current behavior, since no daemon exists yet -- and a
-// stub that would act on the local host but is not wired yet reports "not
-// implemented" (exit 4).
+// (stderr) from command output (stdout). A handful of read verbs are still
+// unwired stubs (run show, engine logs, deadletter list, endpoint
+// list/show/remove, pat list/revoke): they carry the daemonStub handler, which
+// reports "no daemon reachable" (exit 3) with guidance to start the engine when
+// nothing answers, and "not implemented" (exit 4) once a daemon does.
 package cli
 
 import (
@@ -32,7 +33,7 @@ import (
 	"github.com/MateusAMP2119/iris-engine-cli/internal/update"
 )
 
-// The exit codes are the categories of specification section 8. Detail rides the
+// The exit codes are the categories the CLI reports outcomes with. Detail rides the
 // message or the --json envelope; the CLI never emits a code outside this set,
 // and in particular overrides cobra's default exit 1.
 const (
@@ -45,7 +46,7 @@ const (
 )
 
 // Execute builds the command tree, runs it against args, and returns the process
-// exit code (a specification section 8 category). It writes command output to
+// exit code (one of the exit-code categories above). It writes command output to
 // stdout and human-readable errors to stderr, and never calls os.Exit, so it is
 // drivable from tests. cmd/iris is a thin wrapper that passes os.Args[1:] and the
 // process streams and exits with the returned code.
@@ -72,11 +73,13 @@ type app struct {
 	// test CA. A remote-control epic can promote it to a real --tls-ca flag.
 	daemonTLSConfig *tls.Config
 	// applyWarnings computes the advisory warnings `iris declare apply` surfaces for
-	// a parsed declaration -- cross-mode reads and the like (specification section 5).
-	// It is nil in production: the data-mode facts it needs live in meta, reachable
-	// only once apply runs against the daemon (E03.9/E03.10), so pre-daemon apply
-	// computes no local warnings and proceeds unchanged. Tests inject it to drive the
-	// --json warning surface, proving the warning structure rides the envelope.
+	// a parsed declaration -- cross-mode reads and the like. It is still nil in
+	// production: the data-mode facts it needs live in meta, which only the daemon
+	// reads, and the daemon's /apply route returns no such warnings (the cross-mode
+	// check runs on `iris pipeline promote` instead, in internal/dispatch), so a
+	// production apply computes no local warnings and proceeds unchanged. Tests
+	// inject it to drive the --json warning surface, proving the warning structure
+	// rides the envelope.
 	applyWarnings func(*declare.Declaration) []declare.Warning
 	// warnings are the advisory warnings a handler computed for the current
 	// invocation. They accompany the terminal outcome (they never replace it): the
@@ -88,12 +91,15 @@ type app struct {
 	// back to update.New().Run); tests inject a fake to drive the exit-code and
 	// output surface without network or filesystem I/O.
 	runUpdate func(ctx context.Context, current string) (update.Result, error)
-	// confirm is the E10.2 confirmation seam for interactive prompts (typed-name
-	// for teardowns, y/N for dev-loop ops). When non-nil it is consulted when
-	// neither --yes nor --force was supplied. The name is the target of the
-	// operation (pipeline name, or "engine" for uninstall); isTeardown chooses
-	// the prompt style. Tests inject it to simulate TTY answers without a real
-	// terminal.
+	// confirm is the confirmation seam for the destructive ops' interactive prompts
+	// (typed-name for teardowns, y/N for dev-loop ops). When non-nil it is consulted
+	// when neither --yes nor --force was supplied. The name is the target of the
+	// operation (pipeline name, or "engine" for uninstall); isTeardown chooses the
+	// prompt style. It is nil in production: `iris uninstall` then falls back to
+	// terminalConfirm (a real y/N read off the terminal), while the ops gated through
+	// confirmOrFlags -- declare destroy, deadletter drain, workload wipe, engine
+	// uninstall -- refuse without --yes/--force rather than prompt. Tests inject it to
+	// simulate TTY answers without a real terminal.
 	confirm func(name string, isTeardown bool) (bool, error)
 	// executablePath resolves the running iris binary's real on-disk path (through
 	// its symlinks), the file `iris uninstall` removes. It is nil in production
@@ -110,8 +116,8 @@ type app struct {
 	isTTY func() bool
 	// stdinIsTTY reports whether the command's stdin is an interactive terminal,
 	// the second half of the quickstart interactivity gate (stdin AND stdout both
-	// TTY, --json off; specification section 8). It is nil in production (the gate
-	// falls back to stdinIsTerminal, an os.Stdin char-device stat, the same check
+	// TTY, --json off). It is nil in production (the gate falls back to
+	// stdinIsTerminal, an os.Stdin char-device stat, the same check
 	// terminalConfirm uses); tests inject it to drive either rendering without a
 	// real terminal.
 	stdinIsTTY func() bool
@@ -137,8 +143,8 @@ type app struct {
 	// record the executed steps and script their exit codes.
 	runStep func(ctx context.Context, args []string) int
 	// waitForReady blocks until the workspace daemon reports a leadership role,
-	// closing the quickstart tour's ENGINE act (specification section 8). It is
-	// nil in production (the tour falls back to waitEngineReady, the bounded
+	// closing the quickstart tour's ENGINE act. It is nil in production (the tour
+	// falls back to waitEngineReady, the bounded
 	// context-aware poll of the /info readout); tests inject it to close the act
 	// instantly or exercise the real poll against a fake daemon.
 	waitForReady func(ctx context.Context, settings config.Settings) error
@@ -148,6 +154,16 @@ type app struct {
 	// readyEvery is waitEngineReady's poll interval (zero means the production
 	// 250ms); tests shrink it beside readyBudget.
 	readyEvery time.Duration
+	// connectInput reads one line answer to an `iris engine connect` question
+	// (the host, when neither the argument nor the configuration supplied one).
+	// It is nil in production (the handler falls back to a plain stdin read);
+	// tests inject it to script the answer without a real terminal.
+	connectInput func(prompt string) (string, error)
+	// connectSecret reads one hidden line answer to `iris engine connect`'s PAT
+	// question. It is nil in production (the handler falls back to a no-echo
+	// terminal read); tests inject it to script the answer without a real
+	// terminal.
+	connectSecret func(prompt string) (string, error)
 	// forceLocalTarget pins resolveTarget to the local workspace engine: a host
 	// resolved from the IRIS_HOST environment or an iris.toml is dropped, leaving
 	// the unix socket (the flag surface cannot contribute one on this path:
@@ -194,8 +210,8 @@ func (a *app) runContext(ctx context.Context, args []string) int {
 	return a.renderError(err)
 }
 
-// fault is a command outcome carrying a specification section 8 exit-code
-// category, a machine code for the --json error envelope, and a human message.
+// fault is a command outcome carrying an exit-code category, a machine code for
+// the --json error envelope, and a human message.
 type fault struct {
 	code    int
 	codeStr string
@@ -222,8 +238,8 @@ func (e *flagError) Unwrap() error { return e.err }
 // is reachable: exit 3, with guidance to start the engine folded into the
 // message so it rides both the human output and the --json envelope. It resolves
 // the dial target through the configuration precedence (flags > IRIS_* env >
-// iris.toml > defaults, specification section 8) so the socket/host it would have
-// dialed is real, and logs the diagnostic to stderr (never stdout) at debug
+// iris.toml > defaults) so the socket/host it would have dialed is real, and
+// logs the diagnostic to stderr (never stdout) at debug
 // level, off by default.
 func (a *app) noDaemon(cmd *cobra.Command, op string) error {
 	target := a.resolveTarget(cmd)
@@ -241,7 +257,7 @@ func (a *app) usage(msg string) error {
 	return &fault{code: exitUsage, codeStr: "usage", message: msg}
 }
 
-// parseRunRef parses a <run> token per S08/run-ref-grammar (unit contract):
+// parseRunRef parses a <run> token per the run-ref grammar:
 // a bare pipeline name stands for its latest run; <name>~n stands for the nth
 // prior run of that pipeline (n>=0; ~0 is latest). Git ^ and .. forms are
 // rejected as false cognates. The parse is pure; resolution of the (name, prior)
@@ -271,9 +287,9 @@ func parseRunRef(s string) (pipeline string, prior int, err error) {
 	return s, 0, nil
 }
 
-// errEnvelope is the --json error document: the read-API error envelope shape of
-// specification section 7, {"error":{"code":...,"message":...}}, plus any advisory
-// warnings that accompany the outcome (omitted when there are none). A warning
+// errEnvelope is the --json error document: the read-API error envelope shape,
+// {"error":{"code":...,"message":...}}, plus any advisory warnings that
+// accompany the outcome (omitted when there are none). A warning
 // never blocks a command; it rides the terminal envelope alongside the error.
 type errEnvelope struct {
 	Error    errBody           `json:"error"`
@@ -287,7 +303,7 @@ type errBody struct {
 }
 
 // dataEnvelope is the --json success document: the read-API success envelope
-// shape of specification section 7, {"data":...}.
+// shape, {"data":...}.
 type dataEnvelope struct {
 	Data any `json:"data"`
 }

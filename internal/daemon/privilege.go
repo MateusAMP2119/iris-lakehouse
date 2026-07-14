@@ -5,22 +5,31 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/MateusAMP2119/iris-engine-cli/internal/store"
 )
 
-// This file holds the startup privilege check for the admin DSN. Before any lane
-// runs, the daemon validates that the admin role the DSN authenticates as holds
-// the privileges the engine needs (specification section 2): CREATEROLE (to mint
-// pipeline and data-PAT roles), CREATEDB (to create the meta database), and
-// ownership of every managed schema. Superuser is never required — a plain role
-// with those grants passes — and a superuser is accepted, not demanded. A missing
-// privilege fails fast, naming what is missing, so a misconfigured DSN is caught
-// at startup rather than mid-run.
+// This file holds the privilege check for the admin DSN: the validation that the
+// admin role the DSN authenticates as holds the privileges the engine needs --
+// CREATEROLE (to mint pipeline and data-PAT roles), CREATEDB (to create the meta
+// database), and ownership of every managed schema. Superuser is never required —
+// a plain role with those grants passes — and a superuser is accepted, not
+// demanded. A missing privilege fails fast, naming what is missing, so a
+// misconfigured DSN can be caught before any lane runs rather than mid-run.
+//
+// The check runs at both startup edges: engine install preflights the admin DSN
+// before the first CREATE DATABASE, and daemon start preflights it before the
+// meta connect (which lazily creates meta) and the read-pool role provisioning
+// -- so a DSN that was never viable fails with a named grant, not a raw
+// Postgres permission error mid-sequence. The live read is store's
+// (AdminRolePrivileges, one short-lived admin connection); NewAdminPrivilegeReader
+// adapts it to the seam here.
 
-// PrivilegeQuery is the catalog query the real reader runs to snapshot the admin
-// role's cluster privileges: the current session role's CREATEROLE, CREATEDB, and
+// PrivilegeQuery is the catalog query a reader runs to snapshot the admin role's
+// cluster privileges: the current session role's CREATEROLE, CREATEDB, and
 // superuser bits from pg_roles. rolsuper is selected only so the check can accept
-// a superuser; it is never a requirement. The pgx-backed reader that runs this
-// query lands in E02.3; the check logic here is proven with a scripted fake.
+// a superuser; it is never a requirement. The live reader
+// (store.AdminRolePrivileges) runs this shape with the role name added.
 const PrivilegeQuery = "SELECT rolcreaterole, rolcreatedb, rolsuper FROM pg_roles WHERE rolname = current_user"
 
 // ErrInsufficientPrivilege is the sentinel a failed privilege check wraps: the
@@ -51,24 +60,53 @@ type AdminPrivileges struct {
 }
 
 // PrivilegeReader reads the admin role's privilege snapshot from the cluster the
-// admin DSN points at (PrivilegeQuery plus the managed-schema ownership check).
-// The pgx-backed reader lands in E02.3; a scripted fake drives CheckPrivileges in
-// tests, so the check needs no live Postgres.
+// admin DSN points at. NewAdminPrivilegeReader is the live implementation (over
+// store.AdminRolePrivileges); a scripted fake drives CheckPrivileges in tests, so
+// the check logic needs no live Postgres.
 type PrivilegeReader interface {
 	// ReadPrivileges returns the admin role's current privilege snapshot.
 	ReadPrivileges(ctx context.Context) (AdminPrivileges, error)
 }
 
+// NewAdminPrivilegeReader returns the live PrivilegeReader over the admin DSN:
+// one short-lived admin/maintenance connection reading the session role's
+// cluster-privilege bits (store.AdminRolePrivileges). UnownedManagedSchemas is
+// always empty here: the engine's DDL runs under CREATE privileges, never schema
+// ownership, so no ownership requirement exists to preflight -- the field stays
+// for a future tier that introduces one.
+func NewAdminPrivilegeReader(adminDSN string) PrivilegeReader {
+	return adminPrivilegeReader{dsn: adminDSN}
+}
+
+// adminPrivilegeReader is the store-backed live PrivilegeReader.
+type adminPrivilegeReader struct{ dsn string }
+
+// ReadPrivileges reads the admin role's privilege bits from pg_roles.
+func (r adminPrivilegeReader) ReadPrivileges(ctx context.Context) (AdminPrivileges, error) {
+	role, createRole, createDB, superuser, err := store.AdminRolePrivileges(ctx, r.dsn)
+	if err != nil {
+		return AdminPrivileges{}, err
+	}
+	return AdminPrivileges{Role: role, CreateRole: createRole, CreateDB: createDB, Superuser: superuser}, nil
+}
+
 // CheckPrivileges reads the admin role's privileges through r and validates the
-// engine's requirements (specification section 2): CREATEROLE, CREATEDB, and
-// ownership of every managed schema. Superuser is never required and never
-// rejected — a non-superuser role with the three grants passes, a superuser is
-// accepted. A missing privilege fails fast with ErrInsufficientPrivilege, naming
-// every missing privilege so the operator sees exactly what the admin DSN needs.
+// engine's requirements: CREATEROLE, CREATEDB, and ownership of every managed
+// schema. Superuser is never required and never rejected — a non-superuser role
+// with the three grants passes, a superuser is accepted. A missing privilege fails
+// fast with ErrInsufficientPrivilege, naming every missing privilege so the
+// operator sees exactly what the admin DSN needs.
 func CheckPrivileges(ctx context.Context, r PrivilegeReader) error {
 	p, err := r.ReadPrivileges(ctx)
 	if err != nil {
 		return fmt.Errorf("daemon: read admin privileges: %w", err)
+	}
+
+	// A superuser can do everything the individual grants confer, whatever its
+	// rolcreaterole/rolcreatedb bits say (a role created with bare SUPERUSER has
+	// them false), so it passes outright -- accepted, never demanded.
+	if p.Superuser {
+		return nil
 	}
 
 	var missing []string

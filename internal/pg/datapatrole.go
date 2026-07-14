@@ -7,17 +7,16 @@ import (
 	"github.com/MateusAMP2119/iris-engine-cli/internal/declare"
 )
 
-// This file is the live data-PAT read-role surface of specification sections 4
-// and 7, the read-side analogue of the pipeline-role provisioning in roles.go. A
-// data PAT owns an engine-managed read-only Postgres role that is NOLOGIN --
-// assumed via SET ROLE on the shared read pool, never connected to directly -- so
-// its provisioning differs from a pipeline login role in three ways: the role is
-// NOLOGIN (no credential, no injected connection), it is granted membership TO
-// the engine read-pool login (so the pool's login may SET ROLE to it), and its
-// grants are read-only (SELECT on the granted fields). The engine's own read-pool
-// login is ensured here too: the one identity the shared read pool connects as,
-// which holds no table grants of its own and reads only through the data-PAT role
-// it SET ROLEs into.
+// This file is the live data-PAT read-role surface, the read-side analogue of the
+// pipeline-role provisioning in roles.go. A data PAT owns an engine-managed
+// read-only Postgres role that is NOLOGIN -- assumed via SET ROLE on the shared
+// read pool, never connected to directly -- so its provisioning differs from a
+// pipeline login role in three ways: the role is NOLOGIN (no credential, no
+// injected connection), it is granted membership TO the engine read-pool login
+// (so the pool's login may SET ROLE to it), and its grants are read-only (SELECT
+// on the granted fields). The engine's own read-pool login is ensured here too:
+// the one identity the shared read pool connects as, which holds no table grants
+// of its own and reads only through the data-PAT role it SET ROLEs into.
 //
 // pg owns the data cluster, so this CREATE ROLE / GRANT DDL is issued here beside
 // every other provisioning statement (store owns the meta access ledger's truth;
@@ -25,10 +24,10 @@ import (
 // data-database connection every other provisioning statement rides.
 
 // EngineReadPoolRole is the fixed name of the engine's own read-pool login role:
-// the single identity the shared read pool connects as (specification section 7).
-// It holds no table grants of its own; every data-surface read runs under the
-// caller PAT's role, assumed via SET ROLE, so this login is only a connection
-// identity that the data-PAT roles are granted membership to.
+// the single identity the shared read pool connects as. It holds no table grants
+// of its own; every data-surface read runs under the caller PAT's role, assumed
+// via SET ROLE, so this login is only a connection identity that the data-PAT
+// roles are granted membership to.
 const EngineReadPoolRole = "iris_engine_read"
 
 // ReadPoolLoginProvision is the request to ensure the engine's read-pool login
@@ -52,15 +51,15 @@ type ReadPoolLoginProvision struct {
 
 // ProvisionReadPoolLogin ensures the engine's read-pool login role exists on the
 // data cluster with exactly its connection identity, issuing the DDL through db in
-// order (specification section 7). It is idempotent: the role is created (with its
-// least-privilege attributes baked in) if missing, and every credential/GRANT/REVOKE
-// is idempotent, so a re-provision (including a credential rotation on daemon
-// restart) is a safe no-op-or-update. Crucially it never re-asserts the role's
-// attributes with an ALTER ROLE -- changing an existing role's SUPERUSER attribute
-// requires the SUPERUSER attribute (PG16+), which the engine's non-superuser
-// CREATEROLE admin lacks -- so a repeat daemon start never hard-fails on the already
-// provisioned login. The ordered steps: create LOGIN (with attributes) if missing,
-// set the engine-minted credential, deny the meta database, grant CONNECT on data.
+// order. It is idempotent: the role is created (with its least-privilege attributes
+// baked in) if missing, and every credential/GRANT/REVOKE is idempotent, so a
+// re-provision (including a credential rotation on daemon restart) is a safe
+// no-op-or-update. Crucially it never re-asserts the role's attributes with an ALTER
+// ROLE -- changing an existing role's SUPERUSER attribute requires the SUPERUSER
+// attribute (PG16+), which the engine's non-superuser CREATEROLE admin lacks -- so a
+// repeat daemon start never hard-fails on the already provisioned login. The ordered
+// steps: create LOGIN (with attributes) if missing, set the engine-minted
+// credential, deny the meta database, grant CONNECT on data.
 func ProvisionReadPoolLogin(ctx context.Context, db DB, spec ReadPoolLoginProvision) error {
 	stmts, err := renderProvisionReadPoolLogin(spec)
 	if err != nil {
@@ -125,10 +124,10 @@ $iris_read_pool_login$;`, quoteStringLiteral(spec.Role), role),
 }
 
 // DataPATRoleProvision is the request to provision one data-PAT read-only role on
-// the data cluster (specification sections 4 and 7): the NOLOGIN role name
-// (store.DataPATRoleName), the engine read-pool login it grants membership to (so
-// the pool may SET ROLE to it), the meta database it must not reach, the data
-// database it reads, and the field-level read grants recorded at mint.
+// the data cluster: the NOLOGIN role name (store.DataPATRoleName), the engine
+// read-pool login it grants membership to (so the pool may SET ROLE to it), the
+// meta database it must not reach, the data database it reads, and the
+// field-level read grants recorded at mint.
 type DataPATRoleProvision struct {
 	// Role is the data PAT's NOLOGIN read-role name, created NOLOGIN and never
 	// altered to LOGIN (assumed via SET ROLE on the read path).
@@ -148,17 +147,17 @@ type DataPATRoleProvision struct {
 
 // ProvisionDataPATRole ensures a data PAT's read-only role exists on the data
 // cluster with exactly its declared read access and membership in the engine
-// read-pool login, issuing the DDL through db in order (specification sections 4
-// and 7). It is idempotent: the role is created NOLOGIN (with its least-privilege
-// attributes baked in) if missing, and every GRANT/REVOKE is idempotent, so a retry
-// after a partial failure re-issues cleanly. It never re-asserts the attributes with
-// an ALTER ROLE, which would require the SUPERUSER attribute the engine's non-
-// superuser CREATEROLE admin lacks (PG16+). The ordered steps are:
+// read-pool login, issuing the DDL through db in order. It is idempotent: the role
+// is created NOLOGIN (with its least-privilege attributes baked in) if missing, and
+// every GRANT/REVOKE is idempotent, so a retry after a partial failure re-issues
+// cleanly. It never re-asserts the attributes with an ALTER ROLE, which would
+// require the SUPERUSER attribute the engine's non-superuser CREATEROLE admin lacks
+// (PG16+). The ordered steps are:
 //
 //  1. create the role NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE if it does not yet
 //     exist -- never LOGIN, so the role holds no credential and can only be assumed;
 //  2. deny the meta database -- revoke CONNECT from PUBLIC (default-deny) and from
-//     the role -- so the control plane is unreachable to the data PAT (section 2);
+//     the role -- so the control plane is unreachable to the data PAT;
 //  3. grant CONNECT on the data database and USAGE on each granted schema;
 //  4. apply each field-level SELECT grant (RenderGrant);
 //  5. grant the role TO the engine read-pool login WITH SET (so the pool may SET ROLE
@@ -182,9 +181,9 @@ func ProvisionDataPATRole(ctx context.Context, db DB, spec DataPATRoleProvision)
 // read role. It validates the request first (a NOLOGIN role names a pool login, a
 // meta and data database), then emits create/deny/grant/membership in order (the
 // attributes ride the CREATE, never a re-asserting ALTER). It is pure, so the exact
-// statement stream is derivable without a live
-// cluster; ProvisionDataPATRole issues it. A read grant carrying a write access
-// kind is refused (a data-PAT role is read-only).
+// statement stream is derivable without a live cluster; ProvisionDataPATRole issues
+// it. A read grant carrying a write access kind is refused (a data-PAT role is
+// read-only).
 func renderProvisionDataPATRole(spec DataPATRoleProvision) ([]string, error) {
 	if spec.Role == "" {
 		return nil, fmt.Errorf("role name is empty")

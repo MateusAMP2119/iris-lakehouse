@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/MateusAMP2119/iris-engine-cli/internal/api"
@@ -20,10 +21,9 @@ import (
 
 // This file is the daemon's leader-side control plane: the composition root that
 // turns POST /apply and POST /destroy into the registry apply, schema provisioning,
-// and scoped teardown (specification sections 3, 6.3, and 12). It sits at the top of
-// the import graph (daemon composes dispatch, pg, store, and declare) and is the one
-// place they are wired together, so no lower package reaches across the meta/data
-// boundary.
+// and scoped teardown. It sits at the top of the import graph (daemon composes
+// dispatch, pg, store, and declare) and is the one place they are wired together,
+// so no lower package reaches across the meta/data boundary.
 //
 // The control plane is leader-only. The api mux gates every mutation to the leader
 // (a standby returns not_leader), and the dispatcher -- the single meta writer -- only
@@ -46,12 +46,19 @@ type dataPlane interface {
 	pg.DB
 	pg.LiveViewReader
 	// EnsureCaptureFunction ensures iris.capture() exists so provisioning's capture
-	// triggers bind (the E03.10 forward seam; E06.2 owns the real body).
+	// triggers bind; pg's capture.go owns the function's PL/pgSQL body.
 	EnsureCaptureFunction(ctx context.Context) error
 	// ExecuteWipe runs a workload wipe (or destroy revert) on the data database.
 	// Added here so the same client instance wires to wipe plane without extra
 	// seam (wipe and provision share the data client).
 	ExecuteWipe(ctx context.Context, target pg.WipeTarget) (pg.WipeResult, error)
+	// OpenUndoRunIDs returns the run id of every journal entry still undo = open
+	// (un-promoted disposable data), one element per entry: the destructive-op
+	// gate's input for the un-promoted-data soft-block on teardowns.
+	OpenUndoRunIDs(ctx context.Context) ([]int64, error)
+	// ReadFieldGrants reads a role's current field-level grants from the data
+	// database's catalogs: the live half of grant-drift reconciliation.
+	ReadFieldGrants(ctx context.Context, role string) ([]declare.FieldGrant, error)
 }
 
 // controlPlane is the daemon's api.ControlHandler: a stable handle the mux binds to
@@ -124,6 +131,17 @@ type controlOrchestrator struct {
 	data      dataPlane
 	ledgerRec pg.LedgerRecorder
 	heads     store.AppliedHeadReader
+	// gate is the destructive-op soft-block gate a pipeline destroy passes before
+	// the destroyer runs (--yes refuses on in-flight runs or un-promoted data,
+	// --force cancels the runs and proceeds). An unwired gate (nil reader) skips
+	// evaluation -- the shape-test compositions.
+	gate destructiveGate
+	// submit and roleCreds back the apply-time pipeline-role provisioning: the
+	// ledger writes ride the single writer, and the credential read-back keeps a
+	// re-apply on the persisted secret (create-once). Nil seams skip provisioning
+	// -- the shape-test compositions.
+	submit    dispatch.Submitter
+	roleCreds store.RoleCredentialReader
 	logger    *slog.Logger
 }
 
@@ -131,7 +149,7 @@ type controlOrchestrator struct {
 // root and the wired seams. reg is the plain-MVCC registry reader the composer-destroy
 // interlock counts a lane's registered members from (the lanes table in meta, not the
 // workspace disk). A nil logger discards output.
-func newControlOrchestrator(workspace string, applier *dispatch.Applier, destroyer *dispatch.Destroyer, reg store.RegistryReader, data dataPlane, ledgerRec pg.LedgerRecorder, heads store.AppliedHeadReader, logger *slog.Logger) *controlOrchestrator {
+func newControlOrchestrator(workspace string, applier *dispatch.Applier, destroyer *dispatch.Destroyer, reg store.RegistryReader, data dataPlane, ledgerRec pg.LedgerRecorder, heads store.AppliedHeadReader, gate destructiveGate, submit dispatch.Submitter, roleCreds store.RoleCredentialReader, logger *slog.Logger) *controlOrchestrator {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -143,6 +161,9 @@ func newControlOrchestrator(workspace string, applier *dispatch.Applier, destroy
 		data:      data,
 		ledgerRec: ledgerRec,
 		heads:     heads,
+		gate:      gate,
+		submit:    submit,
+		roleCreds: roleCreds,
 		logger:    logger,
 	}
 }
@@ -182,6 +203,13 @@ func (o *controlOrchestrator) apply(ctx context.Context, req api.ControlRequest)
 		if err := o.provision(ctx, req.DryRun); err != nil {
 			return api.ControlResult{}, err
 		}
+		// The role rides AFTER schema provisioning: its schema USAGE and column
+		// grants resolve only once the declared schemas and tables exist.
+		if !req.DryRun {
+			if err := o.provisionPipelineRole(ctx, decl.Pipeline); err != nil {
+				return api.ControlResult{}, err
+			}
+		}
 		return api.ControlResult{Kind: decl.Kind.String(), Target: decl.Pipeline.Name, DryRun: req.DryRun}, nil
 	case declare.KindComposer:
 		if !req.DryRun {
@@ -211,12 +239,28 @@ func (o *controlOrchestrator) destroy(ctx context.Context, req api.ControlReques
 	switch decl.Kind {
 	case declare.KindPipeline:
 		if !req.DryRun {
+			// The destructive-op gate runs before the destroyer: --yes refuses on an
+			// in-flight run or un-promoted disposable data under the pipeline; --force
+			// cancels the runs and discards the data by proceeding. The destroyer's own
+			// hard blockers (dangling downstream lineage) come after and no flag
+			// overrides them.
+			unpromoted, err := o.unpromotedCount(ctx, decl.Pipeline.Name)
+			if err != nil {
+				return api.ControlResult{}, err
+			}
+			scope := dispatch.GateScope{Pipeline: decl.Pipeline.Name}
+			if err := o.gate.enforce(ctx, dispatch.OpDeclareDestroy, scope, req.Force, unpromoted); err != nil {
+				return api.ControlResult{}, err
+			}
 			if err := o.destroyer.DestroyPipeline(ctx, decl.Pipeline.Name); err != nil {
 				return api.ControlResult{}, err
 			}
 		}
 		return api.ControlResult{Kind: decl.Kind.String(), Target: decl.Pipeline.Name, DryRun: req.DryRun}, nil
 	case declare.KindComposer:
+		// A composer destroy clears only the lane's rows -- no run, lineage, or data
+		// deletion -- and its own registered-member interlock already refuses while
+		// 2+ members remain, so it takes no soft-block gate.
 		if !req.DryRun {
 			members, err := o.laneMembers(ctx, decl.Composer.Lane)
 			if err != nil {
@@ -230,6 +274,142 @@ func (o *controlOrchestrator) destroy(ctx context.Context, req api.ControlReques
 	default:
 		return api.ControlResult{}, fmt.Errorf("declare destroy: unknown declaration kind %v", decl.Kind)
 	}
+}
+
+// unpromotedCount counts the un-promoted disposable journal entries under the
+// pipeline: the open-undo entries whose run belongs to it -- the wipe scope's size,
+// the teardown soft-block's input. An unwired gate or data plane contributes zero
+// (the shape-test compositions; the gate is skipped there anyway).
+func (o *controlOrchestrator) unpromotedCount(ctx context.Context, pipeline string) (int, error) {
+	if o.gate.reader == nil || o.data == nil {
+		return 0, nil
+	}
+	openRuns, err := o.data.OpenUndoRunIDs(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("declare destroy: read un-promoted journal entries: %w", err)
+	}
+	if len(openRuns) == 0 {
+		return 0, nil
+	}
+	runs, err := o.gate.reader.Runs(ctx, store.RunFilter{})
+	if err != nil {
+		return 0, fmt.Errorf("declare destroy: read runs for journal attribution: %w", err)
+	}
+	runPipeline := make(map[int64]string, len(runs))
+	for _, r := range runs {
+		if id := parseRunID(r.ID); id != 0 {
+			runPipeline[id] = r.Pipeline
+		}
+	}
+	count := 0
+	for _, id := range openRuns {
+		if runPipeline[id] == pipeline {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// provisionPipelineRole provisions the pipeline's least-privilege login role on
+// the data database and records it in the meta access ledger, as part of every
+// (non-dry-run) pipeline apply. The credential is create-once: a re-apply reads
+// the persisted secret back and re-issues the idempotent DDL, so two applies
+// converge instead of racing fresh secrets. Ledger rewrites ride the single
+// writer (RegisterRole is idempotent, ReplaceGrants is a full-role rewrite, the
+// credential row is written only when freshly minted). Grants are the
+// declaration's reads and writes, exactly -- the run then connects as this role,
+// so Postgres enforces the declared access. Provisioning applies grants
+// additively; a field removed from the declaration leaves its live grant behind
+// until a future revoking tier (mirroring the reported-not-revoked drift
+// doctrine). Unwired seams (nil submit/roleCreds/data) skip provisioning -- the
+// shape-test compositions.
+func (o *controlOrchestrator) provisionPipelineRole(ctx context.Context, p *declare.Pipeline) error {
+	if o.submit == nil || o.roleCreds == nil || o.data == nil {
+		return nil
+	}
+	role := pg.PipelineRoleName(p.Name)
+
+	secret, ok, err := o.roleCreds.RoleSecret(ctx, role)
+	if err != nil {
+		return fmt.Errorf("declare apply: read pipeline role credential: %w", err)
+	}
+	minted := false
+	if !ok {
+		if secret, err = store.GenerateSecret(); err != nil {
+			return fmt.Errorf("declare apply: mint pipeline role credential: %w", err)
+		}
+		minted = true
+	}
+
+	grants, err := declare.GrantsFromAccess(p.Reads, p.Writes)
+	if err != nil {
+		return fmt.Errorf("declare apply: expand declared access for %q: %w", p.Name, err)
+	}
+
+	// Grant only what exists: a declared table can legitimately be absent at
+	// apply time (created outside the schemas/ tree, or arriving in a later
+	// apply). The role, credential, and connect/meta boundaries are asserted
+	// regardless; the missing tables' grants are deferred to the next apply,
+	// named in the log, rather than failing the whole apply on a GRANT against
+	// a table Postgres does not hold yet.
+	live, err := o.data.ReadLiveView(ctx)
+	if err != nil {
+		return fmt.Errorf("declare apply: read live view for role grants: %w", err)
+	}
+	grantable := grants[:0:0]
+	var deferred []string
+	for _, g := range grants {
+		if live.Tables[g.Schema+"."+g.Table] {
+			grantable = append(grantable, g)
+			continue
+		}
+		deferred = append(deferred, g.Schema+"."+g.Table)
+	}
+	if len(deferred) > 0 {
+		o.logger.Warn("declare apply: declared table(s) absent; their role grants are deferred to the next apply",
+			"pipeline", p.Name, "tables", strings.Join(dedupeStrings(deferred), ", "))
+	}
+
+	if err := pg.ProvisionPipelineRole(ctx, o.data, pg.RoleProvision{
+		Role:          role,
+		CredentialDDL: store.RenderSetRolePassword(role, secret),
+		MetaDatabase:  store.MetaDatabase,
+		DataDatabase:  pg.DataDatabase,
+		Grants:        grantable,
+	}); err != nil {
+		return fmt.Errorf("declare apply: provision pipeline role: %w", err)
+	}
+
+	owner := store.PipelineOwner(p.Name)
+	if err := o.submit.Submit(ctx, func(w *store.Writer) error {
+		if err := w.RegisterRole(ctx, role, owner); err != nil {
+			return err
+		}
+		if err := w.RecordAccessGrants(ctx, role, p.Reads, p.Writes); err != nil {
+			return err
+		}
+		if minted {
+			return w.SetCredential(ctx, role, owner, secret)
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("declare apply: record pipeline role ledger: %w", err)
+	}
+	o.logger.Info("declare apply: provisioned pipeline role", "pipeline", p.Name, "role", role, "grants", len(grants))
+	return nil
+}
+
+// dedupeStrings returns the unique values of in, preserving first-seen order.
+func dedupeStrings(in []string) []string {
+	seen := make(map[string]bool, len(in))
+	var out []string
+	for _, v := range in {
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // laneMembers returns the lane's member names from the lanes table in meta (the
@@ -248,12 +428,12 @@ func (o *controlOrchestrator) laneMembers(ctx context.Context, lane string) ([]s
 	return members, nil
 }
 
-// provision runs pipeline-independent schema provisioning over the workspace schemas/
-// tree (specification section 5): it rejects a reserved public schema folder,
-// discovers the declared tables, reconstructs each table's ledger (on-disk migrations
-// plus the applied head in meta), reads the live-Postgres view, and plans. On every
-// non-dry-run apply it ensures the capture function (self-healing, even when the plan
-// is empty) and then applies the plan when non-empty. A re-apply against an
+// provision runs pipeline-independent schema provisioning over the workspace
+// schemas/ tree: it rejects a reserved public schema folder, discovers the declared
+// tables, reconstructs each table's ledger (on-disk migrations plus the applied
+// head in meta), reads the live-Postgres view, and plans. On every non-dry-run
+// apply it ensures the capture function (self-healing, even when the plan is empty)
+// and then applies the plan when non-empty. A re-apply against an
 // already-provisioned database plans empty, so provisioning is idempotent (nothing
 // re-created, nothing re-recorded) beyond the idempotent capture-function ensure.
 func (o *controlOrchestrator) provision(ctx context.Context, dryRun bool) error {
@@ -266,13 +446,13 @@ func (o *controlOrchestrator) provision(ctx context.Context, dryRun bool) error 
 	// public is engine-reserved: reject a schemas/public/ folder before any
 	// provisioning, independent of ValidateSchemaTree's per-table folder-agreement
 	// checks, so declared tables never land in the engine's own public schema beside
-	// data_journal (specification section 3).
+	// data_journal.
 	if err := declare.ValidateSchemaTreeReserved(schemasDir); err != nil {
 		return fmt.Errorf("declare apply: %w", err)
 	}
-	// Provisioning reads only the schemas/ tree (pipeline-independent, specification
-	// section 5): it never validates the pipeline folders, so a schema apply provisions
-	// even while another pipeline in the workspace is mid-edit.
+	// Provisioning reads only the schemas/ tree (pipeline-independent): it never
+	// validates the pipeline folders, so a schema apply provisions even while another
+	// pipeline in the workspace is mid-edit.
 	schemas, err := declare.ValidateSchemaTree(schemasDir)
 	if err != nil {
 		return fmt.Errorf("declare apply: read schemas: %w", err)
@@ -311,7 +491,8 @@ func (o *controlOrchestrator) provision(ctx context.Context, dryRun bool) error 
 	// return: the capture triggers bind to it, so a dropped function must be
 	// re-created (the seam is self-healing) even when the plan is otherwise empty.
 	// Skipping it on an empty plan would leave a re-apply computing nothing and the
-	// triggers silently broken (E03.10 forward seam, E06.2 owns the body).
+	// triggers silently broken. The function's body is pg's (capture.go); this only
+	// ensures it is there.
 	if err := o.data.EnsureCaptureFunction(ctx); err != nil {
 		return fmt.Errorf("declare apply: ensure capture function: %w", err)
 	}

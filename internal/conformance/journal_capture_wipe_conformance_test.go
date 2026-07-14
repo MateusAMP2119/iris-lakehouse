@@ -19,29 +19,21 @@ import (
 	"github.com/MateusAMP2119/iris-engine-cli/internal/store"
 )
 
-// TestJournalCaptureAndWipe proves the E13.4 journal capture and wipe contracts
-// against the real binary, a running daemon, and real Postgres (the conformance
-// runner). It exercises dev/disposable runs that land rows, scoped and bare
-// workload wipe, promotion making subsequent writes wipe-immune while still
-// captured, commit-ordered journaling under concurrent writers from separate
-// lanes with provenance naming the last committed author, and the capture
-// overhead bound on a promoted bulk write.
+// TestJournalCaptureAndWipe proves the journal capture and wipe contracts against
+// the real binary, a running daemon, and real Postgres (the conformance runner). It
+// exercises dev/disposable runs that land rows, scoped and bare workload wipe,
+// promotion making subsequent writes wipe-immune while still captured,
+// commit-ordered journaling under concurrent writers from separate lanes with
+// provenance naming the last committed author, and the capture overhead bound on a
+// promoted bulk write.
 //
 // All assertions use the real CLI surface (`iris pipeline run`, `iris workload
 // wipe`, `iris data provenance`, `iris pipeline build`/`promote`) plus direct
 // reads of the data database for counts and journal state. No fakes.
-//
-// Contracts are claimed via the subtest names and // spec: annotations below.
-//
-// spec: S13/wipe-reverts-dev-run
-// spec: S13/promoted-writes-wipe-immune
-// spec: S13/concurrent-writes-commit-order
-// spec: S13/capture-overhead-bound
-// spec: S13/scoped-wipe-single-pipeline
 func TestJournalCaptureAndWipe(t *testing.T) {
 	bin := Build(t)
 
-	t.Run("S13/wipe-reverts-dev-run", func(t *testing.T) {
+	t.Run("wipe-reverts-dev-run", func(t *testing.T) {
 		// A disposable dev run lands rows (via pipeline run over a declared writer);
 		// iris workload wipe reverts exactly those rows while retaining the journal.
 		freshDatabases(t)
@@ -85,8 +77,10 @@ func TestJournalCaptureAndWipe(t *testing.T) {
 		assertCount(ctxFor(t), t, conn, 2, "SELECT count(*) FROM testdata.items")
 		assertCount(ctxFor(t), t, conn, 2, "SELECT count(*) FROM public.data_journal WHERE undo='open'")
 
-		// Wipe via real CLI: should revert the landed rows.
-		wres := bin.Run(t, RunOptions{Args: []string{"workload", "wipe", "--yes"}, Dir: ws, Timeout: time.Minute})
+		// Wipe via real CLI: should revert the landed rows. The lane loop keeps the
+		// pipeline perpetually in flight, so the destructive-op gate soft-blocks a
+		// --yes wipe; --force cancels the in-flight loop run and proceeds.
+		wres := bin.Run(t, RunOptions{Args: []string{"workload", "wipe", "--force"}, Dir: ws, Timeout: time.Minute})
 		wres.RequireExit(t, 0)
 
 		// After wipe: data reverted (0 rows), journal retained with wiped markers.
@@ -96,7 +90,7 @@ func TestJournalCaptureAndWipe(t *testing.T) {
 		assertCount(ctxFor(t), t, conn, 0, "SELECT count(*) FROM public.data_journal WHERE undo='open'")
 	})
 
-	t.Run("S13/scoped-wipe-single-pipeline", func(t *testing.T) {
+	t.Run("scoped-wipe-single-pipeline", func(t *testing.T) {
 		// iris workload wipe extract_orders reverts only that pipeline; bare wipe reverts the rest.
 		freshDatabases(t)
 		ws := shortWorkspace(t)
@@ -138,19 +132,19 @@ func TestJournalCaptureAndWipe(t *testing.T) {
 		assertCount(ctxFor(t), t, conn, 4, "SELECT count(*) FROM testdata.items")
 
 		// Scoped wipe only extract's.
-		w1 := bin.Run(t, RunOptions{Args: []string{"workload", "wipe", "extract_orders", "--yes"}, Dir: ws, Timeout: time.Minute})
+		w1 := bin.Run(t, RunOptions{Args: []string{"workload", "wipe", "extract_orders", "--force"}, Dir: ws, Timeout: time.Minute})
 		w1.RequireExit(t, 0)
 
 		// extract's rows gone; load's remain. Will be RED until scoped wipe implemented.
 		assertCount(ctxFor(t), t, conn, 2, "SELECT count(*) FROM testdata.items")
 
 		// Bare wipe clears the rest.
-		w2 := bin.Run(t, RunOptions{Args: []string{"workload", "wipe", "--yes"}, Dir: ws, Timeout: time.Minute})
+		w2 := bin.Run(t, RunOptions{Args: []string{"workload", "wipe", "--force"}, Dir: ws, Timeout: time.Minute})
 		w2.RequireExit(t, 0)
 		assertCount(ctxFor(t), t, conn, 0, "SELECT count(*) FROM testdata.items")
 	})
 
-	t.Run("S13/promoted-writes-wipe-immune", func(t *testing.T) {
+	t.Run("promoted-writes-wipe-immune", func(t *testing.T) {
 		// After build+promote, re-runs write captured promoted stamps; wipe leaves them.
 		freshDatabases(t)
 		ws := shortWorkspace(t)
@@ -193,7 +187,7 @@ func TestJournalCaptureAndWipe(t *testing.T) {
 
 		// Promote flipped the disposable-era writes from open to promoted: still
 		// captured, no longer wipe-eligible. Assert this now, before the next run's
-		// opportunistic seal (E13.5) archives and drops them from the live journal.
+		// opportunistic seal archives them and drops them from the live journal.
 		assertCount(ctxFor(t), t, conn, 2,
 			fmt.Sprintf("SELECT count(*) FROM public.data_journal WHERE undo='promoted' AND run_id=%d", run1))
 
@@ -210,7 +204,7 @@ func TestJournalCaptureAndWipe(t *testing.T) {
 		// sealed; post-promote writes born promoted): four data rows, seal and all.
 		assertCount(ctxFor(t), t, conn, 4, "SELECT count(*) FROM testdata.items")
 		// The re-run's writes are captured in the live journal, born promoted (never
-		// open): the contract's "still captured in the journal but not wipe-eligible".
+		// open): still captured in the journal but not wipe-eligible.
 		assertCount(ctxFor(t), t, conn, 2,
 			fmt.Sprintf("SELECT count(*) FROM public.data_journal WHERE undo='promoted' AND run_id=%d", run2))
 		assertCount(ctxFor(t), t, conn, 0,
@@ -218,7 +212,7 @@ func TestJournalCaptureAndWipe(t *testing.T) {
 
 		// Wipe must leave the promoted rows untouched (immune): the journal drives the
 		// wipe, and no promoted entry is in wipe scope.
-		wres := bin.Run(t, RunOptions{Args: []string{"workload", "wipe", "--yes"}, Dir: ws, Timeout: time.Minute})
+		wres := bin.Run(t, RunOptions{Args: []string{"workload", "wipe", "--force"}, Dir: ws, Timeout: time.Minute})
 		wres.RequireExit(t, 0)
 
 		// Both eras' promoted data rows survive the wipe, and the re-run's promoted
@@ -228,7 +222,7 @@ func TestJournalCaptureAndWipe(t *testing.T) {
 			fmt.Sprintf("SELECT count(*) FROM public.data_journal WHERE undo='promoted' AND run_id=%d", run2))
 	})
 
-	t.Run("S13/concurrent-writes-commit-order", func(t *testing.T) {
+	t.Run("concurrent-writes-commit-order", func(t *testing.T) {
 		// Two lanes write same row concurrently; journal entries commit-ordered;
 		// provenance names the last committed writer as current author.
 		freshDatabases(t)
@@ -343,7 +337,7 @@ func TestJournalCaptureAndWipe(t *testing.T) {
 		}
 	})
 
-	t.Run("S13/capture-overhead-bound", func(t *testing.T) {
+	t.Run("capture-overhead-bound", func(t *testing.T) {
 		// The budget: a promoted bulk insert on the captured path completes within
 		// 1.25x of the same insert on a capture-less baseline. The overhead is a
 		// data-plane property, so this leg measures it directly against two
@@ -362,7 +356,7 @@ func TestJournalCaptureAndWipe(t *testing.T) {
 		// where the baseline write dominates. Below that scale the cache-hot
 		// baseline is far cheaper per row than the fixed stamp, so the ratio
 		// overstates and a micro-scale regression ceiling guards it instead (the
-		// honest bound at that scale; see TestCaptureOverheadBudget for S14's
+		// honest bound at that scale; see TestCaptureOverheadBudget for the
 		// sibling proxy).
 		freshDatabases(t)
 		ws := shortWorkspace(t)
@@ -480,7 +474,7 @@ func TestJournalCaptureAndWipe(t *testing.T) {
 		}
 
 		ratio := float64(capturedMin) / float64(bareMin)
-		t.Logf("S13/capture-overhead-bound rows=%d captured=%s bare=%s ratio=%.3f stamp-fraction=%.4f acceptance=%v",
+		t.Logf("capture-overhead-bound rows=%d captured=%s bare=%s ratio=%.3f stamp-fraction=%.4f acceptance=%v",
 			rows, capturedMin, bareMin, ratio, frac, acceptance)
 		if acceptance {
 			// Acceptance scale: the baseline write is I/O-bound and the 1.25x budget

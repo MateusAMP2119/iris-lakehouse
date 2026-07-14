@@ -17,18 +17,17 @@ import (
 	"github.com/MateusAMP2119/iris-engine-cli/internal/config"
 )
 
-// This file is the daemon's listener wiring (specification section 2): the one
-// http.Handler (the api mux) served on two listeners. The unix socket is always
-// present -- local-only, filesystem-permission-guarded, ambient authorization,
-// zero config. The TCP listener is opt-in (settings.TCP), PAT-gated on every
-// request, and TLS-wrapped when a cert/key pair is configured. Serving HTTP over
-// listeners is the daemon's job, so this is proven at the integration tier with
-// real sockets and no database.
+// This file is the daemon's listener wiring: the one http.Handler (the api mux)
+// served on two listeners. The unix socket is always present -- local-only,
+// filesystem-permission-guarded, ambient authorization, zero config. The TCP
+// listener is opt-in (settings.TCP), PAT-gated on every request, and TLS-wrapped
+// when a cert/key pair is configured. Serving HTTP over listeners is the daemon's
+// job, so this is proven at the integration tier with real sockets and no database.
 
 const (
 	// socketFilePerm is the mode the control socket file is clamped to after bind:
-	// owner read/write only. The control plane is local-only, guarded by
-	// filesystem permissions (specification section 2).
+	// owner read/write only. The control plane is local-only, guarded by filesystem
+	// permissions.
 	socketFilePerm os.FileMode = 0o600
 	// serverReadHeaderTimeout bounds request header reads (a Slowloris guard) on
 	// both listeners.
@@ -58,9 +57,10 @@ type Server struct {
 // ServerOption configures a Server at construction.
 type ServerOption func(*Server)
 
-// WithVerifier sets the TCP PAT verifier. The default is api.RejectAllVerifier
-// (every TCP request 401s until E09.1 mints the first PAT). A nil verifier is
-// ignored, keeping the safe default.
+// WithVerifier sets the TCP PAT verifier. The daemon passes the store-backed one
+// (verifier.go, over the meta PAT store); without this option the default is
+// api.RejectAllVerifier, so every TCP request 401s -- the honest answer when no PAT
+// store is wired. A nil verifier is ignored, keeping that safe default.
 func WithVerifier(v api.TokenVerifier) ServerOption {
 	return func(s *Server) {
 		if v != nil {
@@ -146,8 +146,7 @@ func listenUnix(path string) (net.Listener, error) {
 }
 
 // listenTCP binds the TCP listener and, when a cert/key pair is configured, wraps
-// it in TLS; absent certs, it is plain TCP (specification section 2: "no certs:
-// plain TCP").
+// it in TLS; absent certs, it is plain TCP (no certs: plain TCP).
 func (s *Server) listenTCP() (net.Listener, error) {
 	ln, err := net.Listen("tcp", s.settings.TCP)
 	if err != nil {

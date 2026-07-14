@@ -23,9 +23,9 @@ type quickstartStep struct {
 	Act         string   `json:"act"`
 }
 
-// The stable act ids of the chaptered tour (specification section 8): every
-// step carries its act in the --json envelope, and the interactive sequencer
-// keys its chapter marks and openers on them.
+// The stable act ids of the chaptered tour: every step carries its act in the
+// --json envelope, and the interactive sequencer keys its chapter marks and
+// openers on them.
 const (
 	tourActEngine   = "engine"
 	tourActPipeline = "pipeline"
@@ -71,12 +71,12 @@ func quickstartPipelineSteps(e catalogEntry) []quickstartStep {
 }
 
 // quickstartActsFor returns the canonical chaptered step table of the guided
-// first session (specification section 8, quickstart surface) for one catalog
-// entry: THE ENGINE (install, start -d, info) then THE PIPELINE (apply, run,
-// provenance on the entry's showcase). Every rendering -- the interactive
-// tour, the plain act-headed guide, and the --json envelope -- shares this one
-// table. It is built fresh per call (no mutable package state); openers are
-// wired by the tour (tourActs), so the guide renderings stay pure data.
+// first session for one catalog entry: THE ENGINE (install, start -d, info)
+// then THE PIPELINE (apply, run, provenance on the entry's showcase). Every
+// rendering -- the interactive tour, the plain act-headed guide, and the --json
+// envelope -- shares this one table. It is built fresh per call (no mutable
+// package state); openers are wired by the tour (tourActs), so the guide
+// renderings stay pure data.
 func quickstartActsFor(e catalogEntry) []tourAct {
 	return []tourAct{
 		{
@@ -111,9 +111,11 @@ func quickstartActsFor(e catalogEntry) []tourAct {
 	}
 }
 
-// quickstartActs returns the act table for the catalog's default entry -- the
-// tour still selects it unconditionally until the shop lands (E16.3). A
-// malformed embedded catalog surfaces as the error.
+// quickstartActs returns the act table for the catalog's default entry. It is the
+// default-entry shorthand behind quickstartSteps; the live surfaces select their
+// entry first -- the shop's interactive pick, an explicit --pipeline, or the
+// default under --yes -- and call quickstartActsFor with it. A malformed embedded
+// catalog surfaces as the error.
 func quickstartActs() ([]tourAct, error) {
 	cat, err := loadCatalog()
 	if err != nil {
@@ -137,13 +139,13 @@ func quickstartSteps() ([]quickstartStep, error) {
 }
 
 // quickstartCmd builds `iris quickstart`: the third root verb beside the
-// lifecycle pair (specification section 8), the installer's continuation --
-// the guided tour of the first session. It is daemonless: the tour runs before
-// any engine exists (it bootstraps one). Interactivity requires stdin AND
-// stdout to both be interactive terminals with --json off; --yes runs the
-// whole tour unattended (piped or not) with the invoking directory as the
-// workspace; any other invocation renders the plain act-headed guide -- or,
-// under --json, the step-list data envelope -- executing nothing and exiting 0.
+// lifecycle pair, the installer's continuation -- the guided tour of the first
+// session. It is daemonless: the tour runs before any engine exists (it
+// bootstraps one). Interactivity requires stdin AND stdout to both be
+// interactive terminals with --json off; --yes runs the whole tour unattended
+// (piped or not) with the invoking directory as the workspace; any other
+// invocation renders the plain act-headed guide -- or, under --json, the
+// step-list data envelope -- executing nothing and exiting 0.
 func (a *app) quickstartCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "quickstart",
@@ -171,7 +173,7 @@ func (a *app) quickstartCmd() *cobra.Command {
 func (a *app) runQuickstart() runE {
 	return func(cmd *cobra.Command, _ []string) error {
 		if v, ok := changedString(cmd, "host"); ok && v != "" {
-			return a.usage("iris quickstart tours this machine and provisions a local engine, so --host is refused; drop --host and run the tour locally (a local --socket stays accepted)")
+			return a.usage("iris quickstart tours this machine and provisions a local engine, so --host is refused; drop --host and run the tour locally (a local --socket stays accepted), or point this workspace at a remote engine with iris engine connect <host>")
 		}
 		cat, err := loadCatalog()
 		if err != nil {
@@ -289,8 +291,8 @@ func (a *app) renderQuickstartGuide(cat *pipelineCatalog, selected catalogEntry)
 // quickstartCatalogPayload is the --json envelope's additive catalog object:
 // the default and selected entry ids beside every entry's browsable metadata.
 type quickstartCatalogPayload struct {
-	Default  string                         `json:"default"`
-	Selected string                         `json:"selected"`
+	Default  string                          `json:"default"`
+	Selected string                          `json:"selected"`
 	Entries  []quickstartCatalogEntryPayload `json:"entries"`
 }
 

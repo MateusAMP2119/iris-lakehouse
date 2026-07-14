@@ -1,33 +1,32 @@
 package dispatch
 
 // This file is the declaration destroy op: the leader-side path that tears down one
-// declared unit (specification section 12, destructive ops item 1). A pipeline
-// destroy reverts the target's un-promoted disposable data, then retires all of its
-// meta rows in one atomic transaction (the pipelines row last) through the single
-// meta writer, then deletes its object-store bytes. A composer destroy clears the
-// lane's rows, but only once the lane has at most one registered member -- the mirror
-// of apply's 2+ invariant. This is the dispatch-level surface; the CLI and daemon
-// control-connection wiring that drives it is wired at the daemon layer.
+// declared unit. A pipeline destroy reverts the target's un-promoted disposable data,
+// then retires all of its meta rows in one atomic transaction (the pipelines row
+// last) through the single meta writer, then deletes its object-store bytes. A
+// composer destroy clears the lane's rows, but only once the lane has at most one
+// registered member -- the mirror of apply's 2+ invariant. This is the dispatch-level
+// surface; the CLI and daemon control-connection wiring that drives it is wired at
+// the daemon layer.
 //
-// Three seams are deliberately open here, each documented rather than silently
-// stubbed, because the behavior they gate belongs to a later epic:
+// The teardown's side effects ride four seams, each supplied by the daemon's
+// leader wiring (leadership.go) and defaulting to open/no-op only for
+// compositions that wire none (shape tests):
 //
-//   - DataReverter reverts the target's un-promoted disposable data. The real
-//     journal-driven reverse-replay is E06; today a no-op seam (or a test recorder)
-//     stands in, invoked as a recorded step before the meta teardown so the flow and
-//     its ordering are proven now and E06 fills only the body.
-//   - ObjectDeleter deletes the target's content-addressed object-store bytes (the
-//     artifact FILES; the artifact meta ROWS ride the retirement transaction). The
-//     real content-addressed deletion is E05/E07; a no-op seam stands in now.
-//   - DestroyBlocker is the downstream-blocker predicate set (a registered pipeline
-//     depends_on the target, a run_inputs row names its runs, a dead-letter entry
-//     names it as failed_upstream). Those predicates are E10.1's; the seam here
-//     defaults OPEN (never blocks), so E10.1 supplies the guard without touching this
-//     teardown action.
-//
-// The archival-summary write (each remaining run's run_summaries row, written in the
-// retirement transaction so pruned lineage never dangles) is likewise deferred to
-// E05/E07's archival tier; store.Writer.RetirePipeline documents that omission.
+//   - DataReverter reverts the target's un-promoted disposable data before any
+//     meta row is retired: the daemon adapts the journal-driven reverse-replay
+//     (pg.Client.ExecuteWipe, scoped to the target with live run attribution).
+//   - RunLister feeds the two pre-retirement reads: the remaining runs in
+//     archival shape (their run_summaries rows are written inside the retirement
+//     transaction, so pruned lineage never dangles) and the artifact-hash census.
+//   - ObjectDeleter deletes the target's content-addressed object-store bytes
+//     (the artifact FILES; the artifact meta ROWS ride the retirement
+//     transaction) after the retirement commits, from the pre-read hash list.
+//   - DestroyBlocker is the downstream-blocker predicate set (a registered
+//     pipeline depends_on the target, a run_inputs row names its runs, a
+//     dead-letter entry names it as failed_upstream). The predicates are pure in
+//     destructive.go (DestroyBlockReasons); the daemon feeds them in over live
+//     meta snapshots (Candidate.destroyBlocker), and no flag overrides a refusal.
 
 import (
 	"context"
@@ -47,10 +46,11 @@ func LaneComposerDestroyable(registeredMembers int) bool {
 }
 
 // DataReverter reverts a pipeline's un-promoted disposable data as part of its
-// teardown (specification section 12: destroy reverts un-promoted disposable data
-// along with the registration, role, and grants). The real journal-driven
-// reverse-replay is E06; the destroy flow invokes this seam before the meta teardown,
-// so a nil-safe no-op stands in today and E06 fills the reverse-replay body.
+// teardown (destroy reverts un-promoted disposable data along with the
+// registration, role, and grants). The destroy flow invokes this seam before the
+// meta teardown; the daemon supplies the journal-driven reverse-replay (the same
+// ExecuteWipe a scoped workload wipe runs), and the no-op default stands in only
+// for compositions that wire none.
 type DataReverter interface {
 	// RevertUnpromoted reverts the pipeline's un-promoted disposable writes. It runs
 	// before any meta row is retired, so a failure leaves meta untouched.
@@ -60,20 +60,23 @@ type DataReverter interface {
 // ObjectDeleter deletes a pipeline's object-store bytes (its content-addressed
 // artifact files) as part of teardown. The artifact meta rows ride the retirement
 // transaction; the files under objects_path cannot, so they are a filesystem side
-// effect this seam owns. The real deletion is E05/E07; a no-op stands in today.
+// effect this seam owns. The daemon supplies a store.ObjectStore-backed deleter;
+// the no-op default stands in for compositions that wire none.
 type ObjectDeleter interface {
-	// DeleteObjects removes the pipeline's object-store bytes. It runs after the meta
-	// retirement commits, so bytes are freed only once the index rows naming them are
-	// gone.
-	DeleteObjects(ctx context.Context, pipeline string) error
+	// DeleteObjects removes the pipeline's object-store bytes: the content
+	// hashes, read from the artifacts index BEFORE the retirement deleted its
+	// rows, are passed in. It runs after the meta retirement commits, so bytes
+	// are freed only once the index rows naming them are gone.
+	DeleteObjects(ctx context.Context, pipeline string, hashes []string) error
 }
 
 // DestroyBlocker is the downstream-blocker predicate the destroy op consults before
-// tearing a pipeline down (specification section 12: destroy refuses while any
-// registered pipeline declares depends_on the target, any downstream run_inputs row
-// names its runs, or any outstanding dead-letter entry names it as failed_upstream).
-// Those predicates are E10.1's; this seam defaults OPEN so the teardown action is
-// wired now and E10.1 supplies the guard.
+// tearing a pipeline down (destroy refuses while any registered pipeline declares
+// depends_on the target, any downstream run_inputs row names its runs, or any
+// outstanding dead-letter entry names it as failed_upstream). DestroyBlockReasons
+// in destructive.go computes exactly those predicates over snapshots, but nothing
+// feeds it in: this seam defaults OPEN, so the teardown action is wired and
+// unguarded.
 type DestroyBlocker interface {
 	// Blocked reports whether the pipeline's teardown is blocked, a human reason when
 	// it is, and any error consulting the blocker. The default (openBlocker) never
@@ -81,39 +84,53 @@ type DestroyBlocker interface {
 	Blocked(ctx context.Context, pipeline string) (blocked bool, reason string, err error)
 }
 
-// RunLister lists the prunable runs for a pipeline so destroy can write their
-// archival summaries before deleting the run rows (S12/destroy-summaries-before-delete).
-// The default (noopRunLister) returns no runs, so summaries are a later wiring.
+// RunLister lists the prunable runs and artifact hashes for a pipeline so
+// destroy can write the runs' archival summaries and free the artifact bytes.
+// Both reads run BEFORE the retirement transaction deletes the rows they read.
+// The daemon supplies a store.RetentionReader-backed lister; the no-op default
+// (no runs, no hashes) stands in for compositions that wire none.
 type RunLister interface {
+	// ListPrunableRuns returns the pipeline's remaining runs in archival shape,
+	// for the summaries written inside the retirement transaction.
 	ListPrunableRuns(ctx context.Context, pipeline string) ([]store.PrunableRun, error)
+	// ListArtifactHashes returns the pipeline's content-addressed artifact
+	// hashes, for the object bytes freed after the retirement commits.
+	ListArtifactHashes(ctx context.Context, pipeline string) ([]string, error)
 }
 
-// noopRunLister is the default RunLister: no runs listed, no summaries written
-// until the archival tier wires the real reader.
+// noopRunLister is the default RunLister: no runs and no hashes listed, so no
+// summaries are written and no bytes freed unless a real reader is wired.
 type noopRunLister struct{}
 
 func (noopRunLister) ListPrunableRuns(context.Context, string) ([]store.PrunableRun, error) {
 	return nil, nil
 }
 
+func (noopRunLister) ListArtifactHashes(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+
 // openBlocker is the default DestroyBlocker: it never blocks (destroy proceeds). It
-// is the honest E03.10 default -- the real downstream predicates arrive with E10.1.
+// is the honest default -- the downstream predicates are written
+// (DestroyBlockReasons in destructive.go) but no caller supplies them to a
+// Destroyer.
 type openBlocker struct{}
 
 func (openBlocker) Blocked(context.Context, string) (bool, string, error) { return false, "", nil }
 
-// noopReverter is the default DataReverter: it reverts nothing. The real
-// journal-driven reverse-replay is E06; until then destroy runs the flow with this
-// no-op so the seam and its ordering are wired.
+// noopReverter is the default DataReverter: it reverts nothing. It stands in
+// only for compositions that wire no reverter; the daemon supplies the
+// journal-driven reverse-replay.
 type noopReverter struct{}
 
 func (noopReverter) RevertUnpromoted(context.Context, string) error { return nil }
 
-// noopObjectDeleter is the default ObjectDeleter: it deletes no bytes. The real
-// content-addressed deletion is E05/E07.
+// noopObjectDeleter is the default ObjectDeleter: it deletes no bytes. It stands
+// in only for compositions that wire no deleter; the daemon supplies the
+// store.ObjectStore-backed one.
 type noopObjectDeleter struct{}
 
-func (noopObjectDeleter) DeleteObjects(context.Context, string) error { return nil }
+func (noopObjectDeleter) DeleteObjects(context.Context, string, []string) error { return nil }
 
 // InterlockError is the composer-destroy interlock refusal: the lane still has two or
 // more registered members, so its composer cannot be destroyed (drop members first).
@@ -130,7 +147,7 @@ func (e *InterlockError) Error() string {
 	return fmt.Sprintf("lane %q still has %d registered members; destroy them before its composer (a composer is removable only once its lane has at most one registered member)", e.Lane, e.Registered)
 }
 
-// BlockedError is a destroy refused by the downstream-blocker predicate (E10.1): a
+// BlockedError is a destroy refused by the downstream-blocker predicate: a
 // dependent, consumer, or dead-letter entry still names the target. It carries the
 // blocker's reason so the CLI can tell the operator what to drop or drain first.
 type BlockedError struct {
@@ -162,8 +179,8 @@ type Destroyer struct {
 // DestroyerOption configures a Destroyer's seams at construction.
 type DestroyerOption func(*Destroyer)
 
-// WithDataReverter sets the un-promoted-data revert seam (E06's reverse-replay). A
-// nil reverter is ignored, keeping the no-op default.
+// WithDataReverter sets the un-promoted-data revert seam (the journal-driven
+// reverse-replay). A nil reverter is ignored, keeping the no-op default.
 func WithDataReverter(r DataReverter) DestroyerOption {
 	return func(d *Destroyer) {
 		if r != nil {
@@ -172,8 +189,9 @@ func WithDataReverter(r DataReverter) DestroyerOption {
 	}
 }
 
-// WithObjectDeleter sets the object-store-bytes deletion seam (E05/E07). A nil
-// deleter is ignored, keeping the no-op default.
+// WithObjectDeleter sets the object-store-bytes deletion seam (the
+// content-addressed deletion of the target's artifact files). A nil deleter is
+// ignored, keeping the no-op default.
 func WithObjectDeleter(o ObjectDeleter) DestroyerOption {
 	return func(d *Destroyer) {
 		if o != nil {
@@ -182,8 +200,9 @@ func WithObjectDeleter(o ObjectDeleter) DestroyerOption {
 	}
 }
 
-// WithDestroyBlocker sets the downstream-blocker predicate seam (E10.1). A nil
-// blocker is ignored, keeping the open default (never blocks).
+// WithDestroyBlocker sets the downstream-blocker predicate seam (say
+// DestroyBlockReasons adapted through DestroyBlockerFunc). A nil blocker is ignored,
+// keeping the open default (never blocks).
 func WithDestroyBlocker(b DestroyBlocker) DestroyerOption {
 	return func(d *Destroyer) {
 		if b != nil {
@@ -193,7 +212,7 @@ func WithDestroyBlocker(b DestroyBlocker) DestroyerOption {
 }
 
 // WithRunLister sets the run lister used to archive remaining runs' summaries
-// during destroy (S12/destroy-summaries-before-delete). A nil lister is ignored.
+// during destroy. A nil lister is ignored.
 func WithRunLister(l RunLister) DestroyerOption {
 	return func(d *Destroyer) {
 		if l != nil {
@@ -236,18 +255,30 @@ func (d *Destroyer) DestroyPipeline(ctx context.Context, name string) error {
 	}
 
 	// Revert the un-promoted disposable data before any meta row is retired, so a
-	// revert failure leaves meta exactly as it was (E06 fills the reverse-replay body).
+	// revert failure leaves meta exactly as it was (the default reverter is a no-op).
 	if err := d.reverter.RevertUnpromoted(ctx, name); err != nil {
 		return fmt.Errorf("dispatch: destroy pipeline %q: revert un-promoted data: %w", name, err)
 	}
 
 	// Archive summaries for remaining runs before the retirement deletes, inside
-	// the same transaction so stamps keep resolving (S12/destroy-summaries-before-delete).
+	// the same transaction so stamps keep resolving. A failed read refuses the
+	// destroy: retiring runs without their summaries would leave journal stamps
+	// resolving to nothing.
+	runs, err := d.runLister.ListPrunableRuns(ctx, name)
+	if err != nil {
+		return fmt.Errorf("dispatch: destroy pipeline %q: list remaining runs: %w", name, err)
+	}
 	var sums []store.RunSummary
-	if runs, err := d.runLister.ListPrunableRuns(ctx, name); err == nil && len(runs) > 0 {
-		for _, r := range runs {
-			sums = append(sums, store.BuildRunSummary(r))
-		}
+	for _, r := range runs {
+		sums = append(sums, store.BuildRunSummary(r))
+	}
+
+	// Read the artifact hashes BEFORE the retirement deletes the index rows that
+	// name them: the bytes are freed after the commit, but only this read knows
+	// which files are the target's.
+	hashes, err := d.runLister.ListArtifactHashes(ctx, name)
+	if err != nil {
+		return fmt.Errorf("dispatch: destroy pipeline %q: list artifact hashes: %w", name, err)
 	}
 
 	// Retire the pipeline's rows in one atomic meta transaction, pipelines row last.
@@ -260,9 +291,9 @@ func (d *Destroyer) DestroyPipeline(ctx context.Context, name string) error {
 		return fmt.Errorf("dispatch: destroy pipeline %q: %w", name, err)
 	}
 
-	// Free the object-store bytes only after the meta index rows are gone (E05/E07
-	// fills the real content-addressed deletion).
-	if err := d.objects.DeleteObjects(ctx, name); err != nil {
+	// Free the object-store bytes only after the meta index rows are gone (the default
+	// deleter is a no-op, so nothing is freed unless one is supplied).
+	if err := d.objects.DeleteObjects(ctx, name, hashes); err != nil {
 		return fmt.Errorf("dispatch: destroy pipeline %q: delete object bytes: %w", name, err)
 	}
 	return nil

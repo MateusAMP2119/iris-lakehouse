@@ -76,21 +76,20 @@ func requireHealthzOK(t *testing.T, socket string) {
 }
 
 // TestForegroundDefaultDetach drives the real iris binary and proves the
-// foreground/detach lifecycle (specification section 2): `iris engine start`
-// runs the daemon attached in the foreground by default (it blocks, serving the
-// socket, until signalled), and `-d` detaches so the daemon survives the CLI's
-// exit and is stopped by `iris engine stop`. It also proves the managed fail-fast:
-// `engine start` with no installed managed Postgres exits fast with install
-// guidance.
+// foreground/detach lifecycle: `iris engine start` runs the daemon attached in the
+// foreground by default (it blocks, serving the socket, until signalled), and `-d`
+// detaches so the daemon survives the CLI's exit and is stopped by `iris engine
+// stop`. It also proves the managed fail-fast: `engine start` with no installed
+// managed Postgres exits fast with install guidance.
 //
 // The install leg is cheap here: in the conformance job an external pg_dsn makes
-// install a no-op, and locally the managed Postgres download is cached from the
-// E02.3 runs.
+// install a no-op, and locally the managed Postgres runtime is already cached from
+// earlier managed-install runs (managed_pg_conformance_test.go), so nothing is
+// downloaded again.
 func TestForegroundDefaultDetach(t *testing.T) {
 	bin := Build(t)
 
-	// spec: S02/foreground-default-detach
-	t.Run("S02/foreground-default-detach", func(t *testing.T) {
+	t.Run("foreground-default-detach", func(t *testing.T) {
 		t.Run("managed with no install fails fast", func(t *testing.T) {
 			// Force managed mode regardless of a shared-Postgres CI env: an empty
 			// IRIS_PG_DSN reads as unset, selecting the managed path with nothing

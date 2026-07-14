@@ -1,14 +1,13 @@
 // Package api is the one net/http handler the Iris daemon's two listeners serve:
-// the control plane and the read API on a single mux (specification sections 2
-// and 7). It is deliberately a leaf: it renders exactly the resource-shaped
-// HTTP/JSON views the CLI's read commands print and never reaches back up into
-// the daemon, dispatcher, or a database.
+// the control plane and the read API on a single mux. It is deliberately a leaf:
+// it renders exactly the resource-shaped HTTP/JSON views the CLI's read commands
+// print and never reaches back up into the daemon, dispatcher, or a database.
 //
-// The mux mounts the full section-7 read roster (roster.go): the engine-state
-// routes and their item sub-routes, the data surface (/data, /q), and the
-// control-plane mutations, with the closed error envelope for unknown routes
-// and non-GET methods. Routes whose payload lands with a later epic are
-// mounted but answer the internal-fault envelope until their reader is wired.
+// The mux mounts the full read roster (roster.go): the engine-state routes and
+// their item sub-routes, the data surface (/data, /q), and the control-plane
+// mutations, with the closed error envelope for unknown routes and non-GET
+// methods. A route whose reader is not wired is still mounted, but answers the
+// internal-fault envelope rather than a fabricated payload.
 //
 // Authorization is a two-step split. Transport: a unix-socket request is
 // ambient (local, filesystem-guarded), while a TCP request must present a PAT
@@ -25,19 +24,18 @@ import (
 	"net/http"
 )
 
-// Envelope is the read-API success document of specification section 7:
-// {"data": ...}. Every non-streaming success response is one Envelope on the
-// wire.
+// Envelope is the read-API success document: {"data": ...}. Every non-streaming
+// success response is one Envelope on the wire.
 type Envelope struct {
 	// Data is the response payload, shaped per route.
 	Data any `json:"data"`
-	// Page is the pagination half on paged collection responses (specification
-	// section 7: {"page": {"next_after": <key|null>, "limit": <n>}}); nil -- and
-	// absent on the wire -- everywhere else.
+	// Page is the pagination half on paged collection responses ({"page":
+	// {"next_after": <key|null>, "limit": <n>}}); nil -- and absent on the wire --
+	// everywhere else.
 	Page *Page `json:"page,omitempty"`
 }
 
-// ErrorEnvelope is the read-API error document of specification section 7:
+// ErrorEnvelope is the read-API error document:
 // {"error": {"code": ..., "message": ...}} with a code drawn from the closed set
 // (bad_param, unauthorized, forbidden, not_found, method_not_allowed, internal).
 type ErrorEnvelope struct {
@@ -100,6 +98,7 @@ func NewMux(opts ...MuxOption) http.Handler {
 		provenance:   noProvenance{},
 		runs:         noRuns{},
 		runTrace:     noRunTrace{},
+		runLogs:      noRunLogs{},
 		pipelineGate: noPipelineGate{},
 		deadImpact:   noDeadImpact{},
 		endpointCtl:  noEndpointControl{},
@@ -116,8 +115,8 @@ func NewMux(opts ...MuxOption) http.Handler {
 // mux is the daemon's route table. It is a hand-rolled matcher (rather than
 // http.ServeMux) so unknown routes and disallowed methods return the read-API
 // error envelope, not net/http's plain-text 404/405. It consults role to gate
-// mutations to the leader (specification section 15) and routes the control-plane
-// mutations to the injected ControlHandler.
+// mutations to the leader and routes the control-plane mutations to the injected
+// ControlHandler.
 type mux struct {
 	role         RoleReporter
 	control      ControlHandler
@@ -139,6 +138,7 @@ type mux struct {
 	// silent empty payload), so the daemon wires the pgx-backed implementation.
 	runs         RunsHandler
 	runTrace     RunTraceHandler
+	runLogs      RunLogsHandler
 	pipelineGate PipelineGateHandler
 	deadImpact   DeadImpactHandler
 	// endpointCtl runs the leader-side POST /endpoint/apply (endpointapply.go);
@@ -220,15 +220,15 @@ func (m *mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Deliberately unrouted: /metrics stays a not_found like any unknown
-		// route (specification section 11: no metrics endpoint in core; a
-		// monitor consumes GET /stats instead).
+		// route (no metrics endpoint in core; a monitor consumes GET /stats
+		// instead).
 		WriteError(w, http.StatusNotFound, "not_found", "no such route: "+r.URL.Path)
 	}
 }
 
 // serveHealthz handles GET /healthz: the liveness-plus-role probe both the
 // CLI's daemon-reachability check and the conformance harness hit, served
-// identically on every role (specification sections 7 and 15).
+// identically on every role.
 func (m *mux) serveHealthz(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET /healthz only")

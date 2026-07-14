@@ -13,14 +13,12 @@ import (
 // TestServiceInstallOnDemand proves `iris engine service install` generates a
 // platform service unit (systemd on linux, launchd on darwin) that wraps the
 // detached daemon and is written to the agreed unit path, and that `service
-// uninstall` removes exactly that unit (specification section 2: on demand, never
-// auto-shipped; the unit wraps the detached daemon). The generation is proven for
-// both platforms (rendering is host-independent so both legs are exercised
-// regardless of the test host); install/uninstall file mechanics are proven
-// against a temp path.
+// uninstall` removes exactly that unit (on demand, never auto-shipped; the unit
+// wraps the detached daemon). The generation is proven for both platforms
+// (rendering is host-independent so both legs are exercised regardless of the test
+// host); install/uninstall file mechanics are proven against a temp path.
 func TestServiceInstallOnDemand(t *testing.T) {
-	// spec: S02/service-install-on-demand
-	t.Run("S02/service-install-on-demand", func(t *testing.T) {
+	t.Run("service-install-on-demand", func(t *testing.T) {
 		const exe = "/opt/iris/bin/iris"
 		ws := "/home/op/project"
 		pidPath := filepath.Join(ws, ".iris", "iris.pid")
@@ -176,7 +174,7 @@ func TestServiceInstallOnDemand(t *testing.T) {
 			}
 		})
 
-		t.Run("install defaults to the E02.4 ServiceUnitPath seam", func(t *testing.T) {
+		t.Run("install defaults to the ServiceUnitPath seam", func(t *testing.T) {
 			realWS := t.TempDir()
 			s := config.Resolve(config.Defaults(realWS), config.Layer{}, config.Layer{}, config.Layer{})
 

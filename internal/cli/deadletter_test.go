@@ -15,8 +15,10 @@ import (
 // /deadletter/replay with the given status and body, so the real replay client is
 // driven end to end (resolve target, POST the scope, classify the reply) with no live
 // daemon. It is the integration-tier "in-process daemon over a socket" the coder
-// doctrine names, standing in for the leader's replay route until E05.10/E05.12 wire
-// the daemon-side lane runner that mints and runs the replacement.
+// doctrine names, and it stands in for the leader's real replay route (the daemon's
+// deadletterPlane.Replay, which resolves the scope to root causes and mints each a
+// replacement through the leader's lane executor) so these tests exercise the CLI
+// side alone -- scripted statuses and bodies, no Postgres, no leadership.
 func startReplayStub(t *testing.T, sock string, status int, body any) {
 	t.Helper()
 	ln, err := net.Listen("unix", sock)
@@ -38,14 +40,12 @@ func startReplayStub(t *testing.T, sock string, status int, body any) {
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 }
 
-// TestDeadletterReplayExit5 proves the dead-lettering-replay exit contract
-// (specification sections 6.2 and 8): `iris deadletter replay` exits 5 when the
-// leader reports a replay whose fresh run dead-lettered again, exits 0 for a clean
+// TestDeadletterReplayExit5 proves the dead-lettering-replay exit contract:
+// `iris deadletter replay` exits 5 when the leader reports a replay whose fresh
+// run dead-lettered again, exits 0 for a clean
 // replay, requires a scope (bare is a usage error, exit 2), and reports exit 6 when
 // the daemon is not the leader. The re-dead-lettered run (chained to the original via
 // replayed_from) is what drives exit 5.
-//
-// spec: S06.2/failed-replay-chains-entry
 func TestDeadletterReplayExit5(t *testing.T) {
 	// Isolate the ambient IRIS_* config so --socket is authoritative: a real
 	// IRIS_HOST in the environment would otherwise win over the flag socket

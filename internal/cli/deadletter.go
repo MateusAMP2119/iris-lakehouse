@@ -13,26 +13,27 @@ import (
 	"github.com/MateusAMP2119/iris-engine-cli/internal/api"
 )
 
-// This file is the CLI side of `iris deadletter replay` (specification sections 6.2
-// and 8). Replay is a leader-owned disposition: the CLI resolves and validates the
+// This file is the CLI side of `iris deadletter replay`. Replay is a
+// leader-owned disposition: the CLI resolves and validates the
 // scope locally (a bare invocation is a usage error, exit 2 -- nothing defaults to
 // everything), then POSTs the scope to the daemon's leader-gated replay route. The
 // leader resolves the worklist to its root causes, mints each a fresh run on current
 // data (cause replay, replayed_from the replaced run), and reports the outcome. The
-// exit code follows the section-8 categories: success 0, a replay that itself
+// exit code follows the standard categories: success 0, a replay that itself
 // dead-lettered 5, no daemon reachable 3, not the leader 6, any other failure 4.
 //
 // Drain (`iris deadletter drain`, below) mirrors the same shape: the CLI
 // resolves/validates the scope locally (bare is a usage error, exit 2), then POSTs
-// it to the daemon's leader-gated drain route. Drain is a pure discard
-// (specification sections 6.2 and 12): the leader resolves the scope to the exact
-// entries named -- never walking failed_upstream to a root the way replay does --
-// and deletes their dead_letters worklist rows; nothing re-runs, nothing downstream
-// is altered. There is no re-dead-letter outcome for drain (nothing runs, so
-// nothing can dead-letter again), so a clean drain always exits 0; the confirmation
-// gate for this destructive op (typed-name prompt, soft-block y/N) is E10.2's
-// contract, not this one's -- --yes/--force are accepted and forwarded, not yet
-// locally gated.
+// it to the daemon's leader-gated drain route. Drain is a pure discard: the leader
+// resolves the scope to the exact entries named -- never walking failed_upstream to
+// a root the way replay does -- and deletes their dead_letters worklist rows;
+// nothing re-runs, nothing downstream is altered. There is no re-dead-letter
+// outcome for drain (nothing runs, so nothing can dead-letter again), so a clean
+// drain always exits 0. The confirmation gate for this destructive op -- the
+// dev-loop y/N flavor, not a typed-name teardown -- is enforced locally, before the
+// POST: an unconfirmed drain is refused (confirmation_required, exit 4) and never
+// reaches the daemon, while a confirmed one carries the explicit confirm flag the
+// API demands of a destructive route.
 
 // replayScope is the POST /deadletter/replay body: the operator scope, exactly one of
 // a single run, one pipeline's entries, or every outstanding entry. The leader
@@ -48,8 +49,8 @@ type replayScope struct {
 
 // replayOutcome is the leader's reply: which replaced runs were replayed and which
 // replays themselves dead-lettered again. A non-empty DeadLettered list is the
-// exit-5 condition (specification section 6.2: a dead-lettering replay parks a fresh
-// entry chained via replayed_from and exits 5).
+// exit-5 condition: a dead-lettering replay parks a fresh entry chained via
+// replayed_from and exits 5.
 type replayOutcome struct {
 	// Replayed names each replaced run and the fresh replacement minted for it.
 	Replayed []replayedRun `json:"replayed"`
@@ -71,7 +72,7 @@ type replayedRun struct {
 
 // deadletterReplay is the handler for `iris deadletter replay`. It requires an
 // explicit scope (bare is a usage error), then POSTs the scope to the leader's replay
-// route and maps the outcome to a section-8 exit category.
+// route and maps the outcome to an exit category.
 func (a *app) deadletterReplay() runE {
 	return func(cmd *cobra.Command, args []string) error {
 		all, _ := cmd.Flags().GetBool("all")
@@ -221,8 +222,11 @@ type drainScope struct {
 	Pipeline string `json:"pipeline,omitempty"`
 	// All scopes to every outstanding entry (--all).
 	All bool `json:"all,omitempty"`
+	// Force requests that soft-blocks be overridden (--force): in-flight runs on
+	// the drain's scope are cancelled instead of refusing.
+	Force bool `json:"force,omitempty"`
 	// Confirm is the explicit confirmation field required for destructive ops
-	// over the API (specification section 12); the CLI sets it after its local gate.
+	// over the API; the CLI sets it after its local gate.
 	Confirm bool `json:"confirm,omitempty"`
 }
 
@@ -235,9 +239,9 @@ type drainOutcome struct {
 }
 
 // deadletterDrain is the handler for `iris deadletter drain`. It requires an
-// explicit scope (bare is a usage error, exit 2 -- specification sections 6.2, 8,
-// and 12: nothing defaults to --all), enforces the confirmation gate for this
-// dev-loop destructive op (y/N or --yes/--force), then POSTs the scope to the
+// explicit scope (bare is a usage error, exit 2 -- nothing defaults to --all),
+// enforces the confirmation gate for this dev-loop destructive op (y/N or
+// --yes/--force), then POSTs the scope to the
 // leader's drain route.
 func (a *app) deadletterDrain() runE {
 	return func(cmd *cobra.Command, args []string) error {
@@ -276,7 +280,7 @@ func (a *app) deadletterDrain() runE {
 				message: "deadletter drain is destructive; re-run with --yes or --force, or confirm interactively",
 			}
 		}
-		return a.postDrain(cmd, drainScope{Run: run, Pipeline: pipeline, All: all, Confirm: true})
+		return a.postDrain(cmd, drainScope{Run: run, Pipeline: pipeline, All: all, Force: force, Confirm: true})
 	}
 }
 
@@ -380,8 +384,8 @@ func (a *app) emitDrainSuccess(cmd *cobra.Command, out drainOutcome) error {
 }
 
 // deadletterShow is the handler for `iris deadletter show <run>`: it GETs the daemon's
-// blast-radius readout for the entry and renders it (specification section 6.2: one
-// entry -- reason, failed_upstream, blast radius). It is a read, served on any node;
+// blast-radius readout for the entry and renders it (one entry -- reason,
+// failed_upstream, blast radius). It is a read, served on any node;
 // transport failure is no-daemon (exit 3), any other failure operation-failed (exit 4).
 func (a *app) deadletterShow() runE {
 	return func(cmd *cobra.Command, args []string) error {

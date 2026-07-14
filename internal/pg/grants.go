@@ -8,17 +8,17 @@ import (
 	"github.com/MateusAMP2119/iris-engine-cli/internal/declare"
 )
 
-// This file is the data-database grant surface of specification sections 3, 4, 5,
-// and 7: it renders field-level GRANT DDL and reconciles a role's live Postgres
-// grants against the meta access ledger. pg owns the data database, so the grant
-// DDL is issued here (store owns the ledger's truth in meta; the two never cross).
-// The rendering is deterministic, so a golden diff is a contract diff.
+// This file is the data-database grant surface: it renders field-level GRANT DDL
+// and reconciles a role's live Postgres grants against the meta access ledger. pg
+// owns the data database, so the grant DDL is issued here (store owns the ledger's
+// truth in meta; the two never cross). The rendering is deterministic, so a golden
+// diff is a contract diff.
 //
 // The access ledger is authoritative: reconciliation emits GRANT DDL to make
-// Postgres match the ledger, additively (specification section 5). Only additive
-// gaps -- a ledger field the role lacks -- auto-resolve; a live grant beyond the
-// ledger is a stray, reported and never revoked. A column-level GRANT is idempotent
-// in Postgres, so re-issuing a reconcile's additive GRANTs is always safe.
+// Postgres match the ledger, additively. Only additive gaps -- a ledger field the
+// role lacks -- auto-resolve; a live grant beyond the ledger is a stray, reported
+// and never revoked. A column-level GRANT is idempotent in Postgres, so re-issuing
+// a reconcile's additive GRANTs is always safe.
 
 // RenderGrant renders one field-level GRANT for role on schema.table.field: for a
 // read grant, GRANT SELECT ("field") ON "schema"."table" TO "role"; for a write
@@ -70,7 +70,7 @@ func requireNonEmpty(role, schema, table, field string) error {
 // GrantReconcile is the outcome of reconciling a role's live grants against the
 // meta access ledger: the additive GRANT statements that make Postgres match the
 // ledger, and the strays Postgres holds beyond the ledger. Additive gaps
-// auto-resolve; strays are reported, never revoked (specification section 5).
+// auto-resolve; strays are reported, never revoked.
 type GrantReconcile struct {
 	// Grants are the GRANT statements for ledger fields Postgres lacks, in ledger
 	// order. Applying them makes Postgres match the ledger additively; each is
@@ -81,10 +81,13 @@ type GrantReconcile struct {
 	Strays []declare.Drift
 }
 
-// LiveGrantReader reads a role's current field-level grants from the data database
-// (a pg_catalog / information_schema.column_privileges read). *Client implements it
-// against a live Postgres; a fake stands in at integration tier so reconcile is
-// provable with no live database.
+// LiveGrantReader reads a role's current field-level grants from the data
+// database. *Client implements it against the live catalogs (livegrants.go,
+// aclexplode over pg_attribute/pg_class ACLs); the fake in this package's tests
+// keeps the reconcile below provable with no live database. The daemon runs
+// Reconcile over every ledgered data-PAT role on winning leadership
+// (Candidate.reconcileGrantDrift), so a grant drifted out-of-band is re-issued
+// from the ledger and a stray beyond it is reported.
 type LiveGrantReader interface {
 	// ReadFieldGrants returns the field-level grants Postgres currently holds for
 	// role.
@@ -92,12 +95,12 @@ type LiveGrantReader interface {
 }
 
 // ReconcileGrants diffs a role's live grants against the meta ledger's fixed
-// per-field set and plans the reconciliation (specification sections 4 and 5): a
-// GRANT for each ledger field Postgres lacks (additive, in ledger order), and a
-// report of each stray Postgres holds beyond the ledger (non-additive). It never
-// grants a field absent from the ledger, so a column added to the table after a
-// data PAT's mint -- absent from the fixed ledger -- is never granted. It renders
-// only; ApplyReconcile or Reconcile issues the DDL.
+// per-field set and plans the reconciliation: a GRANT for each ledger field
+// Postgres lacks (additive, in ledger order), and a report of each stray Postgres
+// holds beyond the ledger (non-additive). It never grants a field absent from the
+// ledger, so a column added to the table after a data PAT's mint -- absent from
+// the fixed ledger -- is never granted. It renders only; ApplyReconcile or
+// Reconcile issues the DDL.
 func ReconcileGrants(role string, ledger, live []declare.FieldGrant) (GrantReconcile, error) {
 	liveSet := make(map[string]struct{}, len(live))
 	for _, g := range live {
@@ -126,10 +129,10 @@ func fieldGrantKey(g declare.FieldGrant) string {
 }
 
 // ApplyReconcile issues a plan's additive GRANTs through db in order, making
-// Postgres match the ledger (specification section 5). It issues no REVOKE: strays
-// are reported, never silently fixed. Each GRANT is idempotent, so a retry after a
-// partial failure re-issues cleanly. On the first statement error it stops and
-// returns the error, naming the statement.
+// Postgres match the ledger. It issues no REVOKE: strays are reported, never
+// silently fixed. Each GRANT is idempotent, so a retry after a partial failure
+// re-issues cleanly. On the first statement error it stops and returns the error,
+// naming the statement.
 func ApplyReconcile(ctx context.Context, db DB, plan GrantReconcile) error {
 	for _, stmt := range plan.Grants {
 		if err := db.Exec(ctx, stmt); err != nil {
@@ -141,9 +144,9 @@ func ApplyReconcile(ctx context.Context, db DB, plan GrantReconcile) error {
 
 // Reconcile reads the role's live grants, diffs them against the ledger, applies
 // the additive GRANTs onto the data database, and returns the plan (its stray set
-// in particular) for reporting (specification sections 4 and 5). The ledger is
-// authoritative: reconciliation emits GRANT DDL to make Postgres match it, and
-// strays beyond the ledger are reported, never revoked.
+// in particular) for reporting. The ledger is authoritative: reconciliation emits
+// GRANT DDL to make Postgres match it, and strays beyond the ledger are reported,
+// never revoked.
 func Reconcile(ctx context.Context, db DB, reader LiveGrantReader, role string, ledger []declare.FieldGrant) (GrantReconcile, error) {
 	live, err := reader.ReadFieldGrants(ctx, role)
 	if err != nil {

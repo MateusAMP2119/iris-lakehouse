@@ -14,18 +14,17 @@ import (
 
 	"github.com/MateusAMP2119/iris-engine-cli/internal/dispatch"
 	"github.com/MateusAMP2119/iris-engine-cli/internal/exec"
-	"github.com/MateusAMP2119/iris-engine-cli/internal/pg"
 	"github.com/MateusAMP2119/iris-engine-cli/internal/store"
 )
 
 // This file is the daemon's leader-side perpetual lane-loop plane: the composition
-// root that turns the persisted lane walk into runs (specification sections 1, 6.1,
-// and 6.3). It builds the four production seams the dispatch.Loop composes -- the
-// walk read (lanes + registered pipelines through BuildWalk), the depends_on pass
-// gate (the same gate the manual path uses), the fresh cause=loop run-start (mint,
-// exec run-scoped for capture attribution, record terminal), and the post-pass
-// bookkeeping (failure propagation along depends_on) -- and wires the whole loop over
-// the single dispatcher on winning leadership.
+// root that turns the persisted lane walk into runs. It builds the four production
+// seams the dispatch.Loop composes -- the walk read (lanes + registered pipelines
+// through BuildWalk), the depends_on pass gate (the same gate the manual path
+// uses), the fresh cause=loop run-start (mint, exec run-scoped for capture
+// attribution, record terminal), and the post-pass bookkeeping (failure propagation
+// along depends_on) -- and wires the whole loop over the single dispatcher on
+// winning leadership.
 //
 // Run execution here mirrors the manual plane's mint/exec/record shape, with two
 // additions the lane loop needs that the manual path did not: the run's data
@@ -74,11 +73,11 @@ func (p *lanePlane) clear() {
 	p.submit = nil
 }
 
-// CancelRun kills a running lane run's process group and dead-letters it as stopped,
-// touching nothing else (specification section 6.3: only an operator cancel frees a
-// hung run). It is leader-only: with no submitter installed it reports the run is not
-// cancellable here, and a run not tracked in the shared registry (already terminal or
-// never started here) reports not in flight, so the CLI maps each to the right exit.
+// CancelRun kills a running lane run's process group and dead-letters it as
+// stopped, touching nothing else (only an operator cancel frees a hung run). It is
+// leader-only: with no submitter installed it reports the run is not cancellable
+// here, and a run not tracked in the shared registry (already terminal or never
+// started here) reports not in flight, so the CLI maps each to the right exit.
 func (p *lanePlane) CancelRun(ctx context.Context, runID string) error {
 	p.mu.Lock()
 	submit := p.submit
@@ -118,8 +117,11 @@ func newLaneLoop(
 	runner exec.Runner,
 	journal dispatch.JournalHighWatermark,
 	objects *store.ObjectStore,
-	dataDSN string,
+	runConn *runConnBuilder,
 	passCounter *dispatch.PassCounter,
+	retention store.RetentionReader,
+	retain int64,
+	runLogs *RunLogWriter,
 	logger *slog.Logger,
 ) *dispatch.Loop {
 	if logger == nil {
@@ -138,13 +140,21 @@ func newLaneLoop(
 		runner:    runner,
 		journal:   journal,
 		objects:   objects,
-		dataDSN:   dataDSN,
+		runConn:   runConn,
+		runLogs:   runLogs,
 		logger:    logger,
+	}
+	var deleteLog RunLogPruneFunc
+	if runLogs != nil {
+		deleteLog = runLogs.DeleteOnPrune
 	}
 	post := lanePostPass{
 		workspace: workspace,
 		submit:    submit,
 		manual:    manual,
+		retention: retention,
+		retain:    retain,
+		deleteLog: deleteLog,
 		logger:    logger,
 	}
 	opts := []dispatch.LoopOption{dispatch.WithPostPass(post)}
@@ -155,8 +165,8 @@ func newLaneLoop(
 }
 
 // laneWalkReader reads the current lane walk from meta: the registered-pipeline set
-// and the persisted lane rows, fed through the pure BuildWalk. It is read at each pass
-// start, so a graph change lands only at the next pass (specification section 6.3).
+// and the persisted lane rows, fed through the pure BuildWalk. It is read at each
+// pass start, so a graph change lands only at the next pass.
 type laneWalkReader struct {
 	registry store.RegistryReader
 	manual   store.ManualReader
@@ -214,7 +224,8 @@ type laneExec struct {
 	runner    exec.Runner
 	journal   dispatch.JournalHighWatermark
 	objects   *store.ObjectStore
-	dataDSN   string
+	runConn   *runConnBuilder // per-run scoped data connection; nil leaves IRIS_DB_URL empty (shape tests)
+	runLogs   *RunLogWriter   // per-run output capture; nil discards (shape tests)
 	logger    *slog.Logger
 }
 
@@ -251,24 +262,35 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 	}
 	runID := strconv.FormatInt(info.ID, 10)
 
+	// Open the per-run output capture: the run's stdout and stderr stream into
+	// the run-id-keyed log under .iris/logs, and its path is recorded as
+	// runs.log_ref. Capture is best-effort -- a failed open runs the pipeline
+	// uncaptured (warned) rather than blocking dispatch.
+	sink, logRef := openRunLog(m.runLogs, runID, m.logger)
+
 	argv := dispatch.ResolveRunArgv(target.Argv, rec.ArtifactHash, m.objects)
 	h, err := m.runner.Start(ctx, exec.Spec{
-		Dir:  filepath.Join(m.workspace, target.Folder),
-		Argv: argv,
-		Env:  m.childEnv(info.ID),
+		Dir:    filepath.Join(m.workspace, target.Folder),
+		Argv:   argv,
+		Env:    m.childEnv(ctx, rec.Pipeline, info.ID),
+		Stdout: sink,
+		Stderr: sink,
 	})
 	if err != nil {
+		closeRunLog(sink)
 		// Nothing started: remove the queued run so meta carries no phantom.
 		if derr := m.submit.Submit(ctx, func(w *store.Writer) error { return w.DeleteQueuedRun(ctx, runID) }); derr != nil {
 			m.logger.Warn("lane run: could not delete queued run after start failure", "run", runID, "err", derr)
 		}
 		return dispatch.RunSucceeded, fmt.Errorf("lane run %q: start: %w", rec.Pipeline, err)
 	}
+	defer closeRunLog(sink)
 
-	// Record the started run running with its process-group handle. If that write
-	// fails, the subprocess is already running but unrecorded -- kill its group and
-	// drain before returning, so no orphaned, untracked process escapes.
-	if err := m.submit.Submit(ctx, func(w *store.Writer) error { return w.MarkRunRunning(ctx, runID, h.PGID()) }); err != nil {
+	// Record the started run running with its process-group handle and log
+	// reference. If that write fails, the subprocess is already running but
+	// unrecorded -- kill its group and drain before returning, so no orphaned,
+	// untracked process escapes.
+	if err := m.submit.Submit(ctx, func(w *store.Writer) error { return w.MarkRunRunning(ctx, runID, h.PGID(), logRef) }); err != nil {
 		_ = h.Kill()
 		_, _ = h.Wait()
 		return dispatch.RunSucceeded, fmt.Errorf("lane run %s: record running: %w", runID, err)
@@ -309,33 +331,44 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 	return dispatch.RunSucceeded, nil
 }
 
-// childEnv builds a lane run's environment: the inherited daemon environment plus the
-// run-scoped data connection under IRIS_DB_URL, carrying the run id as the per-session
-// iris.run_id GUC so the capture trigger attributes every write to this run
-// (specification section 4). A run whose data DSN is empty (no data database wired)
-// still receives the variable, empty, so a run resolves its connection from one place.
-func (m *laneExec) childEnv(runID int64) []string {
-	url := m.dataDSN
-	if url != "" {
-		url = pg.InjectRunID(url, runID)
-	}
-	return append(os.Environ(), dispatch.DBConnEnvVar+"="+url)
+// childEnv builds a lane run's environment: the inherited daemon environment plus
+// the run-scoped data connection under IRIS_DB_URL -- the pipeline's own
+// least-privilege login role, carrying the run id as the per-session iris.run_id
+// GUC so the capture trigger attributes every write to this run. A run with no
+// data connection wired still receives the variable, empty, so a run resolves
+// its connection from one place.
+func (m *laneExec) childEnv(ctx context.Context, pipeline string, runID int64) []string {
+	return append(os.Environ(), dispatch.DBConnEnvVar+"="+m.runConn.dsnFor(ctx, pipeline, runID))
 }
 
-// lanePostPass runs the dispatcher-owned failure propagation after a lane pass
-// completes (specification sections 6.1 and 6.2): for each member whose gate poisoned
-// this pass, it mints a never-executed dead-lettered run (cause=propagated) recording
-// the immediate failed_upstream and the poisoned upstream run(s) for lineage. It never
-// runs mid-pass.
+// lanePostPass runs the dispatcher-owned bookkeeping after a lane pass completes,
+// never mid-pass: failure propagation (for each member whose gate poisoned this
+// pass, it mints a never-executed dead-lettered run (cause=propagated) recording
+// the immediate failed_upstream and the poisoned upstream run(s) for lineage) and
+// count-based retention pruning (each lane pipeline's runs beyond the newest
+// `retain` are archived into run_summaries and deleted, sparing runs held by
+// outstanding dead letters).
 type lanePostPass struct {
 	workspace string
 	submit    dispatch.Submitter
 	manual    store.ManualReader
+	retention store.RetentionReader
+	retain    int64
+	deleteLog RunLogPruneFunc
 	logger    *slog.Logger
 }
 
-// AfterPass propagates each poisoned member's failure to a downstream dead-letter.
+// AfterPass propagates each poisoned member's failure to a downstream dead-letter,
+// then prunes the lane's run history down to the retention count.
 func (p lanePostPass) AfterPass(ctx context.Context, report dispatch.PassReport) error {
+	if err := p.propagateFailures(ctx, report); err != nil {
+		return err
+	}
+	return p.pruneRetention(ctx, report)
+}
+
+// propagateFailures mints the propagated dead-letter for each poisoned member.
+func (p lanePostPass) propagateFailures(ctx context.Context, report dispatch.PassReport) error {
 	for _, m := range report.Poisoned {
 		plan := dispatch.PlanPropagation(m.Decision)
 		if !plan.Propagate {
@@ -362,6 +395,58 @@ func (p lanePostPass) AfterPass(ctx context.Context, report dispatch.PassReport)
 			return fmt.Errorf("lane post-pass %q: propagate: %w", m.Pipeline, err)
 		}
 	}
+	return nil
+}
+
+// pruneRetention enforces count-based retention over THIS lane's pipelines: it
+// reads the run census and the dead-letter-held set, selects the runs beyond the
+// newest `retain` per pipeline (dispatch.SelectPrunable, sparing held runs), and
+// prunes each through the single writer (archival summary + delete in one meta
+// transaction, then the per-run log). Scoping to the lane's own pipelines keeps
+// concurrent lane post-passes from pruning the same run: lanes never share a
+// pipeline. A pass with nothing beyond retain writes nothing. An error is
+// returned to the loop, which logs it and retries at the next pass boundary --
+// retention is opportunistic, never fatal to dispatch.
+func (p lanePostPass) pruneRetention(ctx context.Context, report dispatch.PassReport) error {
+	if p.retention == nil {
+		return nil // retention read seam not wired (walk-only test composition)
+	}
+	member := make(map[string]bool, len(report.Pipelines))
+	for _, name := range report.Pipelines {
+		member[name] = true
+	}
+
+	census, err := p.retention.RetentionRuns(ctx)
+	if err != nil {
+		return fmt.Errorf("lane post-pass %q: %w", report.Lane, err)
+	}
+	var runs []dispatch.RetentionRun
+	for _, ref := range census {
+		if member[ref.Pipeline] {
+			runs = append(runs, dispatch.RetentionRun{RunID: ref.RunID, Pipeline: ref.Pipeline})
+		}
+	}
+	held, err := p.retention.OutstandingDeadLetterRuns(ctx)
+	if err != nil {
+		return fmt.Errorf("lane post-pass %q: %w", report.Lane, err)
+	}
+
+	ids := dispatch.SelectPrunable(runs, int(p.retain), held)
+	if len(ids) == 0 {
+		return nil
+	}
+	records, err := p.retention.PrunableRunsByID(ctx, ids)
+	if err != nil {
+		return fmt.Errorf("lane post-pass %q: %w", report.Lane, err)
+	}
+	for _, rec := range records {
+		if err := p.submit.Submit(ctx, func(w *store.Writer) error {
+			return w.PruneRun(ctx, rec, p.deleteLog)
+		}); err != nil {
+			return fmt.Errorf("lane post-pass %q: prune run %d: %w", report.Lane, rec.RunID, err)
+		}
+	}
+	p.logger.Info("lane post-pass: pruned runs beyond retention", "lane", report.Lane, "count", len(records), "retain", p.retain)
 	return nil
 }
 
