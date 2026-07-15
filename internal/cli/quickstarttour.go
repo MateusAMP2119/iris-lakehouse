@@ -51,14 +51,32 @@ type tourInputFunc = func(prompt, def string) (string, error)
 // tourAbort (exit 0, resume hint); it never escapes runQuickstartTour.
 var errTourAborted = errors.New("quickstart: tour aborted")
 
-// The tour's pinned prompt copy.
-const (
-	// tourDefaultWorkspace is the workspace question's visible default: always
-	// this fixed path, never the invoking directory, which under `curl | sh`
-	// is arbitrary (and may itself contain a pipelines/ tree -- the iris source
-	// checkout does -- without being the operator's intended workspace).
-	tourDefaultWorkspace = "~/iris"
-)
+// tourWorkspaceDirName is the workspace directory's name under the engine
+// home: the tour's default workspace is <engine home>/workspace, so a fresh
+// install touches exactly one directory tree (~/.iris) -- engine state and
+// pipeline sources together, relocated wholesale by IRIS_HOME.
+const tourWorkspaceDirName = "workspace"
+
+// tourDefaultWorkspace resolves the workspace question's default: the
+// workspace directory under the engine home (~/.iris/workspace), never the
+// invoking directory, which under `curl | sh` is arbitrary (and may itself
+// contain a pipelines/ tree -- the iris source checkout does -- without being
+// the operator's intended workspace). abs is the resolved path the empty
+// answer takes; display is the same path with the operator's home abbreviated
+// to `~` for the prompt.
+func tourDefaultWorkspace() (abs, display string, err error) {
+	home, err := config.Home(os.Getenv)
+	if err != nil {
+		return "", "", &fault{code: exitOpFailed, codeStr: "quickstart_workspace",
+			message: fmt.Sprintf("quickstart: resolve the default workspace: %v", err)}
+	}
+	abs = filepath.Join(home, tourWorkspaceDirName)
+	display = abs
+	if uh, uerr := os.UserHomeDir(); uerr == nil && uh != "" && strings.HasPrefix(abs, uh+string(filepath.Separator)) {
+		display = "~" + strings.TrimPrefix(abs, uh)
+	}
+	return abs, display, nil
+}
 
 // pickQuestion is THE PIPELINE act's opening question, doubling as its
 // consent: the shop pick over the n embedded catalog entries.
@@ -502,16 +520,16 @@ func (a *app) renderTourStep(p painter, step quickstartStep) {
 // openEngineWorkspace is THE ENGINE act's opener: the workspace question --
 // data placement only. The chosen directory holds the pipeline sources the
 // tour materializes and is the tree the daemon dispatches from; the engine's
-// socket, config, and state live at the fixed engine home (~/.iris), so every
-// shell finds the engine afterwards regardless of this answer. Interactive, it
-// reads one line with a fixed visible default (`~/iris`; never the invoking
-// directory, however workspace-like), expands `~` to the
-// operator's home, creates the directory (mkdir -p) and enters it, so every
-// subsequent step operates on cwd exactly like any command. The empty answer
-// accepts the default AND consents to the act; `q`, EOF, and an interrupt
-// abort clean (errTourAborted). Under --yes it never prompts: the invoking
-// directory is the workspace, unchanged. A real filesystem fault is a
-// quickstart_workspace fault, exit 4.
+// socket, config, and state live beside it at the engine home (~/.iris), so
+// every shell finds the engine afterwards regardless of this answer.
+// Interactive, it reads one line whose visible default is the engine home's
+// workspace directory (`~/.iris/workspace`; never the invoking directory,
+// however workspace-like), expands `~` to the operator's home, creates the
+// directory (mkdir -p) and enters it, so every subsequent step operates on cwd
+// exactly like any command. The empty answer accepts the default AND consents
+// to the act; `q`, EOF, and an interrupt abort clean (errTourAborted). Under
+// --yes it never prompts: the invoking directory is the workspace, unchanged.
+// A real filesystem fault is a quickstart_workspace fault, exit 4.
 func (a *app) openEngineWorkspace(s *tourSession) error {
 	wd, err := os.Getwd()
 	if err != nil {
@@ -523,23 +541,26 @@ func (a *app) openEngineWorkspace(s *tourSession) error {
 		return nil
 	}
 
-	def := tourDefaultWorkspace
-	line, perr := askTourLine(s.ctx, s.input, "Pipeline workspace ["+def+"]:", def)
+	defAbs, defDisplay, err := tourDefaultWorkspace()
+	if err != nil {
+		return err
+	}
+	line, perr := askTourLine(s.ctx, s.input, "Pipeline workspace ["+defDisplay+"]:", defDisplay)
 	if perr != nil || s.ctx.Err() != nil {
 		a.reportPromptFault(perr)
 		return errTourAborted
 	}
 	answer := strings.TrimSpace(line)
-	if answer == "" {
-		answer = def
-	}
 	if strings.EqualFold(answer, "q") {
 		return errTourAborted
 	}
 
-	dir, err := expandUserPath(answer)
-	if err != nil {
-		return err
+	dir := defAbs
+	if answer != "" {
+		dir, err = expandUserPath(answer)
+		if err != nil {
+			return err
+		}
 	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {
