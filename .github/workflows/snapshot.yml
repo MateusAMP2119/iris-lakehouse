@@ -30,9 +30,13 @@ jobs:
         id: ver
         run: |
           set -euo pipefail
-          # Next patch after the last stable tag; --match excludes the
-          # rolling "snapshot" tag itself.
-          LAST=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo v0.0.0)
+          # Next patch after the highest stable tag in the repo. Stable tags
+          # are created on master merge commits, which are not ancestors of
+          # development, so reachability (git describe) would undercount —
+          # take the semver-highest v* tag regardless of branch. The rolling
+          # "snapshot" tag never matches v*.
+          LAST=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          LAST=${LAST:-v0.0.0}
           BASE=${LAST#v}
           MAJOR=$(echo "$BASE" | cut -d. -f1)
           MINOR=$(echo "$BASE" | cut -d. -f2)
