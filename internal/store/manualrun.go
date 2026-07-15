@@ -39,12 +39,18 @@ type PipelineRunTarget struct {
 
 // LatestRunInfo is a pipeline's most recent run: its id and lifecycle state, the
 // single run the depends_on gate reads for an upstream, and the handle the
-// immediate runner reads back after minting a manual run.
+// immediate runner reads back after minting a manual run. DeadLetterReason is
+// the run's OUTSTANDING dead-letter worklist reason, empty when the run is not
+// dead-lettered or its worklist row was drained or replayed away -- the lane
+// gate's no-retry brake reads it (an outstanding failure parks the pipeline; a
+// stopped run or a drained failure does not).
 type LatestRunInfo struct {
 	// ID is the run's meta id.
 	ID int64
 	// State is the run's lifecycle state.
 	State RunState
+	// DeadLetterReason is the outstanding dead_letters.reason, empty when none.
+	DeadLetterReason DeadLetterReason
 }
 
 // QueuedManualRun is one enqueued lane-member manual run awaiting its lane's run
@@ -89,7 +95,9 @@ type ManualReader interface {
 // locking clause, no advisory-lock interplay.
 const (
 	selectPipelineRunTargetSQL = `SELECT folder, run FROM pipelines WHERE name = $1`
-	selectLatestRunSQL         = `SELECT id, state FROM runs WHERE pipeline = $1 ORDER BY id DESC LIMIT 1`
+	selectLatestRunSQL = `SELECT r.id, r.state, coalesce(d.reason, '')
+    FROM runs r LEFT JOIN dead_letters d ON d.run_id = r.id
+    WHERE r.pipeline = $1 ORDER BY r.id DESC LIMIT 1`
 	selectQueuedManualRunsSQL  = `SELECT id, artifact_hash FROM runs WHERE pipeline = $1 AND state = 'queued' AND cause = 'manual' ORDER BY id`
 	selectConsumedSQL          = `SELECT EXISTS (
     SELECT 1 FROM run_inputs ri JOIN runs r ON r.id = ri.run_id
@@ -154,11 +162,12 @@ func (r *pgxManualReader) LatestRun(ctx context.Context, pipeline string) (Lates
 		return LatestRunInfo{}, false, nil
 	}
 	var info LatestRunInfo
-	var state string
-	if err := rows.Scan(&info.ID, &state); err != nil {
+	var state, reason string
+	if err := rows.Scan(&info.ID, &state, &reason); err != nil {
 		return LatestRunInfo{}, false, fmt.Errorf("store: scan latest run for %q: %w", pipeline, err)
 	}
 	info.State = RunState(state)
+	info.DeadLetterReason = DeadLetterReason(reason)
 	return info, true, nil
 }
 

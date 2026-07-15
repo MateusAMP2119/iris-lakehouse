@@ -131,8 +131,9 @@ func newLaneLoop(
 	}
 	walk := laneWalkReader{registry: registry, manual: manual}
 	gate := lanePassGate{
-		gate:  dispatch.NewGate(consumedReader{manual: manual}),
-		edges: edgeReader{registry: registry, manual: manual},
+		gate:   dispatch.NewGate(consumedReader{manual: manual}),
+		edges:  edgeReader{registry: registry, manual: manual},
+		latest: manual,
 	}
 	runnerSeam := &laneExec{
 		workspace: workspace,
@@ -202,14 +203,23 @@ func (r laneWalkReader) Walk(ctx context.Context) ([]dispatch.Lane, error) {
 
 // lanePassGate resolves a pipeline's depends_on eligibility at its turn in a pass,
 // exactly like the manual path: it reads the pipeline's edges (each joined to its
-// upstream's latest run) and evaluates them over the run_inputs consumed check. A
-// root (edge-less) pipeline is always eligible: roots re-run indefinitely by
-// design (the perpetual for-loop), and the loop's cost discipline comes from the
-// watermark parking of lanes with nothing runnable plus the cheap post-pass, never
-// from gating a root's re-run.
+// upstream's latest run) and evaluates them over the run_inputs consumed check.
+//
+// An edge-less pipeline re-runs indefinitely by design -- the perpetual for-loop
+// -- with exactly one brake, the engine's own no-retry law: "a failed run is
+// never retried; re-execution is only ever an explicit replay". A pipeline whose
+// latest run carries an OUTSTANDING failed dead-letter starts no fresh loop run
+// (re-running a known-broken script back to back is a crash-loop, not
+// freshness); replay, drain, and a manual run are the surfaces that release the
+// brake -- each removes or supersedes the worklist row the brake reads. A
+// stopped run (operator cancel, wipe --force, crash reconciliation) never parks:
+// the operator ended one run, not the pipeline, and always-alive resumes. A
+// latest run still queued or running skips this turn (it is already in flight --
+// the queued-manual pickup runs ahead of this gate at the same turn).
 type lanePassGate struct {
-	gate  *dispatch.Gate
-	edges edgeReader
+	gate   *dispatch.Gate
+	edges  edgeReader
+	latest store.ManualReader // latest-run state for the edge-less no-retry brake; nil = always eligible (shape tests)
 }
 
 // Eligible resolves the pipeline's gate for this pass turn.
@@ -217,6 +227,23 @@ func (g lanePassGate) Eligible(ctx context.Context, pipeline string) (dispatch.D
 	edges, err := g.edges.Edges(ctx, pipeline)
 	if err != nil {
 		return dispatch.Decision{}, err
+	}
+	if len(edges) == 0 && g.latest != nil {
+		info, found, err := g.latest.LatestRun(ctx, pipeline)
+		if err != nil {
+			return dispatch.Decision{}, fmt.Errorf("lane gate %q: read latest run: %w", pipeline, err)
+		}
+		switch {
+		case found && (info.State == store.RunQueued || info.State == store.RunRunning):
+			// Already in flight: wait for its terminal transition.
+			return dispatch.Decision{}, nil
+		case found && info.State == store.RunDeadLettered && info.DeadLetterReason == store.ReasonFailed:
+			// Outstanding failure: never retried on its own -- replay, drain, or
+			// a manual run releases the brake. A stopped run or a drained
+			// failure carries no outstanding failed reason and falls through.
+			return dispatch.Decision{}, nil
+		}
+		return dispatch.Decision{Run: true}, nil
 	}
 	return g.gate.Evaluate(ctx, pipeline, edges)
 }
