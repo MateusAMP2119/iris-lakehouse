@@ -297,10 +297,17 @@ if __name__ == "__main__": main()
 	t.Run("run-cancel-lane-proceeds", func(t *testing.T) {
 		bin, ws, cleanup := setupLane(t)
 		defer cleanup()
-		// reset_counters (middle of composer order) hangs, holding its lane; load waits
-		// behind it. extract runs+succeeds ahead of it.
+		// reset_counters (middle of composer order) hangs on its FIRST run only (a
+		// marker file in the pipeline folder), holding its lane; load waits behind
+		// it. extract runs+succeeds ahead of it. The marker matters because a
+		// cancelled (stopped) run never parks the pipeline -- the loop re-runs it
+		// on the next pass, and a script that hung every time would hold the lane
+		// again before load's turn whenever the first pass's walk snapshot raced
+		// the member applies (the event-driven loop starts passing the instant the
+		// first apply lands).
 		writeScript(t, ws, "extract_orders", noopScript)
-		writeScript(t, ws, "reset_counters", "import time\nwhile True:\n    time.sleep(0.2)\n")
+		writeScript(t, ws, "reset_counters",
+			"import os, time\nif not os.path.exists(\"hang.marker\"):\n    open(\"hang.marker\", \"w\").close()\n    while True:\n        time.sleep(0.2)\n")
 		writeScript(t, ws, "load_orders", noopScript)
 		applyIngest(t, bin, ws)
 
