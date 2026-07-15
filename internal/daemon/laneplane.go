@@ -114,6 +114,9 @@ func newLaneLoop(
 	workspace string,
 	registry store.RegistryReader,
 	manual store.ManualReader,
+	roots store.RootGateReader,
+	queued store.QueuedManualReader,
+	events *dispatch.Events,
 	runner exec.Runner,
 	journal dispatch.JournalHighWatermark,
 	objects *store.ObjectStore,
@@ -129,14 +132,18 @@ func newLaneLoop(
 	}
 	walk := laneWalkReader{registry: registry, manual: manual}
 	gate := lanePassGate{
-		gate:  dispatch.NewGate(consumedReader{manual: manual}),
-		edges: edgeReader{registry: registry, manual: manual},
+		gate:      dispatch.NewGate(consumedReader{manual: manual}),
+		edges:     edgeReader{registry: registry, manual: manual},
+		roots:     roots,
+		manual:    manual,
+		workspace: workspace,
 	}
 	runnerSeam := &laneExec{
 		workspace: workspace,
 		submit:    submit,
 		inflight:  inflight,
 		manual:    manual,
+		queued:    queued,
 		runner:    runner,
 		journal:   journal,
 		objects:   objects,
@@ -157,9 +164,12 @@ func newLaneLoop(
 		deleteLog: deleteLog,
 		logger:    logger,
 	}
-	opts := []dispatch.LoopOption{dispatch.WithPostPass(post)}
+	opts := []dispatch.LoopOption{dispatch.WithPostPass(post), dispatch.WithQueuedStarter(runnerSeam)}
 	if passCounter != nil {
 		opts = append(opts, dispatch.WithOnPass(passCounter.Hook()))
+	}
+	if events != nil {
+		opts = append(opts, dispatch.WithEvents(events))
 	}
 	return dispatch.NewLoop(walk, gate, runnerSeam, logger, opts...)
 }
@@ -193,12 +203,19 @@ func (r laneWalkReader) Walk(ctx context.Context) ([]dispatch.Lane, error) {
 	return dispatch.BuildWalk(rows, registered), nil
 }
 
-// lanePassGate resolves a pipeline's depends_on eligibility at its turn in a pass,
-// exactly like the manual path: it reads the pipeline's edges (each joined to its
-// upstream's latest run) and evaluates them over the run_inputs consumed check.
+// lanePassGate resolves a pipeline's eligibility at its turn in a pass. A gated
+// pipeline (with depends_on edges) resolves exactly like the manual path: its
+// edges, each joined to its upstream's latest run, evaluated over the run_inputs
+// consumed check. A root (edge-less) pipeline resolves through the root cause
+// gate instead: its latest run's stamped declaration checksum against the
+// current declaration, so a loop run starts only on an unconsumed cause -- never
+// back to back on nothing (issue #172).
 type lanePassGate struct {
-	gate  *dispatch.Gate
-	edges edgeReader
+	gate      *dispatch.Gate
+	edges     edgeReader
+	roots     store.RootGateReader
+	manual    store.ManualReader
+	workspace string
 }
 
 // Eligible resolves the pipeline's gate for this pass turn.
@@ -207,20 +224,55 @@ func (g lanePassGate) Eligible(ctx context.Context, pipeline string) (dispatch.D
 	if err != nil {
 		return dispatch.Decision{}, err
 	}
+	if len(edges) == 0 && g.roots != nil {
+		return g.eligibleRoot(ctx, pipeline)
+	}
 	return g.gate.Evaluate(ctx, pipeline, edges)
 }
 
-// laneExec mints, runs, and records the terminal state of a fresh cause=loop run. It
-// fills the run record's declaration checksum, mints the queued run through the single
+// eligibleRoot resolves a root pipeline's loop-pass eligibility through the root
+// cause gate: the latest run's stamped declaration checksum against the current
+// declaration file's. The reads happen only at an unparked lane's turn -- a
+// parked lane never reaches here -- so the file read and the latest-run query
+// are paid per cause, not per pass. A pipeline that unregistered mid-pass mints
+// no run (a closed decision, absence is the record).
+func (g lanePassGate) eligibleRoot(ctx context.Context, pipeline string) (dispatch.Decision, error) {
+	detail, found, err := g.roots.LatestRunDetail(ctx, pipeline)
+	if err != nil {
+		return dispatch.Decision{}, fmt.Errorf("root gate %q: %w", pipeline, err)
+	}
+	var latest *dispatch.RootRun
+	if found {
+		latest = &dispatch.RootRun{State: detail.State, DeclarationChecksum: detail.DeclarationChecksum}
+	}
+	target, registered, err := g.manual.PipelineRunTarget(ctx, pipeline)
+	if err != nil {
+		return dispatch.Decision{}, fmt.Errorf("root gate %q: read run target: %w", pipeline, err)
+	}
+	if !registered {
+		return dispatch.Decision{}, nil
+	}
+	sum, err := declarationChecksum(g.workspace, target.Folder)
+	if err != nil {
+		return dispatch.Decision{}, fmt.Errorf("root gate %q: %w", pipeline, err)
+	}
+	return dispatch.DecideRoot(latest, sum), nil
+}
+
+// laneExec mints, runs, and records the terminal state of a fresh cause=loop run,
+// and starts enqueued lane-member manual runs at their lane boundary. It fills a
+// fresh run record's declaration checksum, mints the queued run through the single
 // writer, execs the subprocess in the pipeline folder with the run-scoped data
 // connection (so the capture trigger attributes its writes), tracks it in-flight for
 // cancellation, awaits its terminal exit, and records the terminal transition through
-// the single writer.
+// the single writer; a queued manual run skips the mint (the manual path minted it,
+// gate applied and consumption recorded) and rides the same execution body.
 type laneExec struct {
 	workspace string
 	submit    dispatch.Submitter
 	inflight  *inflightRuns
 	manual    store.ManualReader
+	queued    store.QueuedManualReader // enqueued lane-member manual runs; nil skips pickup (shape tests)
 	runner    exec.Runner
 	journal   dispatch.JournalHighWatermark
 	objects   *store.ObjectStore
@@ -260,7 +312,54 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 	if !ok {
 		return dispatch.RunSucceeded, fmt.Errorf("lane run %q: minted run vanished", rec.Pipeline)
 	}
-	runID := strconv.FormatInt(info.ID, 10)
+	return m.runToTerminal(ctx, rec.Pipeline, target, info.ID, rec.ArtifactHash)
+}
+
+// StartQueued starts and awaits pipeline's enqueued cause=manual runs, oldest
+// first, at the member's turn in a lane pass -- the pickup the manual path's
+// RunQueue promised. Each queued run was minted by the manual orchestrator with
+// its gate applied and consumption recorded, so the pickup only executes. A run
+// whose pipeline unregistered since enqueue is deleted as a phantom (it can never
+// start); a run that executes and dead-letters is not an error, the next queued
+// run (and the lane) proceeds.
+func (m *laneExec) StartQueued(ctx context.Context, pipeline string) error {
+	if m.queued == nil {
+		return nil
+	}
+	runs, err := m.queued.QueuedManualRuns(ctx, pipeline)
+	if err != nil {
+		return err
+	}
+	for _, q := range runs {
+		target, found, err := m.manual.PipelineRunTarget(ctx, pipeline)
+		if err != nil {
+			return fmt.Errorf("queued manual run %d: read run target: %w", q.ID, err)
+		}
+		if !found {
+			// Unregistered since enqueue: the run can never start; remove the
+			// phantom so the gate stops reading it as in flight.
+			runID := strconv.FormatInt(q.ID, 10)
+			if derr := m.submit.Submit(ctx, func(w *store.Writer) error { return w.DeleteQueuedRun(ctx, runID) }); derr != nil {
+				m.logger.Warn("queued manual run: could not delete unregistered phantom", "run", runID, "err", derr)
+			}
+			continue
+		}
+		if _, err := m.runToTerminal(ctx, pipeline, target, q.ID, q.ArtifactHash); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// runToTerminal executes an already-minted queued run to its terminal state: it opens
+// the per-run output capture, execs the subprocess in the pipeline folder with the
+// run-scoped data connection, records running, tracks it in-flight for cancel and
+// self-demotion kill, awaits the exit, and records the terminal transition and
+// journal ceiling through the single writer. It is the shared execution body of
+// StartFresh (which mints first) and StartQueued (whose run the manual path
+// minted).
+func (m *laneExec) runToTerminal(ctx context.Context, pipeline string, target store.PipelineRunTarget, id int64, artifactHash *string) (dispatch.RunOutcome, error) {
+	runID := strconv.FormatInt(id, 10)
 
 	// Open the per-run output capture: the run's stdout and stderr stream into
 	// the run-id-keyed log under .iris/logs, and its path is recorded as
@@ -268,11 +367,11 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 	// uncaptured (warned) rather than blocking dispatch.
 	sink, logRef := openRunLog(m.runLogs, runID, m.logger)
 
-	argv := dispatch.ResolveRunArgv(target.Argv, rec.ArtifactHash, m.objects)
+	argv := dispatch.ResolveRunArgv(target.Argv, artifactHash, m.objects)
 	h, err := m.runner.Start(ctx, exec.Spec{
 		Dir:    filepath.Join(m.workspace, target.Folder),
 		Argv:   argv,
-		Env:    m.childEnv(ctx, rec.Pipeline, info.ID),
+		Env:    m.childEnv(ctx, pipeline, id),
 		Stdout: sink,
 		Stderr: sink,
 	})
@@ -282,7 +381,7 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 		if derr := m.submit.Submit(ctx, func(w *store.Writer) error { return w.DeleteQueuedRun(ctx, runID) }); derr != nil {
 			m.logger.Warn("lane run: could not delete queued run after start failure", "run", runID, "err", derr)
 		}
-		return dispatch.RunSucceeded, fmt.Errorf("lane run %q: start: %w", rec.Pipeline, err)
+		return dispatch.RunSucceeded, fmt.Errorf("lane run %q: start: %w", pipeline, err)
 	}
 	defer closeRunLog(sink)
 

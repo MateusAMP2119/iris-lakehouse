@@ -50,7 +50,7 @@ type Client struct {
 	registry    RegistryReader
 	ledger      AppliedHeadReader
 	pipes       PipelineLister
-	manual      ManualReader
+	manual      *pgxManualReader
 	show        ShowReader
 	promote     PromoteStateReader
 	pats        PATReader
@@ -209,6 +209,16 @@ func (c *Client) PipelineLister() PipelineLister { return c.pipes }
 // target, latest-run, run_inputs consumed, and lane-roster reads the manual `iris
 // pipeline run` op composes.
 func (c *Client) ManualReader() ManualReader { return c.manual }
+
+// RootGateReader returns the plain-MVCC root-cause-gate reader (the pool): the
+// latest-run detail read the lane loop's root gate compares against the current
+// declaration checksum.
+func (c *Client) RootGateReader() RootGateReader { return c.manual }
+
+// QueuedManualReader returns the plain-MVCC queued-manual reader (the pool): the
+// enqueued lane-member manual runs the lane loop starts in turn at each member's
+// lane boundary.
+func (c *Client) QueuedManualReader() QueuedManualReader { return c.manual }
 
 // ShowReader returns the plain-MVCC pipeline-show reader (the pool): the
 // declaration detail, role grants, runs, and gate-ledger input reads the `iris
