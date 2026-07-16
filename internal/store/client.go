@@ -50,11 +50,10 @@ type Client struct {
 	registry    RegistryReader
 	ledger      AppliedHeadReader
 	pipes       PipelineLister
-	manual      ManualReader
+	manual      *pgxManualReader
 	show        ShowReader
 	promote     PromoteStateReader
 	pats        PATReader
-	stats       StatsSource
 	deadletter  DeadLetterReader
 	seal        JournalSealReader
 	endpoints   EndpointRowReader
@@ -109,7 +108,6 @@ func Connect(ctx context.Context, src ConnSource) (*Client, error) {
 		show:        newPgxShowReader(readPoolSeam),
 		promote:     &pgxPromoteReader{pool: readPoolSeam},
 		pats:        &pgxPATReader{pool: readPoolSeam},
-		stats:       newPgxStatsSource(readPoolSeam),
 		deadletter:  newPgxDeadLetterReader(readPoolSeam),
 		seal:        newPgxSealReader(readPoolSeam),
 		endpoints:   newPgxEndpointReader(readPoolSeam),
@@ -210,6 +208,11 @@ func (c *Client) PipelineLister() PipelineLister { return c.pipes }
 // pipeline run` op composes.
 func (c *Client) ManualReader() ManualReader { return c.manual }
 
+// QueuedManualReader returns the plain-MVCC queued-manual reader (the pool): the
+// enqueued lane-member manual runs the lane loop starts in turn at each member's
+// lane boundary.
+func (c *Client) QueuedManualReader() QueuedManualReader { return c.manual }
+
 // ShowReader returns the plain-MVCC pipeline-show reader (the pool): the
 // declaration detail, role grants, runs, and gate-ledger input reads the `iris
 // pipeline show` readout composes.
@@ -224,11 +227,6 @@ func (c *Client) PromoteStateReader() PromoteStateReader { return c.promote }
 // prefix -> record lookup the TCP bearer-token verifier resolves each request
 // against, on any node.
 func (c *Client) PATReader() PATReader { return c.pats }
-
-// StatsSource returns the plain-MVCC stats read seam (the pool): the runs,
-// dead-letter worklist, persisted composer, registry, and checkpoint reads the
-// engine-stats rollup (`iris engine stats`, GET /stats) is composed from.
-func (c *Client) StatsSource() StatsSource { return c.stats }
 
 // DeadLetterReader returns the plain-MVCC dead-letter read seam (the pool): the
 // worklist, consumption edges, and lane membership the blast-radius readout

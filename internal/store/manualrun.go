@@ -39,12 +39,37 @@ type PipelineRunTarget struct {
 
 // LatestRunInfo is a pipeline's most recent run: its id and lifecycle state, the
 // single run the depends_on gate reads for an upstream, and the handle the
-// immediate runner reads back after minting a manual run.
+// immediate runner reads back after minting a manual run. DeadLetterReason is
+// the run's OUTSTANDING dead-letter worklist reason, empty when the run is not
+// dead-lettered or its worklist row was drained or replayed away -- the lane
+// gate's no-retry brake reads it (an outstanding failure parks the pipeline; a
+// stopped run or a drained failure does not).
 type LatestRunInfo struct {
 	// ID is the run's meta id.
 	ID int64
 	// State is the run's lifecycle state.
 	State RunState
+	// DeadLetterReason is the outstanding dead_letters.reason, empty when none.
+	DeadLetterReason DeadLetterReason
+}
+
+// QueuedManualRun is one enqueued lane-member manual run awaiting its lane's run
+// boundary: the queued run's id and the artifact hash it was minted against (nil
+// for a dev run), everything the lane loop needs to start it.
+type QueuedManualRun struct {
+	// ID is the queued run's meta id.
+	ID int64
+	// ArtifactHash is the built artifact the run was minted for, nil for dev.
+	ArtifactHash *string
+}
+
+// QueuedManualReader is the plain-MVCC read seam the lane loop's queued-manual
+// pickup composes: the queued cause=manual runs of a pipeline, oldest first, that
+// the lane runner starts in turn at the member's boundary. The pgx manual reader
+// satisfies it; a fake satisfies it in tests.
+type QueuedManualReader interface {
+	// QueuedManualRuns returns pipeline's queued cause=manual runs, ascending by id.
+	QueuedManualRuns(ctx context.Context, pipeline string) ([]QueuedManualRun, error)
 }
 
 // ManualReader is the plain-MVCC read seam the manual-run op composes: pipeline run
@@ -70,7 +95,10 @@ type ManualReader interface {
 // locking clause, no advisory-lock interplay.
 const (
 	selectPipelineRunTargetSQL = `SELECT folder, run FROM pipelines WHERE name = $1`
-	selectLatestRunSQL         = `SELECT id, state FROM runs WHERE pipeline = $1 ORDER BY id DESC LIMIT 1`
+	selectLatestRunSQL = `SELECT r.id, r.state, coalesce(d.reason, '')
+    FROM runs r LEFT JOIN dead_letters d ON d.run_id = r.id
+    WHERE r.pipeline = $1 ORDER BY r.id DESC LIMIT 1`
+	selectQueuedManualRunsSQL  = `SELECT id, artifact_hash FROM runs WHERE pipeline = $1 AND state = 'queued' AND cause = 'manual' ORDER BY id`
 	selectConsumedSQL          = `SELECT EXISTS (
     SELECT 1 FROM run_inputs ri JOIN runs r ON r.id = ri.run_id
     WHERE r.pipeline = $1 AND ri.upstream_run_id = $2)`
@@ -134,12 +162,36 @@ func (r *pgxManualReader) LatestRun(ctx context.Context, pipeline string) (Lates
 		return LatestRunInfo{}, false, nil
 	}
 	var info LatestRunInfo
-	var state string
-	if err := rows.Scan(&info.ID, &state); err != nil {
+	var state, reason string
+	if err := rows.Scan(&info.ID, &state, &reason); err != nil {
 		return LatestRunInfo{}, false, fmt.Errorf("store: scan latest run for %q: %w", pipeline, err)
 	}
 	info.State = RunState(state)
+	info.DeadLetterReason = DeadLetterReason(reason)
 	return info, true, nil
+}
+
+// QueuedManualRuns reads pipeline's queued cause=manual runs (oldest first) in one
+// plain MVCC query, satisfying the lane loop's queued-manual pickup seam.
+func (r *pgxManualReader) QueuedManualRuns(ctx context.Context, pipeline string) ([]QueuedManualRun, error) {
+	rows, err := r.pool.query(ctx, selectQueuedManualRunsSQL, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("store: read queued manual runs for %q: %w", pipeline, err)
+	}
+	defer rows.Close()
+
+	var out []QueuedManualRun
+	for rows.Next() {
+		var q QueuedManualRun
+		if err := rows.Scan(&q.ID, &q.ArtifactHash); err != nil {
+			return nil, fmt.Errorf("store: scan queued manual run for %q: %w", pipeline, err)
+		}
+		out = append(out, q)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate queued manual runs for %q: %w", pipeline, err)
+	}
+	return out, nil
 }
 
 // Consumed answers the run_inputs already-consumed check in one plain MVCC query,

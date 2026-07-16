@@ -27,21 +27,11 @@ On top of that, every row's lineage is recorded and treated as a first-class fea
 
 One command, no dependencies. Installs the latest prebuilt static binary.
 
-**Recommended**:
-
 ```sh
 curl -fsSL https://install.iris-lakehouse.bymarreco.com | bash
 ```
 
-See [docs/CLOUDFLARE_INSTALL_SETUP.md](docs/CLOUDFLARE_INSTALL_SETUP.md) for exact Cloudflare setup instructions.
-
-**Current** (works immediately):
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/MateusAMP2119/iris-lakehouse/HEAD/install.sh | bash
-```
-
-The installer ends with one question — `Set up the engine now? (Y/n)` — and hands the ceremony to the binary it just installed: the guided tour asks where your pipeline workspace should live (`~/iris` by default), bootstraps the engine at its fixed per-user home (`~/.iris` — every shell finds it, whatever directory you run `iris` from), then opens the embedded pipeline catalog — curated starter pipelines shipped inside the binary — materializes and runs your pick, and closes by asking a row who wrote it. One consent per act; every step is the real command. Take it any time with `iris quickstart`; the installer only offers the tour when the installed release actually carries it.
+The installer ends by offering `iris quickstart` — the guided tour of the first session. Take it any time later with the same command.
 
 ### Snapshot channel (bleeding edge)
 
@@ -51,7 +41,12 @@ Want the newest code before it ships? Every merge to `development` automatically
 curl -fsSL https://install.iris-lakehouse.bymarreco.com/snapshot | bash
 ```
 
-(raw GitHub equivalent: `curl -fsSL https://raw.githubusercontent.com/MateusAMP2119/iris-lakehouse/HEAD/install.sh | bash -s snapshot`)
+Already have iris installed? Switch channels in place — no installer needed:
+
+```sh
+iris update --snapshot   # hop onto the rolling development build
+iris update              # hop back to the latest stable release
+```
 
 `iris --version` reports a snapshot build as `v<next>-snapshot.<date>.<commit>`, so you always know exactly what you're running. The stable command above never picks up snapshots — GitHub's `latest` release excludes prereleases. To go back to stable, just re-run the normal install command.
 
@@ -74,7 +69,7 @@ Then bootstrap the engine. Iris provisions and manages its own Postgres (or poin
 ```sh
 iris engine install       # provision managed Postgres + meta schema
 iris engine start -d      # start the daemon: leader election, lanes, read API
-iris engine info          # confirm it's alive
+iris ps                   # confirm it's alive: role, uptime, runs, host load
 ```
 
 Updating later is one command; it fetches the latest release, verifies its checksum, and swaps the binary in place:
@@ -94,8 +89,6 @@ Binary broken or missing? The script fallback does the same from outside:
 ```sh
 curl -fsSL https://install.iris-lakehouse.bymarreco.com/uninstall.sh | bash
 ```
-
-(or the raw version: `curl -fsSL https://raw.githubusercontent.com/MateusAMP2119/iris-lakehouse/HEAD/uninstall.sh | bash`)
 
 ---
 
@@ -155,8 +148,11 @@ Global flags everywhere: `--json` (machine output), `--socket`, `--host`, `--tok
 | `iris deadletter` (`dl`) | `list`, `show`, `replay`, `drain` | Failure triage worklist |
 | `iris endpoint` | `apply`, `remove`, `list`, `show` | Declared read endpoints at `GET /q/{endpoint}` |
 | `iris pat` | `create`, `list`, `revoke` | Personal access tokens (scopes: `control`, `read`, `data`) |
-| `iris engine` | `start`, `stop`, `install`, `uninstall`, `info`, `logs`, `inspect`, `stats`, `service …` | Daemon and host lifecycle |
+| `iris engine` | `start`, `stop`, `install`, `uninstall`, `logs`, `inspect`, `connect`, `service …` | Daemon and host lifecycle |
+| `iris ps` | *(root verb)* | Engine process status: runs plus host load, docker-ps style (`-a` all runs, `-q` ids only) |
 | `iris quickstart` | *(root verb)* | Guided tour of the first session (`--yes` runs it unattended) |
+| `iris update` | *(root verb)* | Self-replace the installed binary with the latest release (`--snapshot` for the rolling build) |
+| `iris uninstall` | *(root verb)* | Remove the installed iris binary itself (prompts first; engine must be down) |
 
 Exit codes are a contract, not an accident:
 
@@ -232,7 +228,6 @@ CI runs both tiers on Go 1.25 and 1.26, plus golangci-lint and the cross-compile
 |---|---|
 | [Epics](docs/Iris%20Epics.md) | The 15 capability epics (E00–E14) and their build-dependency order |
 | [CLAUDE.md](CLAUDE.md) | Build and test commands, branching rules, and conventions |
-| [Cloudflare install setup](docs/CLOUDFLARE_INSTALL_SETUP.md) | Wiring the short install URL to the release assets |
 
 ---
 

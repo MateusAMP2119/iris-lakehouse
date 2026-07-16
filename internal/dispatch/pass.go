@@ -5,18 +5,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"time"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/store"
 )
-
-// idleReadInterval bounds how long the perpetual loop waits before re-reading the
-// walk while WHOLLY idle (no lane running). It is not a dispatch timer and gates
-// nothing on a clock: the running path is event-driven on pass completions (clock
-// doctrine), and this bounded wait only wakes an otherwise-idle loop so a graph
-// applied to a cold leader -- which has no in-flight pass whose completion could
-// drive a re-read -- is picked up promptly rather than never.
-const idleReadInterval = 250 * time.Millisecond
 
 // This file is the perpetual lane loop: the leader-owned dispatch runtime that turns
 // the persisted walk into runs. It composes the lane walk (lane.go's BuildWalk, one
@@ -27,6 +18,15 @@ const idleReadInterval = 250 * time.Millisecond
 // Pass semantics:
 //   - One goroutine per lane, a perpetual per-lane loop. Distinct lanes run in
 //     parallel with no engine cap; a laneless pipeline is its own lane (BuildWalk).
+//   - The loop is watermark-parked (events.go): a lane re-passes only when the
+//     meta-change sequence advanced since its last pass started -- every
+//     engine-visible cause bumps it through the single dispatcher. A lane whose
+//     pass starts runs re-passes immediately (its own run records advanced the
+//     watermark), so root pipelines re-run back to back indefinitely by design --
+//     the perpetual for-loop -- while a lane whose pass started nothing (every
+//     gate closed) writes nothing, parks, and costs nothing until a cause lands.
+//     Nothing here waits on a clock: pass completions and watermark wakes are the
+//     only drivers.
 //   - Each pass reads the walk at pass start (a snapshot): a graph change mid-pass
 //     lands only at the next pass, and an in-flight run is never touched. A removed
 //     pipeline finishes its current run, then stops appearing.
@@ -112,6 +112,22 @@ type PoisonedMember struct {
 	Decision Decision
 }
 
+// QueuedStarter starts and awaits a pipeline's enqueued cause=manual runs at the
+// member's turn in a lane pass, oldest first, so a lane-member manual run executes
+// at its lane's run boundary (same-lane serialization) exactly as the manual path
+// promised when it enqueued (manual.go's RunQueue: "the lane runner starts it in
+// turn"). The gate was already applied and the consumed upstreams recorded at
+// enqueue time, so the pickup only executes; it never re-gates. A pipeline with
+// nothing enqueued is a no-op. An error means a queued run could not be carried
+// out (ctx cancelled, or a read/exec/record fault) and stops the lane's pass; a
+// queued run that executes and dead-letters is not an error. The daemon's lane
+// plane supplies the meta+exec-backed implementation; a nil QueuedStarter skips
+// pickup (the walk-only wiring tests).
+type QueuedStarter interface {
+	// StartQueued starts and awaits pipeline's queued cause=manual runs, oldest first.
+	StartQueued(ctx context.Context, pipeline string) error
+}
+
 // PostPass is the dispatcher-owned bookkeeping the loop runs opportunistically after
 // a lane pass completes, never mid-pass: failure propagation for the pass's poisoned
 // gates, replay processing, snapshot-pin and journal-ceiling stamping, count-based
@@ -182,8 +198,16 @@ type Loop struct {
 	walk   WalkReader
 	gate   PassGate
 	runner FreshRunner
+	queued QueuedStarter
 	post   PostPass
 	logger *slog.Logger
+
+	// events, when set, is the leader's meta-change watermark: a lane whose last
+	// pass started at the current sequence is parked (not re-spawned) until the
+	// sequence advances, and a wholly idle loop blocks on the wake channel instead
+	// of spinning. Nil events park nothing: every walk lane re-spawns at each pass
+	// boundary (the walk-only wiring tests use this).
+	events *Events
 
 	// onPass, when set, is invoked after each lane pass's post-pass bookkeeping
 	// completes: an observability hook the daemon and tests synchronize on. It never
@@ -204,6 +228,20 @@ func WithPostPass(post PostPass) LoopOption {
 // post-pass bookkeeping completes. A nil hook is ignored.
 func WithOnPass(hook func(PassReport)) LoopOption {
 	return func(l *Loop) { l.onPass = hook }
+}
+
+// WithEvents sets the leader's meta-change watermark the loop parks lanes on: a
+// lane re-passes only when the sequence advanced since its last pass started.
+// Absent it, every walk lane re-spawns at each pass boundary.
+func WithEvents(e *Events) LoopOption {
+	return func(l *Loop) { l.events = e }
+}
+
+// WithQueuedStarter sets the queued-manual pickup seam: at each member's turn the
+// pass starts that pipeline's enqueued cause=manual runs before evaluating the
+// gate. Absent it, no pickup runs (the walk-only wiring tests).
+func WithQueuedStarter(qs QueuedStarter) LoopOption {
+	return func(l *Loop) { l.queued = qs }
 }
 
 // NewLoop builds the perpetual lane loop over the walk read seam, the depends_on gate,
@@ -234,6 +272,15 @@ func (l *Loop) runLanePass(ctx context.Context, lane Lane) (PassReport, error) {
 	for _, pipeline := range lane.Pipelines {
 		if err := ctx.Err(); err != nil {
 			return report, err
+		}
+		// Queued-manual pickup first: an enqueued lane-member manual run executes at
+		// exactly this boundary (same-lane serial, "the lane runner starts it in
+		// turn"), before the gate is evaluated, so the gate then reads the manual
+		// run's outcome like any other latest run.
+		if l.queued != nil {
+			if err := l.queued.StartQueued(ctx, pipeline); err != nil {
+				return report, fmt.Errorf("dispatch: lane %q queued manual %q: %w", lane.Name, pipeline, err)
+			}
 		}
 		d, err := l.gate.Eligible(ctx, pipeline)
 		if err != nil {
@@ -297,22 +344,46 @@ type laneDone struct{ lane string }
 
 // Run drives the perpetual dispatch loop until ctx is cancelled: one goroutine per
 // lane, each running that lane's pass, distinct lanes in parallel with no engine cap.
-// It reads the walk at each reconcile point (a pass boundary), starts a pass
-// goroutine for every walk lane not already running, then blocks until one lane
-// finishes its pass and reconciles again -- so the walk is re-read at each pass
-// boundary, a new lane starts looping, and a removed lane is not re-spawned once its
-// current pass finishes (its in-flight run finishes first). A lane whose run hangs
-// holds its lane indefinitely (its goroutine never finishes, so it is never
-// re-spawned), while every other lane keeps dispatching -- a hung or failed run is
-// isolated, never globally fatal, and no engine timer frees it (clock doctrine).
+// It reads the walk at each reconcile point (a pass boundary or a watermark wake),
+// starts a pass goroutine for every eligible walk lane not already running, then
+// blocks until one lane finishes its pass, the watermark advances, or ctx is
+// cancelled -- so the walk is re-read at each boundary, a new lane starts looping,
+// and a removed lane is not re-spawned once its current pass finishes (its in-flight
+// run finishes first). A lane whose run hangs holds its lane indefinitely (its
+// goroutine never finishes, so it is never re-spawned), while every other lane keeps
+// dispatching -- a hung or failed run is isolated, never globally fatal, and no
+// engine timer frees it (clock doctrine).
 //
-// It is clockless: it blocks on lane-pass completions and ctx, never on a timer. On ctx
-// cancellation it returns promptly without joining in-flight lane goroutines -- those
-// observe ctx through their run seam and drain themselves -- so shutdown is not delayed
-// by a still-running (or hung) lane.
+// With an Events watermark wired, a lane is eligible only when the sequence advanced
+// since its last pass STARTED (or it has never passed this term). A pass that starts
+// runs advances the watermark through its own run records, so it re-passes
+// immediately: roots re-run back to back indefinitely, the perpetual for-loop. A
+// pass that starts nothing writes nothing, so its lane parks and costs nothing -- no
+// walk read, no gate query, no run -- until a cause lands. Every engine-visible
+// cause bumps the watermark through the single dispatcher, so a parked lane wakes
+// exactly when one lands. Without a watermark every walk lane is always eligible
+// (the walk-only wiring tests).
+//
+// It is clockless and purely event-driven: it blocks on lane-pass completions,
+// watermark wakes, and ctx -- never on a timer. On ctx cancellation it returns
+// promptly without joining in-flight lane goroutines -- those observe ctx through
+// their run seam and drain themselves -- so shutdown is not delayed by a
+// still-running (or hung) lane.
 func (l *Loop) Run(ctx context.Context) error {
 	running := map[string]bool{}
+	// lastSeq is each lane's watermark sequence at its last pass START (this term).
+	// Recording the sequence before the pass reads the walk means a bump landing
+	// mid-pass re-opens eligibility at the pass boundary: a change is never missed,
+	// at worst one extra (empty, cheap) pass runs.
+	lastSeq := map[string]uint64{}
 	done := make(chan laneDone)
+
+	// wake is the watermark's coalescing channel, nil (never ready) when no
+	// watermark is wired, so the selects below degrade to the legacy shape.
+	var wake <-chan struct{}
+	if l.events != nil {
+		wake = l.events.Wake()
+	}
 
 	for {
 		lanes, err := l.walk.Walk(ctx)
@@ -323,36 +394,58 @@ func (l *Loop) Run(ctx context.Context) error {
 			return fmt.Errorf("dispatch: read walk: %w", err)
 		}
 
-		// Start a pass goroutine for every walk lane not already running. A lane already
-		// running (its previous pass still in flight, e.g. a hung run) is left alone: it
-		// holds its own lane and is re-spawned only once its current pass finishes.
+		// Start a pass goroutine for every eligible walk lane not already running. A
+		// lane already running (its previous pass still in flight, e.g. a hung run) is
+		// left alone: it holds its own lane and is re-spawned only once its current
+		// pass finishes. A parked lane (watermark unchanged since its last pass
+		// started) is skipped without a gate query or a run.
+		walkNames := make(map[string]bool, len(lanes))
 		for _, lane := range lanes {
+			walkNames[lane.Name] = true
 			if running[lane.Name] {
 				continue
+			}
+			if l.events != nil {
+				if seq, passed := lastSeq[lane.Name]; passed && seq == l.events.Seq() {
+					continue // parked: no cause since this lane's last pass started
+				}
+				lastSeq[lane.Name] = l.events.Seq()
 			}
 			running[lane.Name] = true
 			l.spawnLanePass(ctx, lane, done)
 		}
+		// Forget the park state of lanes the walk no longer names, so a removed
+		// pipeline's entry does not accumulate and a re-added lane passes fresh.
+		for name := range lastSeq {
+			if !walkNames[name] && !running[name] {
+				delete(lastSeq, name)
+			}
+		}
 
-		// No lane to run: idle. Re-read the walk after a bounded wait so a graph applied
-		// to a cold (wholly idle) leader is picked up promptly -- while idle there is no
-		// in-flight pass whose completion could drive the re-read, so this wait is the
-		// only driver. Once any lane runs, each pass boundary re-reads the walk and picks
-		// up new lanes, and this idle path is not taken.
+		// No lane running: idle. Block until the watermark advances (a cause landed)
+		// or shutdown -- nothing else, no timer (clock doctrine: events initiate
+		// work, elapsed time never does). Every engine-visible change rides the
+		// single dispatcher and bumps the watermark, so a graph applied to a cold
+		// leader wakes this select the moment its writes land; there is no state
+		// change to notice between bumps. A composition with no Events wired idles
+		// until shutdown (the walk-only wiring tests never idle with work pending).
 		if len(running) == 0 {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(idleReadInterval):
+			case <-wake:
 			}
 			continue
 		}
 
 		// Block until one lane finishes a pass (reconcile: re-read the walk and re-spawn
-		// it) or ctx is cancelled (stop dispatching promptly).
+		// it), the watermark advances (a cause may unpark a lane other than the running
+		// ones -- reconcile without waiting for a possibly hung lane), or ctx is
+		// cancelled (stop dispatching promptly).
 		select {
 		case d := <-done:
 			delete(running, d.lane)
+		case <-wake:
 		case <-ctx.Done():
 			return ctx.Err()
 		}

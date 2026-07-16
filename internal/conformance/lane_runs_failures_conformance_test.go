@@ -297,10 +297,17 @@ if __name__ == "__main__": main()
 	t.Run("run-cancel-lane-proceeds", func(t *testing.T) {
 		bin, ws, cleanup := setupLane(t)
 		defer cleanup()
-		// reset_counters (middle of composer order) hangs, holding its lane; load waits
-		// behind it. extract runs+succeeds ahead of it.
+		// reset_counters (middle of composer order) hangs on its FIRST run only (a
+		// marker file in the pipeline folder), holding its lane; load waits behind
+		// it. extract runs+succeeds ahead of it. The marker matters because a
+		// cancelled (stopped) run never parks the pipeline -- the loop re-runs it
+		// on the next pass, and a script that hung every time would hold the lane
+		// again before load's turn whenever the first pass's walk snapshot raced
+		// the member applies (the event-driven loop starts passing the instant the
+		// first apply lands).
 		writeScript(t, ws, "extract_orders", noopScript)
-		writeScript(t, ws, "reset_counters", "import time\nwhile True:\n    time.sleep(0.2)\n")
+		writeScript(t, ws, "reset_counters",
+			"import os, time\nif not os.path.exists(\"hang.marker\"):\n    open(\"hang.marker\", \"w\").close()\n    while True:\n        time.sleep(0.2)\n")
 		writeScript(t, ws, "load_orders", noopScript)
 		applyIngest(t, bin, ws)
 
@@ -332,5 +339,37 @@ if __name__ == "__main__": main()
 		// well over the old 45s, so wait up to 120s for the condition rather than flaking on
 		// elapsed time.
 		waitState(t, meta, "load_orders", "succeeded", 120*time.Second)
+	})
+
+	t.Run("lane-member-manual-run-executes-in-turn", func(t *testing.T) {
+		bin, ws, cleanup := setupLane(t)
+		defer cleanup()
+		writeScript(t, ws, "extract_orders", noopScript)
+		writeScript(t, ws, "reset_counters", noopScript)
+		writeScript(t, ws, "load_orders", noopScript)
+		applyIngest(t, bin, ws)
+
+		meta := openMeta(t, ws)
+		waitState(t, meta, "extract_orders", "succeeded", 90*time.Second)
+
+		// A lane member's manual run is ENQUEUED (cause=manual, exit 0) for the lane
+		// runner to start at the member's turn -- and it must actually execute: a
+		// succeeded cause=manual run appears. Before the queued-manual pickup the
+		// enqueued run was never started (superseded or reconciled away), so this
+		// leg pins the contract end to end.
+		bin.Run(t, RunOptions{Args: []string{"pipeline", "run", "extract_orders"}, Dir: ws, Timeout: time.Minute}).RequireExit(t, 0)
+		dl := time.Now().Add(90 * time.Second)
+		var manualID int64
+		for time.Now().Before(dl) {
+			_ = meta.QueryRow(context.Background(),
+				"SELECT coalesce(max(id),0) FROM runs WHERE pipeline='extract_orders' AND cause='manual' AND state='succeeded'").Scan(&manualID)
+			if manualID != 0 {
+				break
+			}
+			time.Sleep(150 * time.Millisecond)
+		}
+		if manualID == 0 {
+			t.Fatalf("enqueued lane-member manual run never executed: no succeeded cause=manual run for extract_orders within 90s")
+		}
 	})
 }

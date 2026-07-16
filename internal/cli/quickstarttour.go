@@ -51,13 +51,32 @@ type tourInputFunc = func(prompt, def string) (string, error)
 // tourAbort (exit 0, resume hint); it never escapes runQuickstartTour.
 var errTourAborted = errors.New("quickstart: tour aborted")
 
-// The tour's pinned prompt copy.
-const (
-	// tourDefaultWorkspace is the workspace question's visible default anywhere
-	// the invoking directory is not already a workspace: never the invoking
-	// directory itself, which under `curl | sh` is arbitrary.
-	tourDefaultWorkspace = "~/iris"
-)
+// tourWorkspaceDirName is the workspace directory's name under the engine
+// home: the tour's default workspace is <engine home>/workspace, so a fresh
+// install touches exactly one directory tree (~/.iris) -- engine state and
+// pipeline sources together, relocated wholesale by IRIS_HOME.
+const tourWorkspaceDirName = "workspace"
+
+// tourDefaultWorkspace resolves the workspace question's default: the
+// workspace directory under the engine home (~/.iris/workspace), never the
+// invoking directory, which under `curl | sh` is arbitrary (and may itself
+// contain a pipelines/ tree -- the iris source checkout does -- without being
+// the operator's intended workspace). abs is the resolved path the empty
+// answer takes; display is the same path with the operator's home abbreviated
+// to `~` for the prompt.
+func tourDefaultWorkspace() (abs, display string, err error) {
+	home, err := config.Home(os.Getenv)
+	if err != nil {
+		return "", "", &fault{code: exitOpFailed, codeStr: "quickstart_workspace",
+			message: fmt.Sprintf("quickstart: resolve the default workspace: %v", err)}
+	}
+	abs = filepath.Join(home, tourWorkspaceDirName)
+	display = abs
+	if uh, uerr := os.UserHomeDir(); uerr == nil && uh != "" && strings.HasPrefix(abs, uh+string(filepath.Separator)) {
+		display = "~" + strings.TrimPrefix(abs, uh)
+	}
+	return abs, display, nil
+}
 
 // pickQuestion is THE PIPELINE act's opening question, doubling as its
 // consent: the shop pick over the n embedded catalog entries.
@@ -501,16 +520,16 @@ func (a *app) renderTourStep(p painter, step quickstartStep) {
 // openEngineWorkspace is THE ENGINE act's opener: the workspace question --
 // data placement only. The chosen directory holds the pipeline sources the
 // tour materializes and is the tree the daemon dispatches from; the engine's
-// socket, config, and state live at the fixed engine home (~/.iris), so every
-// shell finds the engine afterwards regardless of this answer. Interactive, it
-// reads one line with a visible default -- `~/iris`, or the invoking directory
-// when that is already a workspace (pipelines/ present) -- expands `~` to the
-// operator's home, creates the directory (mkdir -p) and enters it, so every
-// subsequent step operates on cwd exactly like any command. The empty answer
-// accepts the default AND consents to the act; `q`, EOF, and an interrupt
-// abort clean (errTourAborted). Under --yes it never prompts: the invoking
-// directory is the workspace, unchanged. A real filesystem fault is a
-// quickstart_workspace fault, exit 4.
+// socket, config, and state live beside it at the engine home (~/.iris), so
+// every shell finds the engine afterwards regardless of this answer.
+// Interactive, it reads one line whose visible default is the engine home's
+// workspace directory (`~/.iris/workspace`; never the invoking directory,
+// however workspace-like), expands `~` to the operator's home, creates the
+// directory (mkdir -p) and enters it, so every subsequent step operates on cwd
+// exactly like any command. The empty answer accepts the default AND consents
+// to the act; `q`, EOF, and an interrupt abort clean (errTourAborted). Under
+// --yes it never prompts: the invoking directory is the workspace, unchanged.
+// A real filesystem fault is a quickstart_workspace fault, exit 4.
 func (a *app) openEngineWorkspace(s *tourSession) error {
 	wd, err := os.Getwd()
 	if err != nil {
@@ -522,26 +541,26 @@ func (a *app) openEngineWorkspace(s *tourSession) error {
 		return nil
 	}
 
-	def := tourDefaultWorkspace
-	if isWorkspaceDir(wd) {
-		def = wd
+	defAbs, defDisplay, err := tourDefaultWorkspace()
+	if err != nil {
+		return err
 	}
-	line, perr := askTourLine(s.ctx, s.input, "Pipeline workspace ["+def+"]:", def)
+	line, perr := askTourLine(s.ctx, s.input, "Pipeline workspace ["+defDisplay+"]:", defDisplay)
 	if perr != nil || s.ctx.Err() != nil {
 		a.reportPromptFault(perr)
 		return errTourAborted
 	}
 	answer := strings.TrimSpace(line)
-	if answer == "" {
-		answer = def
-	}
 	if strings.EqualFold(answer, "q") {
 		return errTourAborted
 	}
 
-	dir, err := expandUserPath(answer)
-	if err != nil {
-		return err
+	dir := defAbs
+	if answer != "" {
+		dir, err = expandUserPath(answer)
+		if err != nil {
+			return err
+		}
 	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -588,15 +607,6 @@ func expandUserPath(path string) (string, error) {
 			message: fmt.Sprintf("quickstart: %s: ~user paths are not supported; use an absolute path or ~/<dir>", path)}
 	}
 	return path, nil
-}
-
-// isWorkspaceDir reports whether dir already looks like an iris workspace: a
-// pipelines/ source tree. (A .iris/ directory is no longer a workspace marker:
-// engine state lives at the fixed engine home, and a workspace-local .iris is
-// legacy state `iris engine start` refuses with migration guidance.)
-func isWorkspaceDir(dir string) bool {
-	st, err := os.Stat(filepath.Join(dir, "pipelines"))
-	return err == nil && st.IsDir()
 }
 
 // tourDisclaimerBody is the heads-up copy: honest about maturity, concrete
@@ -914,7 +924,6 @@ func tourStepArgv(cmd *cobra.Command, step quickstartStep) []string {
 func (a *app) runTourChild(ctx context.Context, args []string) int {
 	child := newAppWithLogger(a.out, a.errOut, a.logger)
 	child.forceLocalTarget = true
-	child.newKeyReader = a.newKeyReader
 	child.daemonTLSConfig = a.daemonTLSConfig
 	child.applyWarnings = a.applyWarnings
 	child.runUpdate = a.runUpdate
@@ -948,7 +957,7 @@ func (a *app) tourMaterializeEntry(e catalogEntry) error {
 }
 
 // waitEngineReady is the production waitForReady: a bounded, context-aware
-// poll of the daemon's /info readout until it reports leadership -- role
+// poll of the daemon's /healthz probe until it reports leadership -- role
 // leader, nothing less. `engine start -d` returns on socket-up while the
 // fresh engine is still winning its own election, and it passes
 // through unknown and a contending standby on the way; a mutation against
@@ -969,7 +978,7 @@ func (a *app) waitEngineReady(ctx context.Context, settings config.Settings) err
 	tick := time.NewTicker(every)
 	defer tick.Stop()
 	for {
-		if info, ok := a.fetchDaemonInfo(ctx, settings); ok && info.Role == "leader" {
+		if role, ok := a.fetchDaemonRole(ctx, settings); ok && role == "leader" {
 			return nil
 		}
 		select {
@@ -977,7 +986,7 @@ func (a *app) waitEngineReady(ctx context.Context, settings config.Settings) err
 			return ctx.Err()
 		case <-deadline.C:
 			return &fault{code: exitOpFailed, codeStr: "quickstart_engine_unready",
-				message: "quickstart: the engine is up but has not won leadership yet (its role is not leader); check `iris engine info` and resume any time: iris quickstart"}
+				message: "quickstart: the engine is up but has not won leadership yet (its role is not leader); check `iris ps` and resume any time: iris quickstart"}
 		case <-tick.C:
 		}
 	}
@@ -1030,7 +1039,8 @@ func (a *app) tourWrapUp(p painter, e catalogEntry) {
 	fmt.Fprintln(a.out, "That's the tour — the engine is still running and stays up after this terminal closes.")
 	fmt.Fprintln(a.out)
 	fmt.Fprintln(a.out, "What you used (the cheat-sheet):")
-	fmt.Fprintln(a.out, "  iris engine install | start -d | info | stop     the engine lifecycle")
+	fmt.Fprintln(a.out, "  iris engine install | start -d | stop            the engine lifecycle")
+	fmt.Fprintln(a.out, "  iris ps                                          the engine's runs and host load")
 	fmt.Fprintln(a.out, "  iris declare apply <path>                        register a declaration")
 	fmt.Fprintf(a.out, "  %-49strigger a manual run\n", "iris pipeline run "+e.ID)
 	fmt.Fprintf(a.out, "  %-49sask a row who wrote it\n", "iris data provenance "+e.Showcase.Table+" "+e.Showcase.PK)

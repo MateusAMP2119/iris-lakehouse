@@ -28,7 +28,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/config"
-	"github.com/MateusAMP2119/iris-lakehouse/internal/daemon"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/declare"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/update"
 )
@@ -62,11 +61,6 @@ type app struct {
 	errOut   io.Writer
 	logger   *slog.Logger
 	jsonMode bool
-	// newKeyReader builds the engine-key reader `iris engine info` reads the public
-	// half through. It is nil in production (the handler falls back to
-	// daemon.NewEngineKeyReader) and injected by tests to drive info with no live
-	// meta.
-	newKeyReader func(config.Settings) daemon.EngineKeyReader
 	// daemonTLSConfig overrides the TLS client config the daemon-reachability probe
 	// uses for an https:// host. It is nil in production (standard verification
 	// against the system trust store) and injected by tests to trust a self-signed
@@ -87,10 +81,11 @@ type app struct {
 	// prints them to stderr. Set per invocation, so the app holds no global state.
 	warnings []declare.Warning
 	// runUpdate performs the `iris update` self-replace, returning the
-	// outcome for the running version. It is nil in production (the handler falls
-	// back to update.New().Run); tests inject a fake to drive the exit-code and
-	// output surface without network or filesystem I/O.
-	runUpdate func(ctx context.Context, current string) (update.Result, error)
+	// outcome for the running version; snapshot selects the rolling development
+	// channel instead of the latest stable release. It is nil in production (the
+	// handler falls back to update.New().Run); tests inject a fake to drive the
+	// exit-code and output surface without network or filesystem I/O.
+	runUpdate func(ctx context.Context, current string, snapshot bool) (update.Result, error)
 	// confirm is the confirmation seam for the destructive ops' interactive prompts
 	// (typed-name for teardowns, y/N for dev-loop ops). When non-nil it is consulted
 	// when neither --yes nor --force was supplied. The name is the target of the
