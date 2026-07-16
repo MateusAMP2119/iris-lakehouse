@@ -328,6 +328,20 @@ type psView struct {
 // SIGTERM) and the poll error when the poller lost the daemon (a transport
 // failure) or the daemon refused the read (a *psHTTPError).
 func runPsLoop(ctx context.Context, v *psView, m *psModel) error {
+	// The poller starts with no log target; the first push below points it at
+	// the initial selection's run, and every later push follows a change from
+	// any message (a key moved the selection, a poll started or finished runs).
+	sentFocus := ""
+	syncFocus := func() {
+		if f := m.focus(); f != sentFocus {
+			select {
+			case v.focusCh <- f:
+				sentFocus = f
+			default:
+			}
+		}
+	}
+	syncFocus()
 	for {
 		w, h := v.size()
 		if _, err := v.out.Write(renderPsFrame(m, w, h, !v.p.enabled).render(v.p)); err != nil {
@@ -340,7 +354,6 @@ func runPsLoop(ctx context.Context, v *psView, m *psModel) error {
 			if !ok {
 				return nil
 			}
-			prevFocus := m.focus()
 			cancelID := m.update(k)
 			if m.quit {
 				return nil
@@ -352,18 +365,14 @@ func runPsLoop(ctx context.Context, v *psView, m *psModel) error {
 					m.note = "cancel already in flight"
 				}
 			}
-			if f := m.focus(); f != prevFocus {
-				select {
-				case v.focusCh <- f:
-				default:
-				}
-			}
+			syncFocus()
 		case pm := <-v.polls:
 			if pm.err != nil {
 				return pm.err
 			}
 			m.warn = pm.warn
 			m.absorb(pm.snap)
+			syncFocus()
 		case note := <-v.notes:
 			m.note = note
 		}

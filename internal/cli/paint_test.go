@@ -152,7 +152,7 @@ func TestLifecycleCeremonyPlainWhenPiped(t *testing.T) {
 			t.Fatalf("exit = %d, want %d\n%s", code, exitOK, errb.String())
 		}
 		assertNoEsc(t, out.String())
-		if !strings.Contains(out.String(), "Step 3/3") || !strings.Contains(out.String(), "Binary removed") {
+		if !strings.Contains(out.String(), "[3/3]") || !strings.Contains(out.String(), "Binary removed") {
 			t.Errorf("plain uninstall step lines changed: %q", out.String())
 		}
 		if strings.Contains(out.String(), "█") || strings.Contains(out.String(), "░") {

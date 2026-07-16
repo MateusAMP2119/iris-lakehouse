@@ -3,23 +3,38 @@ package cli
 import (
 	"fmt"
 	"strings"
+
+	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
 )
 
-// This file renders the `iris ps` live view: a cell-grid screen buffer the
+// This file renders the `iris ps` dashboard: a cell-grid screen buffer the
 // frame composer writes plain runes into, with per-cell SGR attributes applied
 // only at emission. Layout math never sees an escape code, so clipping, row
 // inversion, and the search overlay's splicing stay correct by construction --
 // no ANSI-aware string surgery anywhere. Each frame emits as one cursor-home
 // write with per-line clear-to-EOL (never a full-screen clear), so redraws are
 // flicker-free.
+//
+// The frame is four panes: the lanes rail on the left, and on the right a
+// pipelines/runs table, the selected pipeline's detail charts, and the log
+// tail, stacked. Narrow terminals shed panes: under psDetailMinWidth the
+// detail box goes, under psLogsMinWidth the logs pane, under psRailMinWidth
+// the rail; under psMinWidth the frame degrades to a single advisory line.
 
-// psMinWidth/psMinHeight bound the smallest terminal the view lays out in;
-// below them the frame degrades to a single advisory line (still restoring
-// cleanly on exit).
+// The dashboard's width tiers and floor.
 const (
-	psMinWidth  = 40
-	psMinHeight = 8
+	psMinWidth       = 40
+	psMinHeight      = 8
+	psRailMinWidth   = 70
+	psLogsMinWidth   = 90
+	psDetailMinWidth = 110
+	psDetailMinRows  = 24
 )
+
+// ansiOrange is the heat ramp's third tone. The basic 16-color palette has no
+// orange; 256-color index 208 is universal enough for a decorative tone, and
+// the colorless path never emits it.
+const ansiOrange = "\033[38;5;208m"
 
 // psCell is one screen cell: its rune and the SGR code painting it ("" plain).
 type psCell struct {
@@ -59,18 +74,15 @@ func (b *screenBuf) text(x, y int, sgr, s string) {
 	}
 }
 
-// hrule draws a horizontal rule across row y.
-func (b *screenBuf) hrule(y int, sgr string) {
-	b.text(0, y, sgr, strings.Repeat("─", b.w))
-}
-
-// invertRow paints row y in inverse video (the selected-row treatment).
-func (b *screenBuf) invertRow(y int) {
+// invertRange paints cells [x0, x1) of row y in inverse video.
+func (b *screenBuf) invertRange(y, x0, x1 int) {
 	if y < 0 || y >= b.h {
 		return
 	}
-	for x := range b.w {
-		b.cells[y*b.w+x].sgr = ansiInverse
+	for x := x0; x < x1 && x < b.w; x++ {
+		if x >= 0 {
+			b.cells[y*b.w+x].sgr = ansiInverse
+		}
 	}
 }
 
@@ -81,9 +93,9 @@ func (b *screenBuf) dimAll() {
 	}
 }
 
-// box clears a rectangle and draws a rounded border around it (the overlay
-// panes), with an optional title spliced into the top edge.
-func (b *screenBuf) box(x, y, w, h int, sgr, title string) {
+// box clears a rectangle and draws a rounded border around it, with an
+// optional title spliced into the top edge in its own SGR.
+func (b *screenBuf) box(x, y, w, h int, sgr, titleSGR, title string) {
 	if w < 2 || h < 2 {
 		return
 	}
@@ -103,7 +115,10 @@ func (b *screenBuf) box(x, y, w, h int, sgr, title string) {
 		b.text(x+w-1, yy, sgr, "│")
 	}
 	if title != "" {
-		b.text(x+2, y, sgr, " "+title+" ")
+		if room := w - 6; room > 0 && len([]rune(title)) > room {
+			title = string([]rune(title)[:room])
+		}
+		b.text(x+2, y, titleSGR, " "+title+" ")
 	}
 }
 
@@ -161,6 +176,19 @@ func (b *screenBuf) plainLines() []string {
 	return lines
 }
 
+// blit copies a sub-frame's cells into the frame at (x, y).
+func (b *screenBuf) blit(src *screenBuf, x, y int) {
+	for yy := range src.h {
+		for xx := range src.w {
+			tx, ty := x+xx, y+yy
+			if tx < 0 || tx >= b.w || ty < 0 || ty >= b.h {
+				continue
+			}
+			b.cells[ty*b.w+tx] = src.cells[yy*src.w+xx]
+		}
+	}
+}
+
 // psStateSGR maps a run state to its column color.
 func psStateSGR(state string) string {
 	switch state {
@@ -177,7 +205,7 @@ func psStateSGR(state string) string {
 	}
 }
 
-// psRoleSGR maps the engine role to its title-bar tint.
+// psRoleSGR maps the engine role to its badge tint.
 func psRoleSGR(role string) string {
 	switch role {
 	case "leader":
@@ -187,6 +215,60 @@ func psRoleSGR(role string) string {
 	default:
 		return ansiDim
 	}
+}
+
+// heatCell quantizes one CPU-percent sample into the 4-tone heat ramp.
+// psNoSample renders as an empty cell so absence never reads as idle-green.
+func heatCell(pct float64) (rune, string) {
+	switch {
+	case pct < 0:
+		return ' ', ""
+	case pct < 25:
+		return '░', ansiGreen
+	case pct < 50:
+		return '▒', ansiYellow
+	case pct < 75:
+		return '▓', ansiOrange
+	default:
+		return '█', ansiRed
+	}
+}
+
+// renderHeatStrip draws the newest w samples right-aligned at (x, y): one
+// cell per poll, newest right, older samples falling off the left edge.
+func (b *screenBuf) renderHeatStrip(x, y, w int, samples []float64) {
+	if w <= 0 {
+		return
+	}
+	if len(samples) > w {
+		samples = samples[len(samples)-w:]
+	}
+	sx := x + w - len(samples)
+	for i, s := range samples {
+		r, sgr := heatCell(s)
+		if r != ' ' {
+			b.text(sx+i, y, sgr, string(r))
+		}
+	}
+}
+
+// memStripSamples rescales a ring's memory history to percent-of-peak, so the
+// heat ramp reads relative pressure within the visible window.
+func memStripSamples(r *psRing) []float64 {
+	peak := r.memPeak()
+	out := make([]float64, len(r.mem))
+	for i, m := range r.mem {
+		if r.cpu[i] == psNoSample && m == 0 {
+			out[i] = psNoSample
+			continue
+		}
+		if peak == 0 {
+			out[i] = 0
+			continue
+		}
+		out[i] = float64(m) / float64(peak) * 100
+	}
+	return out
 }
 
 // psColumn is one table column: header, cell values, and the per-row SGR.
@@ -214,180 +296,10 @@ func psColStyled(header string, n int, cell func(int) (string, string)) psColumn
 	return c
 }
 
-// psFrameHeight compacts the frame to its content: border, engine chrome, the
-// current table plus a breathing row, and the advisory line. The run detail
-// (a live log tail) and the search overlay (a centered float) keep the whole
-// terminal.
-func psFrameHeight(m *psModel, termH int) int {
-	if m.screen == psScreenRun || m.search != nil {
-		return termH
-	}
-	var rows int
-	switch m.screen {
-	case psScreenLanes:
-		rows = len(deriveLanes(m.snap))
-	case psScreenPipelines:
-		rows = len(derivePipelines(m.snap, m.lane))
-	case psScreenRuns:
-		rows = len(deriveRuns(m.snap, m.pipeline, m.showAll))
-	}
-	advisory := 0
-	if m.note != "" || m.warn != "" {
-		advisory = 1
-	}
-	// border(2) + engine line + rule + blank + header + rows + blank + advisory
-	h := 2 + 3 + 1 + rows + 1 + advisory
-	if h > termH {
-		h = termH
-	}
-	return h
-}
-
-// renderPsFrame composes the whole frame for the current model state: the
-// outer border carrying the breadcrumb, role, key hints, and target in its
-// edges (the issue's visual contract), the pinned engine line with its rule on
-// the table screens, and the body table or run detail inside. Table screens
-// compact to their content height; the space below the frame stays blank.
-func renderPsFrame(m *psModel, w, h int, colorless bool) *screenBuf {
-	if w < psMinWidth || h < psMinHeight {
-		b := newScreenBuf(w, 1)
-		b.text(0, 0, "", "iris ps: terminal too small")
-		return b
-	}
-	h = psFrameHeight(m, h)
-	b := newScreenBuf(w, h)
-
-	// Body content renders into the inset region inside the border.
-	inner := newScreenBuf(w-4, h-2)
-	e := m.snap.ps.Engine
-	body := 0
-	if m.screen != psScreenRun {
-		// Engine status line pinned atop the table screens, rule below it,
-		// one breathing row before the table.
-		x := 0
-		put := func(sgr, s string) {
-			inner.text(x, 0, sgr, s)
-			x += len([]rune(s))
-		}
-		put(ansiDim, "ENGINE ")
-		put(ansiCyan, e.Version)
-		put("", fmt.Sprintf(" · pid %d · CPU %s · MEM %s · ", e.PID, cpuText(e.Load), memText(e.Load)))
-		put(ansiCyan, fmt.Sprintf("%d running", e.RunningRuns))
-		put("", " · ")
-		put(ansiYellow, fmt.Sprintf("%d queued", e.QueuedRuns))
-		inner.hrule(1, ansiDim)
-		body = 3
-	}
-	// One advisory line above the footer: a transient action note, or the
-	// standing soft-fetch warning while one is in force.
-	advisory := m.note
-	if advisory == "" {
-		advisory = m.warn
-	}
-	if advisory != "" {
-		inner.text(0, inner.h-1, ansiYellow, advisory)
-	}
-	bodyH := inner.h - body
-	if advisory != "" {
-		bodyH--
-	}
-	switch m.screen {
-	case psScreenLanes:
-		renderLanesTable(inner, m, body, bodyH, colorless)
-	case psScreenPipelines:
-		renderPipelinesTable(inner, m, body, bodyH, colorless)
-	case psScreenRuns:
-		renderRunsTable(inner, m, body, bodyH, colorless)
-	case psScreenRun:
-		renderRunDetail(inner, m, body, bodyH)
-	}
-	b.blit(inner, 2, 1)
-
-	// The border: breadcrumb and role in the top edge, key hints and target in
-	// the bottom edge -- the issue's title/footer contract.
-	b.borderRow(0, "┌", "┐", m.breadcrumb(), ansiCyan, e.Role+" · up "+e.Uptime, psRoleSGR(e.Role))
-	for y := 1; y < h-1; y++ {
-		b.text(0, y, ansiDim, "│")
-		b.text(w-1, y, ansiDim, "│")
-	}
-	b.borderRow(h-1, "└", "┘", psFooterHints(m), ansiDim, m.target, ansiDim)
-
-	if m.search != nil {
-		renderSearchOverlay(b, m)
-	}
-	return b
-}
-
-// blit copies a sub-frame's cells into the frame at (x, y).
-func (b *screenBuf) blit(src *screenBuf, x, y int) {
-	for yy := range src.h {
-		for xx := range src.w {
-			tx, ty := x+xx, y+yy
-			if tx < 0 || tx >= b.w || ty < 0 || ty >= b.h {
-				continue
-			}
-			b.cells[ty*b.w+tx] = src.cells[yy*src.w+xx]
-		}
-	}
-}
-
-// borderRow draws one horizontal border edge with a left and a right text
-// spliced into the rule (the frame's title and footer slots). The right text
-// wins the space when the two collide; an over-wide right text keeps its tail
-// (the end of a long socket path names the file).
-func (b *screenBuf) borderRow(y int, lead, tail, left, leftSGR, right, rightSGR string) {
-	b.text(0, y, ansiDim, lead+strings.Repeat("─", b.w-2)+tail)
-	rightRunes := []rune(right)
-	if maxRight := b.w - 8; len(rightRunes) > maxRight && maxRight > 0 {
-		rightRunes = rightRunes[len(rightRunes)-maxRight:]
-	}
-	rx := b.w - 3 - len(rightRunes)
-	leftMax := rx - 3
-	leftRunes := []rune(left)
-	if len(leftRunes) > leftMax-2 {
-		if leftMax <= 2 {
-			leftRunes = nil
-		} else {
-			leftRunes = leftRunes[:leftMax-2]
-		}
-	}
-	if len(leftRunes) > 0 {
-		b.text(2, y, leftSGR, " "+string(leftRunes)+" ")
-	}
-	if len(rightRunes) > 0 && rx > 2 {
-		b.text(rx, y, rightSGR, " "+string(rightRunes)+" ")
-	}
-}
-
-// psFooterHints names the keys live on the current screen.
-func psFooterHints(m *psModel) string {
-	if m.search != nil {
-		return "⏎ jump · esc close"
-	}
-	if m.confirmCancel {
-		return "cancel run " + m.runID + "? y/N"
-	}
-	switch m.screen {
-	case psScreenLanes:
-		return "q quit · ⏎ open lane · / search"
-	case psScreenPipelines:
-		return "← back · ⏎ open pipeline · / search"
-	case psScreenRuns:
-		if m.showAll {
-			return "← back · ⏎ open run · a live · / search"
-		}
-		return "← back · ⏎ open run · a all · / search"
-	default:
-		if m.follow {
-			return "← back · f follow off · c cancel"
-		}
-		return "← back · f follow · j/k scroll · c cancel"
-	}
-}
-
-// renderTable lays a uniform table into the body: header row, then one row
-// per entry, the selected row inverted (or marked with "> " when colorless).
-// Column widths fit the widest cell; the last column absorbs the remainder.
+// renderTable lays a uniform table into b: header row, then one row per
+// entry, the selected row inverted (or marked with "> " when colorless).
+// Column widths fit the widest cell; rows window over the height keeping the
+// selection visible.
 func renderTable(b *screenBuf, y, bodyH int, cols []psColumn, selRow int, colorless bool) {
 	if len(cols) == 0 || bodyH < 2 {
 		return
@@ -438,7 +350,7 @@ func renderTable(b *screenBuf, y, bodyH int, cols []psColumn, selRow int, colorl
 			if colorless {
 				b.text(0, ry, "", "> ")
 			} else {
-				b.invertRow(ry)
+				b.invertRange(ry, 0, b.w)
 			}
 		}
 	}
@@ -454,83 +366,437 @@ func selIndex(sel string, keys []string) int {
 	return 0
 }
 
-// renderLanesTable renders level 1: one row per lane.
-func renderLanesTable(b *screenBuf, m *psModel, y, bodyH int, colorless bool) {
-	lanes := deriveLanes(m.snap)
-	n := len(lanes)
-	names := psCol("LANE", n, func(i int) string { return lanes[i].name })
-	renderTable(b, y, bodyH, []psColumn{
-		names,
-		psCol("PIPELINES", n, func(i int) string { return fmt.Sprintf("%d", lanes[i].pipelines) }),
-		psCol("QUEUED", n, func(i int) string { return fmt.Sprintf("%d", lanes[i].queued) }),
-		psCol("RUNNING", n, func(i int) string { return fmt.Sprintf("%d", lanes[i].running) }),
-		psCol("CPU", n, func(i int) string { return cpuText(lanes[i].load) }),
-		psCol("MEM", n, func(i int) string { return memText(lanes[i].load) }),
-	}, selIndex(m.selLane, names.cells), colorless)
+// paneChrome picks a pane's border and title paint: cyan border when the pane
+// holds the focus, dim otherwise; a colorless focused pane marks its title.
+func paneChrome(focused, colorless bool, title string) (borderSGR, titleSGR, t string) {
+	if focused {
+		if colorless {
+			return ansiDim, "", title + " *"
+		}
+		return ansiCyan, ansiCyan, title
+	}
+	return ansiDim, ansiDim, title
 }
 
-// renderPipelinesTable renders level 2: one row per member pipeline.
-func renderPipelinesTable(b *screenBuf, m *psModel, y, bodyH int, colorless bool) {
-	rows := derivePipelines(m.snap, m.lane)
+// renderPsFrame composes the whole dashboard for the current model state.
+func renderPsFrame(m *psModel, w, h int, colorless bool) *screenBuf {
+	if w < psMinWidth || h < psMinHeight {
+		b := newScreenBuf(w, 1)
+		b.text(0, 0, "", "iris ps: terminal too small")
+		return b
+	}
+	b := newScreenBuf(w, h)
+	renderPsHeader(b, m)
+	renderPsFooter(b, m)
+
+	top := 1
+	paneH := h - 2 // rows between header and footer
+
+	railW := 0
+	if w >= psRailMinWidth {
+		railW = w / 4
+		if railW > 38 {
+			railW = 38
+		}
+		if railW < 26 {
+			railW = 26
+		}
+		renderRailPane(b, m, 0, top, railW, paneH, colorless)
+	}
+
+	x := railW
+	rw := w - x
+	showDetail := w >= psDetailMinWidth && h >= psDetailMinRows
+	showLogs := w >= psLogsMinWidth
+
+	detailH := 0
+	if showDetail {
+		detailH = 5
+	}
+	tableH := paneH
+	if showLogs {
+		rows := len(m.pipelineKeys())
+		if m.selPipeline != "" {
+			rows = len(m.runKeys())
+		}
+		tableH = rows + 5
+		if minLogs := 8; tableH > paneH-detailH-minLogs {
+			tableH = paneH - detailH - minLogs
+		}
+		if tableH < 6 {
+			tableH = 6
+		}
+	}
+	renderTablePane(b, m, x, top, rw, tableH, colorless)
+	if showDetail {
+		renderDetailPane(b, m, x, top+tableH, rw, detailH, colorless)
+	}
+	if showLogs {
+		renderLogsPane(b, m, x, top+tableH+detailH, rw, paneH-tableH-detailH, colorless)
+	}
+
+	if m.search != nil {
+		renderSearchOverlay(b, m)
+	}
+	return b
+}
+
+// renderPsHeader paints row 0: engine identity left, engine load right.
+func renderPsHeader(b *screenBuf, m *psModel) {
+	e := m.snap.ps.Engine
+	x := 1
+	put := func(sgr, s string) {
+		b.text(x, 0, sgr, s)
+		x += len([]rune(s))
+	}
+	put(ansiDim, "ENGINE ")
+	put(ansiCyan, e.Version)
+	put(ansiDim, " · ")
+	put(psRoleSGR(e.Role), strings.ToUpper(e.Role))
+	put("", fmt.Sprintf(" · pid %d · up %s", e.PID, e.Uptime))
+	idEnd := x
+
+	// The right side: CPU heat strip, MEM, run counts, sized to fit and shed
+	// leftmost-first when the terminal narrows.
+	cpu := " " + cpuText(e.Load)
+	mem := " · MEM " + memText(e.Load)
+	counts := fmt.Sprintf(" · %d running · %d queued", e.RunningRuns, e.QueuedRuns)
+	stripW := 30
+	fixed := len("CPU ") + len([]rune(cpu+mem+counts))
+	if avail := b.w - 1 - idEnd - 3; fixed+stripW > avail {
+		stripW = avail - fixed
+		if stripW < 8 {
+			stripW = 0
+		}
+		if fixed+stripW > avail {
+			return // identity row only; the panes still carry the numbers
+		}
+	}
+	x = b.w - 1 - (fixed + stripW)
+	put(ansiDim, "CPU ")
+	b.renderHeatStrip(x, 0, stripW, m.rings[""].cpuSamples())
+	x += stripW
+	put("", cpu)
+	put(ansiDim, mem)
+	rc, qc := ansiCyan, ansiYellow
+	if e.RunningRuns == 0 {
+		rc = ansiDim
+	}
+	if e.QueuedRuns == 0 {
+		qc = ansiDim
+	}
+	put(ansiDim, " · ")
+	put(rc, fmt.Sprintf("%d running", e.RunningRuns))
+	put(ansiDim, " · ")
+	put(qc, fmt.Sprintf("%d queued", e.QueuedRuns))
+}
+
+// cpuSamples is the ring's CPU history (nil-safe for a ring not yet grown).
+func (r *psRing) cpuSamples() []float64 {
+	if r == nil {
+		return nil
+	}
+	return r.cpu
+}
+
+// renderPsFooter paints the last row: the focused pane's key hints left, the
+// watched target right (kept whole; its tail names the socket file). A
+// transient action note or a standing soft-fetch warning takes the hints'
+// slot -- the footer is the one row every width tier keeps.
+func renderPsFooter(b *screenBuf, m *psModel) {
+	y := b.h - 1
+	hints, hintSGR := psFooterHints(m), ansiDim
+	advisory := m.note
+	if advisory == "" {
+		advisory = m.warn
+	}
+	if advisory != "" {
+		hints, hintSGR = advisory, ansiYellow
+	}
+	target := m.target
+	tx := b.w - 1 - len([]rune(target))
+	if tx < 1 {
+		tx = 1
+	}
+	if len([]rune(hints)) > tx-2 && tx > 3 {
+		hints = string([]rune(hints)[:tx-3])
+	}
+	b.text(1, y, hintSGR, hints)
+	b.text(tx, y, ansiDim, target)
+}
+
+// psFooterHints names the keys live for the current focus.
+func psFooterHints(m *psModel) string {
+	if m.search != nil {
+		return "⏎ jump · esc close"
+	}
+	if m.confirmCancel {
+		return "cancel run " + m.logsTarget() + "? y/N"
+	}
+	switch m.pane {
+	case psPaneLanes:
+		if m.selPipeline == "" {
+			return "tab panes · ↑↓ move · ⏎ unfold · / search · q quit"
+		}
+		return "tab panes · ↑↓ move · ⏎ open runs · ← lane · / search · q quit"
+	case psPaneTable:
+		if m.selPipeline == "" {
+			return "tab panes · ↑↓ move · ⏎ open runs · / search · q quit"
+		}
+		if m.showAll {
+			return "tab panes · ↑↓ move · ⏎ watch logs · a live · ← pipelines · q quit"
+		}
+		return "tab panes · ↑↓ move · ⏎ watch logs · a all · ← pipelines · q quit"
+	default:
+		if m.follow {
+			return "tab panes · f follow off · c cancel · q quit"
+		}
+		return "tab panes · f follow · j/k scroll · c cancel · q quit"
+	}
+}
+
+// railEntry is one display row of the lanes rail.
+type railEntry struct {
+	kind     int // 0 lane, 1 metrics, 2 pipeline, 3 blank
+	lane     psLaneRow
+	pipeline psPipelineRow
+}
+
+// renderRailPane paints the LANES rail: per lane a header row with its queue
+// badges, a dim metrics line (CPU, MEM, heat strip), and -- unfolded -- its
+// member pipelines with state dots.
+func renderRailPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
+	borderSGR, titleSGR, title := paneChrome(m.pane == psPaneLanes, colorless, "LANES")
+	b.box(x, y, w, h, borderSGR, titleSGR, title)
+
+	var entries []railEntry
+	cursor := 0
+	for _, l := range deriveLanes(m.snap) {
+		if len(entries) > 0 {
+			entries = append(entries, railEntry{kind: 3})
+		}
+		if l.name == m.selLane && m.selPipeline == "" {
+			cursor = len(entries)
+		}
+		entries = append(entries, railEntry{kind: 0, lane: l})
+		entries = append(entries, railEntry{kind: 1, lane: l})
+		if m.expanded[l.name] {
+			for _, p := range derivePipelines(m.snap, l.name) {
+				if l.name == m.selLane && p.name == m.selPipeline {
+					cursor = len(entries)
+				}
+				entries = append(entries, railEntry{kind: 2, lane: l, pipeline: p})
+			}
+		}
+	}
+
+	innerH := h - 2
+	top := 0
+	if cursor >= innerH {
+		top = cursor - innerH + 1
+	}
+	for i := top; i < len(entries) && i-top < innerH; i++ {
+		ry := y + 1 + (i - top)
+		e := entries[i]
+		switch e.kind {
+		case 0:
+			fold := "▸"
+			if m.expanded[e.lane.name] {
+				fold = "▾"
+			}
+			b.text(x+2, ry, "", fold+" "+e.lane.name)
+			badge := fmt.Sprintf("%dr·%dq", e.lane.running, e.lane.queued)
+			badgeSGR := ansiDim
+			if e.lane.running > 0 {
+				badgeSGR = ansiCyan
+			}
+			b.text(x+w-2-len([]rune(badge)), ry, badgeSGR, badge)
+		case 1:
+			cpu, mem := cpuText(e.lane.load), memText(e.lane.load)
+			b.text(x+4, ry, ansiDim, cpu+" "+mem)
+			sx := x + 4 + len([]rune(cpu)) + 1 + len([]rune(mem)) + 1
+			if r := m.rings["l:"+e.lane.name]; r != nil {
+				b.renderHeatStrip(sx, ry, x+w-2-sx, r.cpu)
+			}
+		case 2:
+			b.text(x+4, ry, psStateSGR(e.pipeline.latest), "●")
+			b.text(x+6, ry, "", e.pipeline.name)
+			badge, badgeSGR := "", ""
+			switch {
+			case e.pipeline.running > 0:
+				badge, badgeSGR = "run", ansiCyan
+			case e.pipeline.queued > 0:
+				badge, badgeSGR = fmt.Sprintf("%dq", e.pipeline.queued), ansiYellow
+			}
+			if badge != "" {
+				b.text(x+w-2-len([]rune(badge)), ry, badgeSGR, badge)
+			}
+		}
+		if i == cursor && (e.kind == 0 || e.kind == 2) {
+			if colorless {
+				b.text(x+1, ry, "", ">")
+			} else {
+				b.invertRange(ry, x+1, x+w-1)
+			}
+		}
+	}
+}
+
+// pipelinesColumns builds the pipelines table's columns. The timing columns
+// render dashes until the engine records run timestamps (issue #200), and a
+// narrow pane sheds them whole rather than clipping their headers.
+func pipelinesColumns(rows []psPipelineRow, wide bool) []psColumn {
 	n := len(rows)
-	names := psCol("PIPELINE", n, func(i int) string { return rows[i].name })
-	renderTable(b, y, bodyH, []psColumn{
-		names,
+	cols := []psColumn{
+		psCol("PIPELINE", n, func(i int) string { return rows[i].name }),
 		psColStyled("LATEST", n, func(i int) (string, string) { return rows[i].latest, psStateSGR(rows[i].latest) }),
-		psCol("QUEUED", n, func(i int) string { return fmt.Sprintf("%d", rows[i].queued) }),
-		psCol("RUNNING", n, func(i int) string { return fmt.Sprintf("%d", rows[i].running) }),
+		psCol("Q", n, func(i int) string { return fmt.Sprintf("%d", rows[i].queued) }),
+		psCol("R", n, func(i int) string { return fmt.Sprintf("%d", rows[i].running) }),
 		psCol("CPU", n, func(i int) string { return cpuText(rows[i].load) }),
 		psCol("MEM", n, func(i int) string { return memText(rows[i].load) }),
-	}, selIndex(m.selPipeline, names.cells), colorless)
+	}
+	if wide {
+		cols = append(cols,
+			psCol("ELAPSED", n, func(int) string { return "-" }),
+			psCol("LAST", n, func(int) string { return "-" }),
+			psCol("AVG", n, func(int) string { return "-" }),
+		)
+	}
+	return cols
 }
 
-// renderRunsTable renders level 3: the pipeline's runs, newest first.
-func renderRunsTable(b *screenBuf, m *psModel, y, bodyH int, colorless bool) {
-	runs := deriveRuns(m.snap, m.pipeline, m.showAll)
+// runsColumns builds the runs table's columns.
+func runsColumns(runs []api.PsRun) []psColumn {
 	n := len(runs)
-	ids := psCol("RUN", n, func(i int) string { return runs[i].ID })
-	renderTable(b, y, bodyH, []psColumn{
-		ids,
+	return []psColumn{
+		psCol("RUN", n, func(i int) string { return runs[i].ID }),
 		psColStyled("STATE", n, func(i int) (string, string) { return runs[i].State, psStateSGR(runs[i].State) }),
 		psCol("EXIT", n, func(i int) string { return exitCodeCell(runs[i].ExitCode) }),
 		psCol("CPU", n, func(i int) string { return cpuText(runs[i].Load) }),
 		psCol("MEM", n, func(i int) string { return memText(runs[i].Load) }),
-	}, selIndex(m.selRun, ids.cells), colorless)
+	}
 }
 
-// renderRunDetail renders level 4: the fact line, a rule, then the log tail
-// filling the body (following the tail, or scrolled back by m.scroll lines).
-func renderRunDetail(b *screenBuf, m *psModel, y, bodyH int) {
-	fact := "run " + m.runID + " · gone from the readout"
-	factSGR := ansiDim
-	if run, ok := findRun(m.snap, m.runID); ok {
-		fact = run.State
-		factSGR = psStateSGR(run.State)
-		if run.ExitCode != nil {
-			fact += " · exit " + exitCodeCell(run.ExitCode)
-		}
-		if run.State == "running" {
-			fact += " · CPU " + cpuText(run.Load) + " · MEM " + memText(run.Load)
+// renderTablePane paints the table pane: the selected lane's pipelines, or the
+// selected pipeline's runs.
+func renderTablePane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
+	var (
+		title string
+		cols  []psColumn
+		sel   int
+	)
+	if m.selPipeline != "" {
+		title = "RUNS · " + m.selLane + "/" + m.selPipeline
+		cols = runsColumns(deriveRuns(m.snap, m.selPipeline, m.showAll))
+		sel = selIndex(m.tblRun, m.runKeys())
+	} else {
+		title = "PIPELINES · " + m.selLane
+		cols = pipelinesColumns(derivePipelines(m.snap, m.selLane), w >= 90)
+		sel = selIndex(m.tblPipeline, m.pipelineKeys())
+	}
+	borderSGR, titleSGR, title := paneChrome(m.pane == psPaneTable, colorless, title)
+	b.box(x, y, w, h, borderSGR, titleSGR, title)
+	if h < 4 {
+		return
+	}
+	sub := newScreenBuf(w-4, h-3)
+	renderTable(sub, 0, sub.h, cols, sel, colorless)
+	b.blit(sub, x+2, y+2)
+}
+
+// renderDetailPane paints the selected pipeline's chart box: CPU and MEM heat
+// strips over the poll history, and the TIME row that waits on issue #200.
+func renderDetailPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
+	name := m.detailPipeline()
+	borderSGR, titleSGR, title := paneChrome(false, colorless, name)
+	if name == "" {
+		title = ""
+	}
+	b.box(x, y, w, h, borderSGR, titleSGR, title)
+	if name == "" {
+		b.text(x+3, y+2, ansiDim, "no pipeline selected")
+		return
+	}
+	ring := m.rings["p:"+name]
+	if ring == nil {
+		ring = &psRing{}
+	}
+
+	cpuNow, memNow := "-", "-"
+	for _, p := range derivePipelines(m.snap, m.selLane) {
+		if p.name == name {
+			cpuNow, memNow = cpuText(p.load), memText(p.load)
 		}
 	}
-	b.text(0, y, factSGR, fact)
-	b.hrule(y+1, ansiDim)
+	cpuVal := cpuNow + " now"
+	memVal := memNow + " now"
+	if peak := ring.memPeak(); peak > 0 {
+		memVal += " · " + memBytes(peak) + " peak"
+	}
 
-	paneY, paneH := y+2, bodyH-2
-	if paneH <= 0 {
+	valW := len([]rune(cpuVal))
+	if l := len([]rune(memVal)); l > valW {
+		valW = l
+	}
+	stripX := x + 8
+	stripW := x + w - 3 - valW - 2 - stripX
+	if stripW < 8 {
+		return
+	}
+	row := func(ry int, label string, samples []float64, val string) {
+		b.text(x+3, ry, ansiDim, label)
+		b.renderHeatStrip(stripX, ry, stripW, samples)
+		b.text(x+w-3-len([]rune(val)), ry, "", val)
+	}
+	row(y+1, "CPU", ring.cpu, cpuVal)
+	row(y+2, "MEM", memStripSamples(ring), memVal)
+	b.text(x+3, y+3, ansiDim, "TIME")
+	b.text(stripX, y+3, ansiDim, "run durations arrive with engine timestamps (#200)")
+}
+
+// renderLogsPane paints the log tail of the watched run.
+func renderLogsPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
+	target := m.logsTarget()
+	title := "LOGS"
+	if target != "" {
+		mode := "following"
+		if !m.follow {
+			mode = "paused"
+		}
+		state := ""
+		if run, ok := findRun(m.snap, target); ok {
+			state = " · " + run.State
+			title = "LOGS · " + run.Pipeline + "/" + target + state + " · " + mode
+		} else {
+			title = "LOGS · " + target + " · " + mode
+		}
+	}
+	borderSGR, titleSGR, title := paneChrome(m.pane == psPaneLogs, colorless, title)
+	b.box(x, y, w, h, borderSGR, titleSGR, title)
+
+	innerH := h - 2
+	if target == "" {
+		b.text(x+2, y+1, ansiDim, "no runs under this selection yet")
 		return
 	}
 	logs := m.snap.logs
+	if m.snap.logsRun != target {
+		logs = nil
+	}
 	end := len(logs) - m.scroll
 	if end < 0 {
 		end = 0
 	}
-	start := end - paneH
+	start := end - innerH
 	if start < 0 {
 		start = 0
 	}
 	for i, line := range logs[start:end] {
-		b.text(0, paneY+i, "", line)
+		b.text(x+2, y+1+i, "", line)
+	}
+	if len(logs) > 0 {
+		tail := fmt.Sprintf(" %d lines ", len(logs))
+		b.text(x+w-2-len([]rune(tail)), y+h-1, ansiDim, tail)
 	}
 }
 
@@ -548,8 +814,8 @@ func renderSearchOverlay(b *screenBuf, m *psModel) {
 	promptH := 3
 	resultsH := oh - promptH
 
-	b.box(ox, oy, leftW, resultsH, ansiDim, "results")
-	b.box(ox, oy+resultsH, leftW, promptH, ansiDim, "")
+	b.box(ox, oy, leftW, resultsH, ansiDim, ansiDim, "results")
+	b.box(ox, oy+resultsH, leftW, promptH, ansiDim, ansiDim, "")
 	b.text(ox+2, oy+resultsH+1, ansiCyan, "> ")
 	b.text(ox+4, oy+resultsH+1, "", string(s.query)+"▏")
 
@@ -572,9 +838,7 @@ func renderSearchOverlay(b *screenBuf, m *psModel) {
 		b.text(ox+4, ry, ansiDim, fmt.Sprintf("%-8s", h.kind.kindTag()))
 		b.text(ox+14, ry, "", h.label)
 		if i == s.sel {
-			for x := ox + 1; x < ox+leftW-1; x++ {
-				b.cells[ry*b.w+x].sgr = ansiInverse
-			}
+			b.invertRange(ry, ox+1, ox+leftW-1)
 		}
 	}
 
@@ -585,7 +849,7 @@ func renderSearchOverlay(b *screenBuf, m *psModel) {
 	if s.sel < len(s.hits) {
 		title = "preview · " + s.hits[s.sel].label
 	}
-	b.box(px, oy, pw, oh, ansiDim, title)
+	b.box(px, oy, pw, oh, ansiDim, ansiDim, title)
 	if s.sel < len(s.hits) {
 		renderSearchPreview(b, m, s.hits[s.sel], px+2, oy+1, pw-4, oh-2)
 	}
@@ -593,21 +857,16 @@ func renderSearchOverlay(b *screenBuf, m *psModel) {
 
 // renderSearchPreview fills the preview pane for one hit off the held
 // snapshot: a lane previews its pipeline table, a pipeline its run table, a
-// run its log tail (when it is the focused run) or its fact row.
+// run its log tail (when it is the watched run) or its fact row.
 func renderSearchPreview(b *screenBuf, m *psModel, h psHit, x, y, w, ph int) {
 	sub := newScreenBuf(w, ph)
 	switch h.kind {
 	case psHitLane:
-		pm := *m
-		pm.lane = h.lane
-		renderPipelinesTable(sub, &pm, 0, ph, false)
+		renderTable(sub, 0, ph, pipelinesColumns(derivePipelines(m.snap, h.lane), w >= 90), -1, false)
 	case psHitPipeline:
-		pm := *m
-		pm.pipeline = h.pipeline
-		pm.showAll = true
-		renderRunsTable(sub, &pm, 0, ph, false)
+		renderTable(sub, 0, ph, runsColumns(deriveRuns(m.snap, h.pipeline, true)), -1, false)
 	case psHitRun:
-		if h.runID == m.runID && len(m.snap.logs) > 0 {
+		if h.runID == m.snap.logsRun && len(m.snap.logs) > 0 {
 			logs := m.snap.logs
 			start := len(logs) - ph
 			if start < 0 {
@@ -626,13 +885,6 @@ func renderSearchPreview(b *screenBuf, m *psModel, h psHit, x, y, w, ph int) {
 			}
 			sub.text(0, 0, psStateSGR(run.State), "run "+run.ID+" · "+run.Pipeline)
 			sub.text(0, 1, "", fact)
-		}
-	}
-	// The preview never shows a selection of its own; strip the inversion,
-	// then splice through the one copy routine.
-	for i := range sub.cells {
-		if sub.cells[i].sgr == ansiInverse {
-			sub.cells[i].sgr = ""
 		}
 	}
 	b.blit(sub, x, y)

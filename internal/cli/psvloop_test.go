@@ -57,7 +57,7 @@ func TestRunPsLoop(t *testing.T) {
 			if err := runPsLoop(context.Background(), s.v, newPsModel(psvFixture(), "")); err != nil {
 				t.Fatalf("q exit = %v, want nil", err)
 			}
-			if !strings.Contains(s.out.String(), "iris ps") {
+			if !strings.Contains(s.out.String(), "ENGINE") {
 				t.Error("the loop never rendered a frame")
 			}
 		})
@@ -92,8 +92,7 @@ func TestRunPsLoop(t *testing.T) {
 			sb := &syncBuffer{}
 			s.v.out = sb
 			m := newPsModel(psvFixture(), "")
-			m.lane, m.pipeline = "ingest", "load_orders"
-			m.openRun("14")
+			m.pane = psPaneLogs // the target is the running run 14
 
 			done := make(chan error, 1)
 			go func() { done <- runPsLoop(context.Background(), s.v, m) }()
@@ -123,23 +122,26 @@ func TestRunPsLoop(t *testing.T) {
 			}
 		})
 
-		t.Run("descending into a run points the poller's focus", func(t *testing.T) {
+		t.Run("the loop points the poller at the selection's run and follows it", func(t *testing.T) {
 			s := newScriptedView()
 			m := newPsModel(psvFixture(), "")
-			s.keys <- psKey{kind: psKeyEnter} // ingest
-			s.keys <- psKey{kind: psKeyEnter} // extract runs
-			s.keys <- psKey{kind: psKeyEnter} // run 12
+			s.keys <- key('j') // extract row: its only run is 12
 			s.keys <- key('q')
 			if err := runPsLoop(context.Background(), s.v, m); err != nil {
 				t.Fatalf("loop exit = %v, want nil", err)
 			}
-			select {
-			case f := <-s.focusCh:
-				if f != "12" {
-					t.Errorf("focus = %q, want 12", f)
+			var got []string
+			for {
+				select {
+				case f := <-s.focusCh:
+					got = append(got, f)
+					continue
+				default:
 				}
-			default:
-				t.Error("the descent never pointed the poller at the run")
+				break
+			}
+			if len(got) != 2 || got[0] != "14" || got[1] != "12" {
+				t.Errorf("focus pushes = %v, want the initial 14 then the reselected 12", got)
 			}
 		})
 
