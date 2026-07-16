@@ -67,6 +67,12 @@ func quickstartPipelineSteps(e catalogEntry) []quickstartStep {
 			Argv:        []string{"iris", "data", "provenance", e.Showcase.Table, e.Showcase.PK},
 			Act:         tourActPipeline,
 		},
+		{
+			ID:          "stop",
+			Explanation: "Registered pipelines loop forever by design; park the demo so the engine idles until you want it (a manual run resumes it).",
+			Argv:        []string{"iris", "pipeline", "stop", e.ID},
+			Act:         tourActPipeline,
+		},
 	}
 }
 

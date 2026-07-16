@@ -1036,13 +1036,14 @@ func (a *app) tourStepFailed(step quickstartStep, k, total, code int, e catalogE
 // NO_COLOR or a pipe, like every ceremony).
 func (a *app) tourWrapUp(p painter, e catalogEntry) {
 	fmt.Fprintln(a.out)
-	fmt.Fprintln(a.out, "That's the tour — the engine is still running and stays up after this terminal closes.")
+	fmt.Fprintln(a.out, "That's the tour — the engine is still running and stays up after this terminal closes; the demo pipeline is parked until you run it again.")
 	fmt.Fprintln(a.out)
 	fmt.Fprintln(a.out, "What you used (the cheat-sheet):")
 	fmt.Fprintln(a.out, "  iris engine install | start -d | stop            the engine lifecycle")
 	fmt.Fprintln(a.out, "  iris ps                                          the engine's runs and host load")
 	fmt.Fprintln(a.out, "  iris declare apply <path>                        register a declaration")
-	fmt.Fprintf(a.out, "  %-49strigger a manual run\n", "iris pipeline run "+e.ID)
+	fmt.Fprintf(a.out, "  %-49strigger a manual run (also resumes a parked loop)\n", "iris pipeline run "+e.ID)
+	fmt.Fprintf(a.out, "  %-49spark the loop again\n", "iris pipeline stop "+e.ID)
 	fmt.Fprintf(a.out, "  %-49sask a row who wrote it\n", "iris data provenance "+e.Showcase.Table+" "+e.Showcase.PK)
 	fmt.Fprintln(a.out, "  iris run list                                    run history (--graph for rails)")
 	fmt.Fprintln(a.out, "  iris deadletter list                             the failure worklist")

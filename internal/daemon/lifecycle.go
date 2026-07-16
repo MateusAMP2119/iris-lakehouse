@@ -234,7 +234,7 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// running lane run's process group through the shared in-flight registry and
 	// dead-letters it as stopped through the single writer. The pass counter is the
 	// leader-held per-lane loop count, reset each leadership term.
-	lanes := newLanePlane(logger, inflight)
+	lanes := newLanePlane(logger, inflight, client.ManualReader())
 	passCounter := dispatch.NewPassCounter()
 
 	// The ps plane serves GET /ps (and `iris ps`) on any node: the run snapshot

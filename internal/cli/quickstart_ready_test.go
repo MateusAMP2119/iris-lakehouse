@@ -81,7 +81,7 @@ func TestQuickstartEngineActWaitsForRole(t *testing.T) {
 			if picks := pickEvents(*events); len(picks) != 1 {
 				t.Errorf("act picks = %q, want exactly the PIPELINE pick", picks)
 			}
-			if steps := stepEvents(*events); len(steps) == 0 || !strings.HasPrefix(steps[len(steps)-1], "data provenance") {
+			if steps := stepEvents(*events); len(steps) == 0 || !strings.HasPrefix(steps[len(steps)-1], "pipeline stop") {
 				t.Errorf("PIPELINE steps did not run to the finale: %q", steps)
 			}
 		})

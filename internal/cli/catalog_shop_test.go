@@ -109,7 +109,7 @@ func TestQuickstartCatalogBrowseRender(t *testing.T) {
 			if !strings.Contains(plain, strings.TrimSpace(strings.Split(def.Description, "\n")[0])) {
 				t.Errorf("picked entry's description missing:\n%s", plain)
 			}
-			if got := stepEvents(*events); len(got) != 6 || !strings.HasPrefix(got[3], "declare apply pipelines/"+def.ID) {
+			if got := stepEvents(*events); len(got) != 7 || !strings.HasPrefix(got[3], "declare apply pipelines/"+def.ID) {
 				t.Errorf("empty answer did not drive the default entry's steps: %q", got)
 			}
 		})
@@ -204,8 +204,8 @@ func TestQuickstartCatalogPickMaterializeRun(t *testing.T) {
 			}
 
 			steps := stepEvents(*events)
-			if len(steps) != 6 {
-				t.Fatalf("tour executed %d steps %q, want 6", len(steps), steps)
+			if len(steps) != 7 {
+				t.Fatalf("tour executed %d steps %q, want 7", len(steps), steps)
 			}
 			for i, prefix := range []string{
 				"declare apply pipelines/word_frequency",
@@ -279,7 +279,7 @@ func TestQuickstartCatalogPipelineFlag(t *testing.T) {
 			if !strings.Contains(plain, "Finale: iris data provenance demo.machine_facts hostname") {
 				t.Errorf("explicit pick's detail did not render:\n%s", plain)
 			}
-			if steps := stepEvents(*events); len(steps) != 6 || !strings.HasPrefix(steps[3], "declare apply pipelines/system_snapshot") {
+			if steps := stepEvents(*events); len(steps) != 7 || !strings.HasPrefix(steps[3], "declare apply pipelines/system_snapshot") {
 				t.Errorf("steps do not carry the explicit pick: %q", steps)
 			}
 			// The unpicked entries never paint their pitches: the browse was skipped.
@@ -302,7 +302,7 @@ func TestQuickstartCatalogPipelineFlag(t *testing.T) {
 			if picks := pickEvents(*events); len(picks) != 0 {
 				t.Errorf("--yes still asked the shop pick: %q", picks)
 			}
-			if steps := stepEvents(*events); len(steps) != 6 || !strings.HasPrefix(steps[5], "data provenance demo.word_counts hope") {
+			if steps := stepEvents(*events); len(steps) != 7 || !strings.HasPrefix(steps[5], "data provenance demo.word_counts hope") {
 				t.Errorf("--yes --pipeline steps = %q, want the word_frequency tour", steps)
 			}
 			if _, err := os.Stat(filepath.Join(dir, "pipelines", "word_frequency", "main.sh")); err != nil {
@@ -433,8 +433,12 @@ func TestQuickstartCatalogInGuides(t *testing.T) {
 			}
 			// The steps are the selected entry's.
 			last := env.Data.Steps[len(env.Data.Steps)-1]
-			if want := []string{"iris", "data", "provenance", "demo.machine_facts", "hostname"}; !equalStringSlices(last.Argv, want) {
-				t.Errorf("envelope finale argv = %v, want %v (the selected entry's showcase)", last.Argv, want)
+			if want := []string{"iris", "pipeline", "stop", "system_snapshot"}; !equalStringSlices(last.Argv, want) {
+				t.Errorf("envelope finale argv = %v, want %v (the park step, #202)", last.Argv, want)
+			}
+			showcase := env.Data.Steps[len(env.Data.Steps)-2]
+			if want := []string{"iris", "data", "provenance", "demo.machine_facts", "hostname"}; !equalStringSlices(showcase.Argv, want) {
+				t.Errorf("envelope showcase argv = %v, want %v (the selected entry's showcase)", showcase.Argv, want)
 			}
 			requireEmptyDir(t, scratch)
 		})
@@ -449,7 +453,7 @@ func TestQuickstartCatalogInGuides(t *testing.T) {
 			if code != exitOK {
 				t.Fatalf("exit = %d, want %d\nstderr: %s", code, exitOK, errb.String())
 			}
-			if steps := stepEvents(*events); len(steps) != 6 || !strings.HasPrefix(steps[3], "declare apply pipelines/hello_iris") {
+			if steps := stepEvents(*events); len(steps) != 7 || !strings.HasPrefix(steps[3], "declare apply pipelines/hello_iris") {
 				t.Errorf("--yes did not take the default entry: %q", steps)
 			}
 			if picks := pickEvents(*events); len(picks) != 0 {

@@ -408,10 +408,10 @@ func TestQuickstartAdaptiveSkipRunningEngine(t *testing.T) {
 		}
 
 		steps := stepEvents(*events)
-		if len(steps) != 4 {
-			t.Fatalf("tour executed %d steps %q, want the 4 past install/start", len(steps), steps)
+		if len(steps) != 5 {
+			t.Fatalf("tour executed %d steps %q, want the 5 past install/start", len(steps), steps)
 		}
-		wantPrefixes := []string{"ps", "declare apply pipelines/hello_iris", "pipeline run hello_iris", "data provenance demo.colors green"}
+		wantPrefixes := []string{"ps", "declare apply pipelines/hello_iris", "pipeline run hello_iris", "data provenance demo.colors green", "pipeline stop hello_iris"}
 		for i, prefix := range wantPrefixes {
 			if !strings.HasPrefix(steps[i], prefix) {
 				t.Errorf("step[%d] = %q, want prefix %q (tour proceeds from the info step)", i, steps[i], prefix)
