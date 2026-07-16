@@ -97,7 +97,7 @@ func quickstartActsFor(e catalogEntry) []tourAct {
 				},
 				{
 					ID:          "ps",
-					Explanation: "Read the engine readout: version, role, uptime, runs, and host load.",
+					Explanation: "Open the live engine view: role, uptime, runs, and host load, refreshed every second. Press q to continue the tour (piped, the same command prints JSON).",
 					Argv:        []string{"iris", "ps"},
 					Act:         tourActEngine,
 				},

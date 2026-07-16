@@ -159,6 +159,12 @@ type app struct {
 	// terminal read); tests inject it to script the answer without a real
 	// terminal.
 	connectSecret func(prompt string) (string, error)
+	// psLive runs the `iris ps` live view over the first fetched snapshot,
+	// reporting whether the view actually entered the terminal (false falls the
+	// command back to the JSON emit -- stdin refused raw mode). It is nil in
+	// production (the handler falls back to runPsLive, the real alternate-screen
+	// view); tests inject it to drive the output-mode gate without a terminal.
+	psLive func(cmd *cobra.Command, c *psDaemonClient, first psSnapshot, target string) (bool, error)
 	// forceLocalTarget pins resolveTarget to the local engine: a host
 	// resolved from the IRIS_HOST environment or an iris.toml is dropped, leaving
 	// the unix socket (the flag surface cannot contribute one on this path:

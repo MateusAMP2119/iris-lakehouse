@@ -1,0 +1,365 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
+	"github.com/MateusAMP2119/iris-lakehouse/internal/config"
+)
+
+// This file is the `iris ps` live view's runtime: the daemon client both
+// output modes share, the poller goroutine that refreshes the view every
+// second, and the single-writer event loop that owns the frame. The loop is
+// the only goroutine that renders; keys, polls, and cancel outcomes arrive as
+// messages. A failed poll never retries: the engine is gone, the view tears
+// down, and the command exits no-daemon (3) with start guidance.
+
+// psPollInterval is the live view's refresh cadence.
+const psPollInterval = time.Second
+
+// psMaxLogLines bounds the log tail held client-side for the run detail
+// screen; scrollback beyond it is `iris run logs`' job.
+const psMaxLogLines = 2000
+
+// errPsEngineGone signals the poller lost the daemon mid-view: the loop exits,
+// the terminal restores, and ps() maps it to the no-daemon fault.
+var errPsEngineGone = errors.New("engine no longer reachable")
+
+// psDaemonClient is the resolved daemon target both ps output modes drive: the
+// one-shot JSON emit, the live poller, and the run-detail actions.
+type psDaemonClient struct {
+	client  *http.Client
+	base    string
+	token   string
+	overTCP bool
+}
+
+// newPsDaemonClient builds the ps client for the resolved target.
+func (a *app) newPsDaemonClient(s config.Settings) *psDaemonClient {
+	client, base, overTCP := a.daemonHTTPClient(s)
+	return &psDaemonClient{client: client, base: base, token: s.Token, overTCP: overTCP}
+}
+
+// get issues one GET against the daemon, presenting the PAT over TCP.
+func (c *psDaemonClient) get(ctx context.Context, path string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.overTCP && c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	return c.client.Do(req)
+}
+
+// fetchPs reads the /ps readout. A transport failure returns the error
+// unwrapped for the caller to classify as no-daemon; a non-200 or a decode
+// failure is an error too -- the view treats every /ps failure as the engine
+// gone, never a retry spin.
+func (c *psDaemonClient) fetchPs(ctx context.Context, all bool) (api.PsPayload, error) {
+	path := "/ps"
+	if all {
+		path += "?" + url.Values{"all": {"true"}}.Encode()
+	}
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return api.PsPayload{}, err
+	}
+	defer drainClose(resp)
+	if resp.StatusCode != http.StatusOK {
+		return api.PsPayload{}, fmt.Errorf("daemon returned status %d from /ps", resp.StatusCode)
+	}
+	var env struct {
+		Data api.PsPayload `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return api.PsPayload{}, fmt.Errorf("decode /ps response: %w", err)
+	}
+	return env.Data, nil
+}
+
+// fetchPipelines reads the full pipeline listing (?all=1, idle pipelines
+// included) for the lane and pipeline screens' composition.
+func (c *psDaemonClient) fetchPipelines(ctx context.Context) ([]api.PipelineListItem, error) {
+	resp, err := c.get(ctx, "/pipeline/list?all=1")
+	if err != nil {
+		return nil, err
+	}
+	defer drainClose(resp)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("daemon returned status %d from /pipeline/list", resp.StatusCode)
+	}
+	var env struct {
+		Data api.PipelineListResult `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return nil, fmt.Errorf("decode /pipeline/list response: %w", err)
+	}
+	return env.Data.Pipelines, nil
+}
+
+// fetchRunLogs reads a run's captured output and keeps the tail. The route
+// streams the whole current log then EOF (no offset support), so following is
+// this re-read each tick, bounded client-side.
+func (c *psDaemonClient) fetchRunLogs(ctx context.Context, id string) ([]string, error) {
+	resp, err := c.get(ctx, "/runs/"+id+"/logs")
+	if err != nil {
+		return nil, err
+	}
+	defer drainClose(resp)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("daemon returned status %d from /runs/%s/logs", resp.StatusCode, id)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return nil, nil
+	}
+	if len(lines) > psMaxLogLines {
+		lines = lines[len(lines)-psMaxLogLines:]
+	}
+	return lines, nil
+}
+
+// cancelRun POSTs the run cancel and renders the outcome as the view's note
+// line: success, a not_leader rejection, or the daemon's error message. The
+// view keeps running whatever the outcome -- an in-view action never crashes
+// the view.
+func (c *psDaemonClient) cancelRun(ctx context.Context, id string) string {
+	body := fmt.Sprintf(`{"run":%q}`, id)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/run/cancel", strings.NewReader(body))
+	if err != nil {
+		return "cancel failed: " + err.Error()
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.overTCP && c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "cancel failed: " + err.Error()
+	}
+	defer drainClose(resp)
+	if resp.StatusCode == http.StatusOK {
+		var env struct {
+			Data runCancelResult `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+			return "cancelled " + id
+		}
+		return fmt.Sprintf("cancelled %s (%s)", env.Data.Run, env.Data.State)
+	}
+	var env struct {
+		Error errBody `json:"error"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&env)
+	if env.Error.Message != "" {
+		return "cancel failed: " + env.Error.Message
+	}
+	return fmt.Sprintf("cancel failed (daemon status %d)", resp.StatusCode)
+}
+
+// drainClose drains and closes a response body so the connection is reused.
+func drainClose(resp *http.Response) {
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+}
+
+// psPollMsg is one poll outcome: a fresh snapshot, or the error that ends the
+// view (the /ps read failed -- the engine is gone).
+type psPollMsg struct {
+	snap psSnapshot
+	err  error
+}
+
+// pollPs is the live view's poller goroutine: every tick it re-reads the /ps
+// history and the pipeline listing, plus the focused run's log tail, and ships
+// one snapshot. The /ps read failing ends the poller (and the view); the
+// listing and logs are soft -- their last good value rides along. Cancel
+// requests arrive on cancelCh and their outcomes return as notes.
+func pollPs(ctx context.Context, c *psDaemonClient, every time.Duration,
+	focusCh <-chan string, cancelCh <-chan string, polls chan psPollMsg, notes chan<- string) {
+	var (
+		focus     string
+		lastPipes []api.PipelineListItem
+		lastLogs  []string
+	)
+	poll := func() bool {
+		ps, err := c.fetchPs(ctx, true)
+		if err != nil {
+			if ctx.Err() != nil {
+				return false // the view is exiting; not an engine-gone verdict
+			}
+			sendPoll(polls, psPollMsg{err: err})
+			return false
+		}
+		if pipes, perr := c.fetchPipelines(ctx); perr == nil {
+			lastPipes = pipes
+		}
+		if focus != "" {
+			if logs, lerr := c.fetchRunLogs(ctx, focus); lerr == nil {
+				lastLogs = logs
+			}
+		}
+		sendPoll(polls, psPollMsg{snap: psSnapshot{ps: ps, pipelines: lastPipes, logs: lastLogs}})
+		return true
+	}
+
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case f := <-focusCh:
+			focus, lastLogs = f, nil
+			if focus != "" && !poll() { // fetch the tail now, not a tick later
+				return
+			}
+		case id := <-cancelCh:
+			select {
+			case notes <- c.cancelRun(ctx, id):
+			case <-ctx.Done():
+				return
+			}
+		case <-tick.C:
+			if !poll() {
+				return
+			}
+		}
+	}
+}
+
+// sendPoll ships a snapshot with drop-and-replace semantics on the buffered
+// channel (the poller holds it bidirectionally for exactly this): a slow
+// render never backs the poller up, and the loop always sees the freshest
+// snapshot.
+func sendPoll(polls chan psPollMsg, m psPollMsg) {
+	for {
+		select {
+		case polls <- m:
+			return
+		default:
+		}
+		select {
+		case <-polls:
+		default:
+		}
+	}
+}
+
+// psView bundles the event loop's seams: the frame writer, the message
+// channels, the geometry probe, and the painter. Production wires the real
+// terminal and poller; tests wire scripted channels, a buffer, and a fixed
+// size.
+type psView struct {
+	out      io.Writer
+	p        painter
+	size     func() (w, h int)
+	keys     <-chan psKey
+	polls    <-chan psPollMsg
+	notes    <-chan string
+	focusCh  chan<- string
+	cancelCh chan<- string
+}
+
+// runPsLoop is the live view's single writer: render the current state, then
+// absorb exactly one message. It returns nil on a clean exit (q, Ctrl-C,
+// SIGTERM) and errPsEngineGone when the poller lost the daemon.
+func runPsLoop(ctx context.Context, v *psView, m *psModel) error {
+	for {
+		w, h := v.size()
+		if _, err := v.out.Write(renderPsFrame(m, w, h, !v.p.enabled).render(v.p)); err != nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case k, ok := <-v.keys:
+			if !ok {
+				return nil
+			}
+			prevFocus := m.wantFocus
+			cancelID := m.update(k)
+			if m.quit {
+				return nil
+			}
+			if cancelID != "" {
+				select {
+				case v.cancelCh <- cancelID:
+				default:
+					m.note = "cancel already in flight"
+				}
+			}
+			if m.wantFocus != prevFocus {
+				select {
+				case v.focusCh <- m.wantFocus:
+				default:
+				}
+			}
+		case pm := <-v.polls:
+			if pm.err != nil {
+				return errPsEngineGone
+			}
+			m.absorb(pm.snap)
+		case note := <-v.notes:
+			m.note = note
+		}
+	}
+}
+
+// runPsLive is the production live view: raw mode and the alternate screen
+// around the poller and the event loop. The first snapshot was fetched before
+// this ran (a dead engine never enters the alternate screen); a raw-mode
+// refusal reports false so the caller falls back to the JSON emit.
+func (a *app) runPsLive(cmd *cobra.Command, c *psDaemonClient, first psSnapshot, target string) (bool, error) {
+	ts, ok := openPsTerm(a.out)
+	if !ok {
+		return false, nil
+	}
+	defer ts.leave()
+
+	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	keys := make(chan psKey, 8)
+	polls := make(chan psPollMsg, 1)
+	notes := make(chan string, 1)
+	focusCh := make(chan string, 4)
+	cancelCh := make(chan string, 4)
+	go readPsKeys(os.Stdin, keys)
+	go pollPs(ctx, c, psPollInterval, focusCh, cancelCh, polls, notes)
+
+	m := newPsModel(first, target)
+	v := &psView{
+		out: a.out, p: a.newPainter(false), size: ts.size,
+		keys: keys, polls: polls, notes: notes, focusCh: focusCh, cancelCh: cancelCh,
+	}
+	err := runPsLoop(ctx, v, m)
+	ts.leave() // explicit: restored before any fault renders on stderr
+	return true, err
+}
+
+// psTarget names the watched engine for the footer's right slot.
+func psTarget(s config.Settings, overTCP bool) string {
+	if overTCP {
+		return "remote " + strings.TrimPrefix(strings.TrimPrefix(s.Host, "https://"), "http://")
+	}
+	return "local " + s.Socket
+}

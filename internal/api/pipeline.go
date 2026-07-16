@@ -53,13 +53,16 @@ type PipelineRunResult struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-// PipelineListItem is one row of iris pipeline list: a registered pipeline and whether
-// it has a queued or running run.
+// PipelineListItem is one row of iris pipeline list: a registered pipeline, whether
+// it has a queued or running run, and the lane it is composed into.
 type PipelineListItem struct {
 	// Name is the registered pipeline's name.
 	Name string `json:"name"`
 	// Active reports whether the pipeline has a queued or running run.
 	Active bool `json:"active"`
+	// Lane is the lane the pipeline is composed into; absent when no composer row
+	// names it (the pipeline runs as its own lane).
+	Lane string `json:"lane,omitempty"`
 }
 
 // PipelineListResult is the payload of GET /pipeline/list: the listed pipelines.
