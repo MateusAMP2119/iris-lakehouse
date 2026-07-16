@@ -22,7 +22,7 @@ The engine — provision it and start it:
   2. Start the engine daemon in the background; it stays running after the tour.
      iris engine start -d
 
-  3. Read the engine readout: version, role, uptime, runs, and host load.
+  3. Open the live engine view: role, uptime, runs, and host load, refreshed every second. Press q to continue the tour (piped, the same command prints JSON).
      iris ps
 
 The pipeline — register, run, ask:

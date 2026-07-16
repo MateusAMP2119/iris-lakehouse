@@ -69,7 +69,7 @@ Then bootstrap the engine. Iris provisions and manages its own Postgres (or poin
 ```sh
 iris engine install       # provision managed Postgres + meta schema
 iris engine start -d      # start the daemon: leader election, lanes, read API
-iris ps                   # confirm it's alive: role, uptime, runs, host load
+iris ps                   # confirm it's alive: live view of role, uptime, runs, host load (q quits)
 ```
 
 Updating later is one command; it fetches the latest release, verifies its checksum, and swaps the binary in place:
@@ -149,7 +149,7 @@ Global flags everywhere: `--json` (machine output), `--socket`, `--host`, `--tok
 | `iris endpoint` | `apply`, `remove`, `list`, `show` | Declared read endpoints at `GET /q/{endpoint}` |
 | `iris pat` | `create`, `list`, `revoke` | Personal access tokens (scopes: `control`, `read`, `data`) |
 | `iris engine` | `start`, `stop`, `install`, `uninstall`, `logs`, `inspect`, `connect`, `service …` | Daemon and host lifecycle |
-| `iris ps` | *(root verb)* | Engine process status: runs plus host load, docker-ps style (`-a` all runs, `-q` ids only) |
+| `iris ps` | *(root verb)* | Engine process status: a live full-screen view on a terminal (lanes, pipelines, runs, log tails); the `GET /ps` JSON envelope when piped or under `--json` (`--all` widens the JSON runs to history) |
 | `iris quickstart` | *(root verb)* | Guided tour of the first session (`--yes` runs it unattended) |
 | `iris update` | *(root verb)* | Self-replace the installed binary with the latest release (`--snapshot` for the rolling build) |
 | `iris uninstall` | *(root verb)* | Remove the installed iris binary itself (prompts first; engine must be down) |

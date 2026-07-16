@@ -103,7 +103,7 @@ func (p *pipelinePlane) ListPipelines(ctx context.Context, all bool) (api.Pipeli
 	}
 	out := make([]api.PipelineListItem, len(items))
 	for i, it := range items {
-		out[i] = api.PipelineListItem{Name: it.Name, Active: it.Active}
+		out[i] = api.PipelineListItem{Name: it.Name, Active: it.Active, Lane: it.Lane}
 	}
 	return api.PipelineListResult{Pipelines: out}, nil
 }

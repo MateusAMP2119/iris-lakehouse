@@ -2,118 +2,140 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
+	"github.com/MateusAMP2119/iris-lakehouse/internal/config"
 )
 
-// This file is the CLI side of `iris ps [-a] [-q]`: the docker-ps-shaped
-// process-status readout. The CLI GETs the daemon's /ps route and prints
-// exactly the payload the route serves -- under --json, the same data envelope
-// any HTTP consumer reads, so the two surfaces are one payload by construction.
-// The readout works against any reachable engine, local socket or remote
-// --host/--token alike: it reads nothing from the local disk, so a machine
-// with no engine installed sees the same rows the engine's own operator does.
-// Transport failure is no-daemon (exit 3) with start guidance, any other
-// failure operation-failed (exit 4).
+// This file is the CLI side of `iris ps`: the process-status verb with exactly
+// two output modes, resolved from the terminal by one rule. Stdout an
+// interactive terminal and --json absent: a live full-screen view (top style,
+// re-polled every second; see psview.go). Everything else -- a pipe, a
+// redirect, a script, --json: the single data envelope GET /ps serves, printed
+// once, immediate exit. There is no plain-text table: the live view is the
+// human surface, the envelope is the machine surface, and the two stay one
+// payload by construction. The readout works against any reachable engine,
+// local socket or remote --host/--token alike. Transport failure is no-daemon
+// (exit 3) with start guidance, any other failure operation-failed (4).
 
-// psCmd builds `iris ps`: the top-level process-status verb. -a widens the run
-// rows from queued+running to the whole history; -q prints run ids only.
+// psCmd builds `iris ps`: the top-level process-status verb. --all widens the
+// JSON document's run rows to the whole history (the live view holds the
+// history already; its `a` key toggles).
 func (a *app) psCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "ps",
-		Short: "Show the engine's runs and its load on the host (CPU, memory)",
-		Args:  cobra.NoArgs,
-		RunE:  a.ps(),
+		Short: "Live view of the engine's runs and host load; JSON when piped or under --json",
+		Long: `Show what the engine is doing and what it costs the host.
+
+On an interactive terminal, iris ps opens a live full-screen view, refreshed
+every second: lanes, their pipelines, each pipeline's runs, and each run's
+live log tail. Keys: j/k or arrows move, enter descends, <- ascends, a toggles
+the run history, / searches everything, f toggles the log follow, c cancels a
+running run, q quits.
+
+Piped, redirected, or under --json, iris ps prints the exact GET /ps data
+envelope once and exits: the machine surface scripts and agents parse. --all
+applies to that document only, widening the run rows to the whole history.`,
+		Args: cobra.NoArgs,
+		RunE: a.ps(),
 	}
-	c.Flags().BoolP("all", "a", false, "show all runs, not only queued and running ones")
-	c.Flags().BoolP("quiet", "q", false, "print run ids only")
+	c.Flags().Bool("all", false, "JSON mode only: widen the run rows to the whole history")
 	return daemonTouching(c)
 }
 
-// ps is the handler for `iris ps`: it GETs the daemon's /ps readout and
-// renders it.
+// ps is the handler for `iris ps`: it resolves the output mode from the
+// terminal, fetches the /ps readout, and either prints the envelope once or
+// hands the first snapshot to the live view.
 func (a *app) ps() runE {
 	return func(cmd *cobra.Command, _ []string) error {
+		jsonMode, _ := cmd.Flags().GetBool("json")
 		all, _ := cmd.Flags().GetBool("all")
-		quiet, _ := cmd.Flags().GetBool("quiet")
+
+		tty := a.isTTY
+		if tty == nil {
+			tty = a.stdoutIsTerminal
+		}
+		stdinTTY := a.stdinIsTTY
+		if stdinTTY == nil {
+			stdinTTY = stdinIsTerminal
+		}
+		// The issue's rule keys on stdout, but a view without a key-capable
+		// stdin could never be quit; folding stdin in up front keeps the mode
+		// (and the one fetch) decided before anything is written.
+		live := tty() && stdinTTY() && !jsonMode
+
+		if live && cmd.Flags().Changed("all") {
+			return a.usage(`--all shapes the JSON document only; in the live view press "a", or pipe / pass --json for the envelope`)
+		}
 
 		settings := a.resolveTarget(cmd)
-		client, base, overTCP := a.daemonHTTPClient(settings)
+		client := a.newPsDaemonClient(settings)
 
-		reqURL := base + "/ps"
-		if all {
-			reqURL += "?" + url.Values{"all": {"true"}}.Encode()
-		}
-		hreq, err := http.NewRequestWithContext(cmd.Context(), http.MethodGet, reqURL, nil)
+		// One fetch either way: the JSON mode reads the route's default document
+		// (?all=true under --all); the live view starts from the history and
+		// filters client-side.
+		payload, err := client.fetchPs(cmd.Context(), all || live)
 		if err != nil {
-			return &fault{code: exitOpFailed, codeStr: "request", message: fmt.Sprintf("ps: build request: %v", err)}
-		}
-		if overTCP && settings.Token != "" {
-			hreq.Header.Set("Authorization", "Bearer "+settings.Token)
+			return a.psFetchFault(settings, err)
 		}
 
-		resp, err := client.Do(hreq)
-		if err != nil {
-			a.logger.Debug("no iris daemon reachable", "op", "ps", "socket", settings.Socket, "host", settings.Host, "err", err)
-			return a.noDaemonFault()
+		if live {
+			first := psSnapshot{ps: payload}
+			if pipes, perr := client.fetchPipelines(cmd.Context()); perr == nil {
+				first.pipelines = pipes
+			}
+			entered, lerr := a.livePs(cmd, client, first, psTarget(settings, client.overTCP))
+			if entered {
+				if lerr == nil {
+					return nil
+				}
+				// A reached daemon refusing the poll keeps its own message
+				// (exit 4); anything else is the engine gone mid-view (exit 3).
+				var herr *psHTTPError
+				if errors.As(lerr, &herr) {
+					return &fault{code: exitOpFailed, codeStr: herr.code, message: "ps: " + herr.Error()}
+				}
+				return &fault{
+					code:    exitNoDaemon,
+					codeStr: "no_daemon",
+					message: `ps: engine no longer reachable; start it with "iris engine start"`,
+				}
+			}
+			// Raw mode refused despite an interactive stdin (rare): fall back
+			// to the JSON emit -- never a hung or key-less view. Refetch the
+			// default document so the envelope matches the route's default.
+			if payload, err = client.fetchPs(cmd.Context(), false); err != nil {
+				return a.psFetchFault(settings, err)
+			}
 		}
-		defer func() {
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-		}()
 
-		if resp.StatusCode != http.StatusOK {
-			return a.controlFailure(resp, "ps")
-		}
-		var env struct {
-			Data api.PsPayload `json:"data"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
-			return &fault{code: exitOpFailed, codeStr: "decode", message: fmt.Sprintf("ps: decode daemon response: %v", err)}
-		}
-		return a.emitPs(cmd, env.Data, quiet)
+		return json.NewEncoder(a.out).Encode(dataEnvelope{Data: payload})
 	}
 }
 
-// emitPs renders the readout: under --json the single data envelope carrying
-// exactly the route's payload (the parity surface), under -q the run ids one
-// per line, otherwise the engine block and the run table on stdout.
-func (a *app) emitPs(cmd *cobra.Command, payload api.PsPayload, quiet bool) error {
-	if jsonMode, _ := cmd.Flags().GetBool("json"); jsonMode {
-		return json.NewEncoder(a.out).Encode(dataEnvelope{Data: payload})
+// psFetchFault classifies a one-shot /ps read failure: a reached daemon's
+// refusal keeps its own message (operation-failed), a transport failure is
+// no-daemon with start guidance.
+func (a *app) psFetchFault(settings config.Settings, err error) error {
+	var herr *psHTTPError
+	if errors.As(err, &herr) {
+		return &fault{code: exitOpFailed, codeStr: herr.code, message: "ps: " + herr.Error()}
 	}
-	if quiet {
-		for _, r := range payload.Runs {
-			if _, err := fmt.Fprintln(a.out, r.ID); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
+	a.logger.Debug("no iris daemon reachable", "op", "ps", "socket", settings.Socket, "host", settings.Host, "err", err)
+	return a.noDaemonFault()
+}
 
-	e := payload.Engine
-	role := e.Role
-	if e.Leader != "" {
-		role += " (leader " + e.Leader + ")"
+// livePs resolves the live-view seam: the injected fake in tests, the real
+// terminal view in production.
+func (a *app) livePs(cmd *cobra.Command, c *psDaemonClient, first psSnapshot, target string) (bool, error) {
+	if a.psLive != nil {
+		return a.psLive(cmd, c, first, target)
 	}
-	tw := tabwriter.NewWriter(a.out, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "ENGINE\tROLE\tUPTIME\tPID\tCPU\tMEM\tQUEUED\tRUNNING")
-	fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\t%d\t%d\n",
-		e.Version, role, e.Uptime, e.PID, cpuText(e.Load), memText(e.Load), e.QueuedRuns, e.RunningRuns)
-	fmt.Fprintln(tw)
-	fmt.Fprintln(tw, "RUN\tPIPELINE\tLANE\tSTATE\tEXIT\tCPU\tMEM")
-	for _, r := range payload.Runs {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			r.ID, r.Pipeline, orDash(r.Lane), r.State, exitCodeCell(r.ExitCode), cpuText(r.Load), memText(r.Load))
-	}
-	return tw.Flush()
+	return a.runPsLive(cmd, c, first, target)
 }
 
 // cpuText renders a sampled CPU load, or "-" when the host was not probed.
@@ -161,12 +183,4 @@ func exitCodeText(code *int) string {
 		return "none"
 	}
 	return fmt.Sprintf("%d", *code)
-}
-
-// orDash substitutes "-" for an empty table cell.
-func orDash(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
 }

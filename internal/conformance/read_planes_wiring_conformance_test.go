@@ -66,10 +66,11 @@ func TestEngineInspectServesDDL(t *testing.T) {
 
 // TestPsServesRuntimeReadout drives the real iris binary against a live daemon
 // and proves `iris ps` serves the process-status readout through the shipped
-// Run() codepath: an unwired ps plane 500s ("api: ps not available") and the
-// CLI exits operation-failed; the wired plane exits clean with the engine
-// block -- the leadership role, a rendered uptime, the daemon's pid -- and the
-// run rows (empty on a fresh engine, the whole history under -a).
+// Run() codepath: the wired plane exits clean with the engine block -- the
+// leadership role, a rendered uptime, the daemon's pid -- and the run rows
+// (empty on a fresh engine). The runner pipes stdout, so the bare invocation
+// resolves to the JSON mode (the live view opens only on an interactive
+// terminal) and both legs assert the same envelope shape.
 func TestPsServesRuntimeReadout(t *testing.T) {
 	t.Run("ps-serves-runtime-readout", func(t *testing.T) {
 		bin := Build(t)
@@ -95,9 +96,7 @@ func TestPsServesRuntimeReadout(t *testing.T) {
 			t.Fatal("daemon never became leader; cannot assert the ps engine block")
 		}
 
-		jres := bin.Run(t, RunOptions{Args: []string{"--json", "ps"}, Dir: ws, Timeout: time.Minute})
-		jres.RequireExit(t, 0)
-		var doc struct {
+		type psDoc struct {
 			Data struct {
 				Engine struct {
 					Role   string `json:"role"`
@@ -109,31 +108,30 @@ func TestPsServesRuntimeReadout(t *testing.T) {
 				} `json:"runs"`
 			} `json:"data"`
 		}
-		jres.DecodeJSON(t, &doc)
-		if doc.Data.Engine.Role != "leader" {
-			t.Errorf("ps --json engine.role = %q, want leader (the wired plane reports the live role)", doc.Data.Engine.Role)
-		}
-		if doc.Data.Engine.Uptime == "" {
-			t.Error("ps --json reports no uptime; the wired plane always renders one")
-		}
-		if doc.Data.Engine.PID == 0 {
-			t.Error("ps --json reports no pid; the wired plane reports the daemon's")
-		}
-		if doc.Data.Runs == nil {
-			t.Error("ps --json carries no runs array; the readout always carries one, possibly empty")
+		assertPsDoc := func(label string, res Result) {
+			t.Helper()
+			res.RequireExit(t, 0)
+			var doc psDoc
+			res.DecodeJSON(t, &doc)
+			if doc.Data.Engine.Role != "leader" {
+				t.Errorf("%s engine.role = %q, want leader (the wired plane reports the live role)", label, doc.Data.Engine.Role)
+			}
+			if doc.Data.Engine.Uptime == "" {
+				t.Errorf("%s reports no uptime; the wired plane always renders one", label)
+			}
+			if doc.Data.Engine.PID == 0 {
+				t.Errorf("%s reports no pid; the wired plane reports the daemon's", label)
+			}
+			if doc.Data.Runs == nil {
+				t.Errorf("%s carries no runs array; the readout always carries one, possibly empty", label)
+			}
 		}
 
-		// The human surface reports the same facts, and -q stays silent on a
-		// fresh engine (no queued or running run).
-		hres := bin.Run(t, RunOptions{Args: []string{"ps"}, Dir: ws, Timeout: time.Minute})
-		hres.RequireExit(t, 0)
-		if out := string(hres.Stdout); !strings.Contains(out, "leader") || !strings.Contains(out, "RUN") {
-			t.Errorf("human ps did not render the engine block and run table:\n%s", out)
-		}
-		qres := bin.Run(t, RunOptions{Args: []string{"ps", "-q"}, Dir: ws, Timeout: time.Minute})
-		qres.RequireExit(t, 0)
-		if out := strings.TrimSpace(string(qres.Stdout)); out != "" {
-			t.Errorf("ps -q on a fresh engine = %q, want no output", out)
-		}
+		assertPsDoc("ps --json", bin.Run(t, RunOptions{Args: []string{"--json", "ps"}, Dir: ws, Timeout: time.Minute}))
+
+		// The bare invocation through the piped runner is non-TTY, so it must
+		// resolve to the same JSON envelope and exit at once -- never the live
+		// view, never a table, never a hang waiting for a keypress.
+		assertPsDoc("piped bare ps", bin.Run(t, RunOptions{Args: []string{"ps"}, Dir: ws, Timeout: time.Minute}))
 	})
 }

@@ -12,14 +12,18 @@ import (
 // and --all views are two filters over that one result. It never rides the single
 // writer and is never busy-retried.
 
-// PipelineListing is one row of iris pipeline list: a registered pipeline's name and
+// PipelineListing is one row of iris pipeline list: a registered pipeline's name,
 // whether it currently has a queued or running run (the active predicate the default
-// view filters on).
+// view filters on), and the lane it is composed into.
 type PipelineListing struct {
 	// Name is the registered pipeline's name.
 	Name string
 	// Active reports whether the pipeline has a queued or running run.
 	Active bool
+	// Lane is the lane the pipeline is composed into; empty when no composer row
+	// names it (the pipeline runs as its own lane). lanes.pipeline is UNIQUE, so
+	// a pipeline carries at most one lane.
+	Lane string
 }
 
 // PipelineLister reads the pipeline-list surface: the default active view and the --all
@@ -35,12 +39,15 @@ type PipelineLister interface {
 }
 
 // selectPipelineListingSQL reads every registered pipeline with an EXISTS
-// predicate over runs for whether it has a queued or running run. It is one plain
-// SELECT: no locking clause, an MVCC snapshot, ordered by name (the pipelines
-// collection key).
+// predicate over runs for whether it has a queued or running run, and its
+// composer lane (empty when no lane row names it; lanes.pipeline is UNIQUE, so
+// the join never multiplies rows). It is one plain SELECT: no locking clause,
+// an MVCC snapshot, ordered by name (the pipelines collection key).
 const selectPipelineListingSQL = `SELECT p.name,
-    EXISTS (SELECT 1 FROM runs r WHERE r.pipeline = p.name AND r.state IN ('queued', 'running')) AS active
+    EXISTS (SELECT 1 FROM runs r WHERE r.pipeline = p.name AND r.state IN ('queued', 'running')) AS active,
+    COALESCE(l.lane, '') AS lane
 FROM pipelines p
+LEFT JOIN lanes l ON l.pipeline = p.name
 ORDER BY p.name`
 
 // pgxPipelineLister is the pgx-pool-backed PipelineLister: plain MVCC over the reader
@@ -89,7 +96,7 @@ func (l *pgxPipelineLister) list(ctx context.Context) ([]PipelineListing, error)
 	var out []PipelineListing
 	for rows.Next() {
 		var p PipelineListing
-		if err := rows.Scan(&p.Name, &p.Active); err != nil {
+		if err := rows.Scan(&p.Name, &p.Active, &p.Lane); err != nil {
 			return nil, fmt.Errorf("store: scan pipeline listing: %w", err)
 		}
 		out = append(out, p)
