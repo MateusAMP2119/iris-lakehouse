@@ -115,8 +115,8 @@ func (b *screenBuf) box(x, y, w, h int, sgr, titleSGR, title string) {
 		b.text(x+w-1, yy, sgr, "│")
 	}
 	if title != "" {
-		if max := w - 6; max > 0 && len([]rune(title)) > max {
-			title = string([]rune(title)[:max])
+		if room := w - 6; room > 0 && len([]rune(title)) > room {
+			title = string([]rune(title)[:room])
 		}
 		b.text(x+2, y, titleSGR, " "+title+" ")
 	}
