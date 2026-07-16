@@ -38,7 +38,7 @@ func psvFixture() psSnapshot {
 
 // TestPsDerivations proves the pure table derivations: lane rollup with
 // anonymous own-lanes, per-lane pipeline rows with idle members and latest
-// states, and the level-3 run filter.
+// states, and the runs filter.
 func TestPsDerivations(t *testing.T) {
 	t.Run("ps-derivations", func(t *testing.T) {
 		s := psvFixture()
@@ -107,52 +107,128 @@ func TestPsDerivations(t *testing.T) {
 // key is shorthand for a rune keypress.
 func key(r rune) psKey { return psKey{kind: psKeyRune, r: r} }
 
-// TestPsModelUpdate proves the navigation state machine: descent and ascent
-// across the four screens, selection stability across re-polls, the level-3
-// history toggle, the cancel confirm arm/disarm, and quit paths.
+// TestPsModelUpdate proves the dashboard state machine: the lanes tree, the
+// pane focus cycle, table drilling, the logs target, selection stability
+// across re-polls, the cancel confirm, and quit paths.
 func TestPsModelUpdate(t *testing.T) {
 	t.Run("ps-model-update", func(t *testing.T) {
-		t.Run("descend to a run and back, breadcrumb tracking", func(t *testing.T) {
+		t.Run("opens on the first lane, unfolded, logs on its running run", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "local /tmp/iris.sock")
-			if m.breadcrumb() != "iris ps" {
-				t.Fatalf("home breadcrumb = %q", m.breadcrumb())
+			if m.pane != psPaneLanes || m.selLane != "ingest" || m.selPipeline != "" {
+				t.Fatalf("initial cursor: pane %d lane %q pipeline %q", m.pane, m.selLane, m.selPipeline)
 			}
-			m.update(psKey{kind: psKeyEnter}) // ingest
-			if m.screen != psScreenPipelines || m.lane != "ingest" {
-				t.Fatalf("after enter: screen %d lane %q", m.screen, m.lane)
+			if !m.expanded["ingest"] {
+				t.Fatal("the initially selected lane must open unfolded")
 			}
-			m.update(key('j')) // extract -> hello_iris
+			if m.focus() != "14" {
+				t.Fatalf("initial logs target = %q, want the newest running run 14", m.focus())
+			}
+		})
+
+		t.Run("tree walk crosses pipeline rows and folds on enter", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			m.update(key('j')) // into ingest's members: extract first (sorted)
+			if m.selLane != "ingest" || m.selPipeline != "extract" {
+				t.Fatalf("after j: lane %q pipeline %q", m.selLane, m.selPipeline)
+			}
+			m.update(key('j'))
+			m.update(key('j'))
+			if m.selPipeline != "load_orders" {
+				t.Fatalf("after jjj: pipeline %q, want load_orders", m.selPipeline)
+			}
+			m.update(key('j')) // past the lane's members: the next lane row
+			if m.selLane != "reporting" || m.selPipeline != "" {
+				t.Fatalf("after jjjj: lane %q pipeline %q, want reporting lane row", m.selLane, m.selPipeline)
+			}
+			m.update(psKey{kind: psKeyLeft})
+			m.update(key('k')) // back onto ingest's last member
+			if m.selPipeline != "load_orders" {
+				t.Fatalf("k after collapse of reporting: pipeline %q", m.selPipeline)
+			}
+			m.update(psKey{kind: psKeyLeft}) // pipeline row climbs to its lane
+			if m.selLane != "ingest" || m.selPipeline != "" {
+				t.Fatalf("left on a pipeline row: lane %q pipeline %q", m.selLane, m.selPipeline)
+			}
+			m.update(psKey{kind: psKeyEnter}) // lane row folds
+			if m.expanded["ingest"] {
+				t.Fatal("enter on an unfolded lane must fold it")
+			}
+		})
+
+		t.Run("tab cycles panes", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			for _, want := range []psPane{psPaneTable, psPaneLogs, psPaneLanes} {
+				m.update(psKey{kind: psKeyTab})
+				if m.pane != want {
+					t.Fatalf("pane = %d, want %d", m.pane, want)
+				}
+			}
+		})
+
+		t.Run("table drills a pipeline, run enter pins the logs target", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			m.update(psKey{kind: psKeyTab}) // table pane, pipelines mode
+			m.update(key('j'))              // extract -> hello_iris
 			m.update(psKey{kind: psKeyEnter})
-			if m.screen != psScreenRuns || m.pipeline != "hello_iris" {
-				t.Fatalf("after second enter: screen %d pipeline %q", m.screen, m.pipeline)
+			if m.selPipeline != "hello_iris" {
+				t.Fatalf("drill: selPipeline %q, want hello_iris", m.selPipeline)
 			}
-			m.update(psKey{kind: psKeyLeft})
-			m.update(key('k')) // back to extract
-			m.update(psKey{kind: psKeyRight})
-			if m.pipeline != "extract" {
-				t.Fatalf("pipeline = %q, want extract", m.pipeline)
+			m.update(psKey{kind: psKeyLeft}) // back to the pipelines table
+			if m.selPipeline != "" {
+				t.Fatalf("left in a runs table must climb back: %q", m.selPipeline)
 			}
-			m.update(psKey{kind: psKeyEnter}) // run 12
-			if m.screen != psScreenRun || m.runID != "12" || m.focus() != "12" || !m.follow {
-				t.Fatalf("run screen: %+v", m)
+			m.tblPipeline = "load_orders"
+			m.update(psKey{kind: psKeyEnter})
+			m.update(key('a')) // whole history in
+			if !m.showAll {
+				t.Fatal("a did not widen the runs table")
 			}
-			if got := m.breadcrumb(); got != "iris ps · ingest · extract · run 12" {
-				t.Errorf("breadcrumb = %q", got)
+			m.update(key('j')) // 14 -> 9
+			m.update(psKey{kind: psKeyEnter})
+			if m.pinnedRun != "9" || m.focus() != "9" {
+				t.Fatalf("enter on a run row must pin it: pinned %q focus %q", m.pinnedRun, m.focus())
 			}
-			m.update(psKey{kind: psKeyLeft})
-			if m.screen != psScreenRuns || m.focus() != "" {
-				t.Errorf("ascend from run: screen %d focus %q, want runs screen and no focus", m.screen, m.focus())
+		})
+
+		t.Run("a is inert outside the runs table", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			m.update(key('a')) // lanes pane
+			if m.showAll {
+				t.Fatal("a toggled history from the lanes pane")
+			}
+			m.update(psKey{kind: psKeyTab}) // table pane, pipelines mode
+			m.update(key('a'))
+			if m.showAll {
+				t.Fatal("a toggled history in the pipelines table")
+			}
+		})
+
+		t.Run("logs target follows the selection and survives pin loss", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			m.update(key('j')) // extract row: no running run, newest is queued 12
+			if m.focus() != "12" {
+				t.Fatalf("extract target = %q, want its only run 12", m.focus())
+			}
+			m.pinnedRun = "9"
+			if m.focus() != "9" {
+				t.Fatalf("pinned target = %q, want 9", m.focus())
+			}
+			s := psvFixture() // run 9 pruned from the history
+			s.ps.Runs = append(s.ps.Runs[:2:2], s.ps.Runs[3:]...)
+			m.absorb(s)
+			if m.focus() != "12" {
+				t.Fatalf("target after pin loss = %q, want the selection's 12", m.focus())
 			}
 		})
 
 		t.Run("selection survives a re-poll reorder and clamps when gone", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
-			m.update(key('j')) // reporting
+			m.update(psKey{kind: psKeyEnter}) // fold ingest
+			m.update(key('j'))                // reporting
 			if m.selLane != "reporting" {
 				t.Fatalf("selLane = %q", m.selLane)
 			}
-			s := psvFixture() // same entities: selection sticks
-			m.absorb(s)
+			m.absorb(psvFixture()) // same entities: selection sticks
 			if m.selLane != "reporting" {
 				t.Errorf("selection lost across re-poll: %q", m.selLane)
 			}
@@ -164,27 +240,12 @@ func TestPsModelUpdate(t *testing.T) {
 			}
 		})
 
-		t.Run("a toggles history on the runs screen only", func(t *testing.T) {
+		t.Run("cancel confirm arms on a running target and disarms on anything but y", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
-			m.update(key('a'))
-			if m.showAll {
-				t.Fatal("a toggled history off the runs screen")
-			}
-			m.update(psKey{kind: psKeyEnter})
-			m.update(psKey{kind: psKeyEnter}) // extract runs
-			m.update(key('a'))
-			if !m.showAll {
-				t.Fatal("a did not toggle history on the runs screen")
-			}
-		})
-
-		t.Run("cancel confirm arms on a running run and disarms on anything but y", func(t *testing.T) {
-			m := newPsModel(psvFixture(), "")
-			m.lane, m.pipeline = "ingest", "load_orders"
-			m.openRun("14")
+			m.pane = psPaneLogs // target is running 14
 			m.update(key('c'))
 			if !m.confirmCancel {
-				t.Fatal("c on a running run did not arm the confirm")
+				t.Fatal("c on a running target did not arm the confirm")
 			}
 			if got := m.update(key('n')); got != "" || m.confirmCancel {
 				t.Fatalf("n must disarm without cancelling, got %q", got)
@@ -193,17 +254,17 @@ func TestPsModelUpdate(t *testing.T) {
 			if got := m.update(key('y')); got != "14" {
 				t.Fatalf("y must confirm the cancel, got %q", got)
 			}
-			m.openRun("9") // terminal run: c never arms
+			m.pinnedRun = "9" // terminal target: c never arms
 			m.update(key('c'))
 			if m.confirmCancel {
 				t.Fatal("c armed a cancel on a terminal run")
 			}
 		})
 
-		t.Run("follow toggles and scroll clamps on the run screen", func(t *testing.T) {
+		t.Run("follow toggles and scroll clamps in the logs pane", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
-			m.openRun("14")
-			m.snap.logs = []string{"a", "b", "c", "d"}
+			m.pane = psPaneLogs
+			m.snap.logs, m.snap.logsRun = []string{"a", "b", "c", "d"}, "14"
 			m.update(key('f'))
 			if m.follow {
 				t.Fatal("f did not stop following")
@@ -221,6 +282,24 @@ func TestPsModelUpdate(t *testing.T) {
 			m.update(key('f'))
 			if !m.follow || m.scroll != 0 {
 				t.Errorf("f must resume following at the tail: follow %v scroll %d", m.follow, m.scroll)
+			}
+		})
+
+		t.Run("rings grow one sample per absorb, absence marked", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			m.absorb(psvFixture())
+			eng := m.rings[""]
+			if len(eng.cpu) != 2 || eng.cpu[1] != 3.2 {
+				t.Fatalf("engine ring = %+v, want two samples ending 3.2", eng.cpu)
+			}
+			if ing := m.rings["l:ingest"]; len(ing.cpu) != 2 || ing.cpu[1] != 51 {
+				t.Fatalf("ingest ring = %+v, want the running run's 51", ing.cpu)
+			}
+			if rep := m.rings["l:reporting"]; rep.cpu[1] != psNoSample {
+				t.Fatalf("idle lane ring = %+v, want psNoSample", rep.cpu)
+			}
+			if lo := m.rings["p:load_orders"]; lo.mem[1] != 24<<20 || lo.memPeak() != 24<<20 {
+				t.Fatalf("pipeline ring mem = %+v", lo.mem)
 			}
 		})
 
@@ -289,22 +368,22 @@ func TestPsSearch(t *testing.T) {
 				t.Fatalf("best hit = %+v, want the load_orders pipeline", m.search.hits[0])
 			}
 			m.update(psKey{kind: psKeyEnter})
-			if m.search != nil || m.screen != psScreenRuns || m.pipeline != "load_orders" || m.lane != "ingest" {
-				t.Fatalf("enter on a pipeline hit must land on its runs: %+v", m)
+			if m.search != nil || m.pane != psPaneTable || m.selPipeline != "load_orders" || m.selLane != "ingest" {
+				t.Fatalf("enter on a pipeline hit must select it and focus the table: %+v", m)
 			}
 		})
 
-		t.Run("run hit jumps to the detail screen with focus", func(t *testing.T) {
+		t.Run("run hit pins the logs target", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
 			m.update(key('/'))
 			m.update(key('1'))
 			m.update(key('4'))
 			m.update(psKey{kind: psKeyEnter})
-			if m.screen != psScreenRun || m.runID != "14" || m.focus() != "14" {
-				t.Fatalf("run jump landed wrong: screen %d run %q focus %q", m.screen, m.runID, m.focus())
+			if m.pane != psPaneLogs || m.pinnedRun != "14" || m.focus() != "14" {
+				t.Fatalf("run jump landed wrong: pane %d pinned %q focus %q", m.pane, m.pinnedRun, m.focus())
 			}
-			if m.lane != "ingest" || m.pipeline != "load_orders" {
-				t.Errorf("run jump breadcrumb: lane %q pipeline %q", m.lane, m.pipeline)
+			if m.selLane != "ingest" || m.selPipeline != "load_orders" {
+				t.Errorf("run jump selection: lane %q pipeline %q", m.selLane, m.selPipeline)
 			}
 		})
 
@@ -316,7 +395,7 @@ func TestPsSearch(t *testing.T) {
 				t.Fatal("esc must close the overlay and nothing else")
 			}
 			m.update(psKey{kind: psKeyEsc}) // outside the overlay: inert
-			if m.quit || m.screen != psScreenLanes {
+			if m.quit || m.pane != psPaneLanes {
 				t.Fatal("esc outside the overlay must be inert")
 			}
 		})
@@ -329,7 +408,7 @@ func TestPsSearch(t *testing.T) {
 			if got := string(m.search.query); got != "jk" {
 				t.Fatalf("query = %q, want jk", got)
 			}
-			if m.selLane != m.laneKeys()[0] {
+			if m.selLane != "ingest" || m.selPipeline != "" {
 				t.Error("j/k moved the backdrop selection while the overlay was open")
 			}
 		})

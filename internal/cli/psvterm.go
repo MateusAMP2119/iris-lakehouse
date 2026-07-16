@@ -113,6 +113,7 @@ const (
 	psKeyEsc
 	psKeyBackspace
 	psKeyCtrlC
+	psKeyTab
 )
 
 // psKey is one decoded keypress: its kind, and the rune for psKeyRune.
@@ -155,6 +156,8 @@ func decodePsKeys(in <-chan byte, out chan<- psKey, escDelay time.Duration) {
 			out <- psKey{kind: psKeyCtrlC}
 		case b == '\r' || b == '\n':
 			out <- psKey{kind: psKeyEnter}
+		case b == '\t':
+			out <- psKey{kind: psKeyTab}
 		case b == 0x7f || b == 0x08:
 			out <- psKey{kind: psKeyBackspace}
 		case b == 0x1b:
