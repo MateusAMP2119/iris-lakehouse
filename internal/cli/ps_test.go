@@ -163,6 +163,7 @@ func TestPsOutputMode(t *testing.T) {
 		var out, errb bytes.Buffer
 		a := newApp(&out, &errb)
 		a.isTTY = func() bool { return true }
+		a.stdinIsTTY = func() bool { return true }
 		var called atomic.Int32
 		var gotFirst psSnapshot
 		var gotTarget string
@@ -197,6 +198,7 @@ func TestPsOutputMode(t *testing.T) {
 		var out, errb bytes.Buffer
 		a := newApp(&out, &errb)
 		a.isTTY = func() bool { return true }
+		a.stdinIsTTY = func() bool { return true }
 		a.psLive = func(*cobra.Command, *psDaemonClient, psSnapshot, string) (bool, error) {
 			t.Error("--json must never enter the live view")
 			return true, nil
@@ -218,6 +220,7 @@ func TestPsOutputMode(t *testing.T) {
 		var out, errb bytes.Buffer
 		a := newApp(&out, &errb)
 		a.isTTY = func() bool { return true }
+		a.stdinIsTTY = func() bool { return true }
 		a.psLive = func(*cobra.Command, *psDaemonClient, psSnapshot, string) (bool, error) {
 			return false, nil // stdin refused raw mode
 		}
@@ -266,6 +269,7 @@ func TestPsOutputMode(t *testing.T) {
 		var out, errb bytes.Buffer
 		a := newApp(&out, &errb)
 		a.isTTY = func() bool { return true }
+		a.stdinIsTTY = func() bool { return true }
 		a.psLive = func(*cobra.Command, *psDaemonClient, psSnapshot, string) (bool, error) { return true, nil }
 		if code := a.run([]string{"--socket", sock, "ps"}); code != exitOK {
 			t.Fatalf("live ps exit = %d, want %d\nstderr: %s", code, exitOK, errb.String())
@@ -279,6 +283,7 @@ func TestPsOutputMode(t *testing.T) {
 		var out, errb bytes.Buffer
 		a := newApp(&out, &errb)
 		a.isTTY = func() bool { return true }
+		a.stdinIsTTY = func() bool { return true }
 		code := a.run([]string{"ps", "--all"})
 		if code != exitUsage {
 			t.Fatalf("live ps --all exit = %d, want %d", code, exitUsage)
@@ -306,6 +311,7 @@ func TestPsOutputMode(t *testing.T) {
 		var out, errb bytes.Buffer
 		a := newApp(&out, &errb)
 		a.isTTY = func() bool { return true }
+		a.stdinIsTTY = func() bool { return true }
 		a.psLive = func(*cobra.Command, *psDaemonClient, psSnapshot, string) (bool, error) {
 			return true, errPsEngineGone // the poller lost the daemon mid-view
 		}
@@ -324,6 +330,49 @@ func TestPsOutputMode(t *testing.T) {
 		code := newApp(&out, &errb).run([]string{"--socket", sock, "ps"})
 		if code != exitNoDaemon {
 			t.Fatalf("no-daemon ps exit = %d, want %d\nstderr: %s", code, exitNoDaemon, errb.String())
+		}
+	})
+
+	t.Run("a reached daemon refusing the read exits 4 with its message", func(t *testing.T) {
+		sock := shortSocket(t)
+		startPsDaemon(t, sock, psFunc(func(context.Context, bool) (api.PsPayload, error) {
+			return api.PsPayload{}, api.ErrPsUnavailable // the route 500s "api: ps not available"
+		}))
+
+		var out, errb bytes.Buffer
+		code := newApp(&out, &errb).run([]string{"--socket", sock, "ps"})
+		if code != exitOpFailed {
+			t.Fatalf("refused ps exit = %d, want %d (never no-daemon: the daemon answered)\nstderr: %s", code, exitOpFailed, errb.String())
+		}
+		if s := errb.String(); !strings.Contains(s, "ps not available") || strings.Contains(s, "iris engine start") {
+			t.Errorf("refusal must carry the daemon's message, never start guidance: %s", s)
+		}
+	})
+
+	t.Run("a TTY stdout with a piped stdin resolves to JSON up front", func(t *testing.T) {
+		sock := shortSocket(t)
+		var fetches atomic.Int32
+		startPsDaemon(t, sock, psFunc(func(context.Context, bool) (api.PsPayload, error) {
+			fetches.Add(1)
+			return psFixture(), nil
+		}))
+
+		var out, errb bytes.Buffer
+		a := newApp(&out, &errb)
+		a.isTTY = func() bool { return true }
+		a.stdinIsTTY = func() bool { return false }
+		a.psLive = func(*cobra.Command, *psDaemonClient, psSnapshot, string) (bool, error) {
+			t.Error("a key-less stdin must never enter the live view")
+			return true, nil
+		}
+		if code := a.run([]string{"--socket", sock, "ps"}); code != exitOK {
+			t.Fatalf("piped-stdin ps exit = %d, want %d\nstderr: %s", code, exitOK, errb.String())
+		}
+		if !strings.Contains(out.String(), `"engine"`) {
+			t.Errorf("piped-stdin ps did not emit the envelope: %s", out.String())
+		}
+		if fetches.Load() != 1 {
+			t.Errorf("mode resolved late: %d /ps fetches, want exactly 1", fetches.Load())
 		}
 	})
 }

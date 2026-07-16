@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
+	"github.com/MateusAMP2119/iris-lakehouse/internal/config"
 )
 
 // This file is the CLI side of `iris ps`: the process-status verb with exactly
@@ -58,7 +59,14 @@ func (a *app) ps() runE {
 		if tty == nil {
 			tty = a.stdoutIsTerminal
 		}
-		live := tty() && !jsonMode
+		stdinTTY := a.stdinIsTTY
+		if stdinTTY == nil {
+			stdinTTY = stdinIsTerminal
+		}
+		// The issue's rule keys on stdout, but a view without a key-capable
+		// stdin could never be quit; folding stdin in up front keeps the mode
+		// (and the one fetch) decided before anything is written.
+		live := tty() && stdinTTY() && !jsonMode
 
 		if live && cmd.Flags().Changed("all") {
 			return a.usage(`--all shapes the JSON document only; in the live view press "a", or pipe / pass --json for the envelope`)
@@ -72,8 +80,7 @@ func (a *app) ps() runE {
 		// filters client-side.
 		payload, err := client.fetchPs(cmd.Context(), all || live)
 		if err != nil {
-			a.logger.Debug("no iris daemon reachable", "op", "ps", "socket", settings.Socket, "host", settings.Host, "err", err)
-			return a.noDaemonFault()
+			return a.psFetchFault(settings, err)
 		}
 
 		if live {
@@ -83,25 +90,43 @@ func (a *app) ps() runE {
 			}
 			entered, lerr := a.livePs(cmd, client, first, psTarget(settings, client.overTCP))
 			if entered {
-				if errors.Is(lerr, errPsEngineGone) {
-					return &fault{
-						code:    exitNoDaemon,
-						codeStr: "no_daemon",
-						message: `ps: engine no longer reachable; start it with "iris engine start"`,
-					}
+				if lerr == nil {
+					return nil
 				}
-				return lerr
+				// A reached daemon refusing the poll keeps its own message
+				// (exit 4); anything else is the engine gone mid-view (exit 3).
+				var herr *psHTTPError
+				if errors.As(lerr, &herr) {
+					return &fault{code: exitOpFailed, codeStr: herr.code, message: "ps: " + herr.Error()}
+				}
+				return &fault{
+					code:    exitNoDaemon,
+					codeStr: "no_daemon",
+					message: `ps: engine no longer reachable; start it with "iris engine start"`,
+				}
 			}
-			// Raw mode refused (stdin is no terminal): fall back to the JSON
-			// emit -- never a hung or key-less view. Refetch the default
-			// document so the fallback envelope matches the route's default.
+			// Raw mode refused despite an interactive stdin (rare): fall back
+			// to the JSON emit -- never a hung or key-less view. Refetch the
+			// default document so the envelope matches the route's default.
 			if payload, err = client.fetchPs(cmd.Context(), false); err != nil {
-				return a.noDaemonFault()
+				return a.psFetchFault(settings, err)
 			}
 		}
 
 		return json.NewEncoder(a.out).Encode(dataEnvelope{Data: payload})
 	}
+}
+
+// psFetchFault classifies a one-shot /ps read failure: a reached daemon's
+// refusal keeps its own message (operation-failed), a transport failure is
+// no-daemon with start guidance.
+func (a *app) psFetchFault(settings config.Settings, err error) error {
+	var herr *psHTTPError
+	if errors.As(err, &herr) {
+		return &fault{code: exitOpFailed, codeStr: herr.code, message: "ps: " + herr.Error()}
+	}
+	a.logger.Debug("no iris daemon reachable", "op", "ps", "socket", settings.Socket, "host", settings.Host, "err", err)
+	return a.noDaemonFault()
 }
 
 // livePs resolves the live-view seam: the injected fake in tests, the real
@@ -158,12 +183,4 @@ func exitCodeText(code *int) string {
 		return "none"
 	}
 	return fmt.Sprintf("%d", *code)
-}
-
-// orDash substitutes "-" for an empty table cell.
-func orDash(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
 }

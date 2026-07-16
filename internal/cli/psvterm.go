@@ -98,9 +98,11 @@ type psKeyKind int
 
 // The keypress kinds the live view routes on. A printable keypress is
 // psKeyRune with the rune verbatim (the search prompt consumes it; screens map
-// letters like q, j, k, a, f, c themselves).
+// letters like q, j, k, a, f, c themselves). psKeyNone is a decoded-and-
+// discarded sequence (an unbound CSI like PageUp) that must reach no screen.
 const (
-	psKeyRune psKeyKind = iota
+	psKeyNone psKeyKind = iota
+	psKeyRune
 	psKeyUp
 	psKeyDown
 	psKeyLeft
@@ -154,7 +156,9 @@ func decodePsKeys(in <-chan byte, out chan<- psKey, escDelay time.Duration) {
 		case b == 0x7f || b == 0x08:
 			out <- psKey{kind: psKeyBackspace}
 		case b == 0x1b:
-			out <- decodePsEscape(in, escDelay)
+			if k := decodePsEscape(in, escDelay); k.kind != psKeyNone {
+				out <- k
+			}
 		case b >= 0x20 && b < 0x7f:
 			out <- psKey{kind: psKeyRune, r: rune(b)}
 		case b >= utf8.RuneSelf:
@@ -167,15 +171,27 @@ func decodePsKeys(in <-chan byte, out chan<- psKey, escDelay time.Duration) {
 }
 
 // decodePsEscape classifies what follows an ESC byte: an arrow's CSI (or SS3)
-// sequence, or nothing within the delay -- the Escape key itself. Unknown
-// sequences decode as Escape too: on the search overlay (the only Esc
-// consumer) closing is the harmless reading.
+// sequence, nothing within the delay -- the Escape key itself -- or any other
+// complete sequence, consumed whole and discarded (psKeyNone), so a PageUp or
+// a modified arrow never leaks its parameter bytes into the search query or
+// spuriously closes the overlay.
 func decodePsEscape(in <-chan byte, escDelay time.Duration) psKey {
 	lead, ok := readPsByte(in, escDelay)
-	if !ok || (lead != '[' && lead != 'O') {
+	if !ok {
 		return psKey{kind: psKeyEsc}
 	}
+	if lead != '[' && lead != 'O' {
+		// ESC followed by an unrelated byte: the byte was a distinct keypress
+		// typed inside the window; treat the ESC as Escape and drop the byte
+		// (re-injecting it would reorder against later input).
+		return psKey{kind: psKeyEsc}
+	}
+	// Consume the whole sequence: parameter (0x30-0x3F) and intermediate
+	// (0x20-0x2F) bytes end at the final byte (0x40-0x7E), per ECMA-48.
 	final, ok := readPsByte(in, escDelay)
+	for ok && final < 0x40 {
+		final, ok = readPsByte(in, escDelay)
+	}
 	if !ok {
 		return psKey{kind: psKeyEsc}
 	}
@@ -189,7 +205,7 @@ func decodePsEscape(in <-chan byte, escDelay time.Duration) psKey {
 	case 'D':
 		return psKey{kind: psKeyLeft}
 	}
-	return psKey{kind: psKeyEsc}
+	return psKey{kind: psKeyNone}
 }
 
 // decodePsRune gathers the continuation bytes of a multi-byte UTF-8 keypress

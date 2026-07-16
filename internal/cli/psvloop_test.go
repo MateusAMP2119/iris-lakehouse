@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -61,11 +62,19 @@ func TestRunPsLoop(t *testing.T) {
 			}
 		})
 
-		t.Run("a failed poll exits errPsEngineGone", func(t *testing.T) {
+		t.Run("a failed poll exits with the poll error", func(t *testing.T) {
 			s := newScriptedView()
-			s.polls <- psPollMsg{err: context.DeadlineExceeded}
+			s.polls <- psPollMsg{err: errPsEngineGone}
 			if err := runPsLoop(context.Background(), s.v, newPsModel(psvFixture(), "")); err != errPsEngineGone {
-				t.Fatalf("poll-failure exit = %v, want errPsEngineGone", err)
+				t.Fatalf("poll-failure exit = %v, want the poll error back", err)
+			}
+			// A reached daemon's refusal surfaces as the typed error, so ps()
+			// can keep its exit-4 classification.
+			s = newScriptedView()
+			s.polls <- psPollMsg{err: &psHTTPError{status: 500, code: "internal", message: "meta down"}}
+			var herr *psHTTPError
+			if err := runPsLoop(context.Background(), s.v, newPsModel(psvFixture(), "")); !errors.As(err, &herr) {
+				t.Fatalf("http poll-failure exit = %v, want the *psHTTPError back", err)
 			}
 		})
 

@@ -38,6 +38,23 @@ const psMaxLogLines = 2000
 // the terminal restores, and ps() maps it to the no-daemon fault.
 var errPsEngineGone = errors.New("engine no longer reachable")
 
+// psHTTPError is a /ps read the daemon answered but refused: a non-200 status
+// or an undecodable body. It is a reached-daemon failure, so ps() maps it to
+// operation-failed (exit 4) carrying the daemon's own message -- never the
+// "start the engine" guidance a transport failure earns.
+type psHTTPError struct {
+	status  int
+	code    string
+	message string
+}
+
+func (e *psHTTPError) Error() string {
+	if e.message != "" {
+		return e.message
+	}
+	return fmt.Sprintf("daemon returned status %d from /ps", e.status)
+}
+
 // psDaemonClient is the resolved daemon target both ps output modes drive: the
 // one-shot JSON emit, the live poller, and the run-detail actions.
 type psDaemonClient struct {
@@ -65,10 +82,11 @@ func (c *psDaemonClient) get(ctx context.Context, path string) (*http.Response, 
 	return c.client.Do(req)
 }
 
-// fetchPs reads the /ps readout. A transport failure returns the error
-// unwrapped for the caller to classify as no-daemon; a non-200 or a decode
-// failure is an error too -- the view treats every /ps failure as the engine
-// gone, never a retry spin.
+// fetchPs reads the /ps readout. A transport failure returns the dial error
+// unwrapped (the caller classifies it no-daemon, exit 3); a reached daemon
+// answering non-200, or a body that does not decode, is a *psHTTPError
+// carrying the daemon's error message (operation-failed, exit 4). Never a
+// retry in either case.
 func (c *psDaemonClient) fetchPs(ctx context.Context, all bool) (api.PsPayload, error) {
 	path := "/ps"
 	if all {
@@ -80,13 +98,17 @@ func (c *psDaemonClient) fetchPs(ctx context.Context, all bool) (api.PsPayload, 
 	}
 	defer drainClose(resp)
 	if resp.StatusCode != http.StatusOK {
-		return api.PsPayload{}, fmt.Errorf("daemon returned status %d from /ps", resp.StatusCode)
+		var env struct {
+			Error errBody `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&env)
+		return api.PsPayload{}, &psHTTPError{status: resp.StatusCode, code: env.Error.Code, message: env.Error.Message}
 	}
 	var env struct {
 		Data api.PsPayload `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
-		return api.PsPayload{}, fmt.Errorf("decode /ps response: %w", err)
+		return api.PsPayload{}, &psHTTPError{status: resp.StatusCode, code: "decode", message: fmt.Sprintf("decode /ps response: %v", err)}
 	}
 	return env.Data, nil
 }
@@ -165,14 +187,23 @@ func (c *psDaemonClient) cancelRun(ctx context.Context, id string) string {
 		}
 		return fmt.Sprintf("cancelled %s (%s)", env.Data.Run, env.Data.State)
 	}
+	// The not_leader rejection carries a leader hint; keep the same retry
+	// guidance `iris run cancel` prints.
 	var env struct {
-		Error errBody `json:"error"`
+		Error struct {
+			Message string `json:"message"`
+			Leader  string `json:"leader"`
+		} `json:"error"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&env)
-	if env.Error.Message != "" {
-		return "cancel failed: " + env.Error.Message
+	msg := env.Error.Message
+	if msg == "" {
+		msg = fmt.Sprintf("daemon status %d", resp.StatusCode)
 	}
-	return fmt.Sprintf("cancel failed (daemon status %d)", resp.StatusCode)
+	if env.Error.Leader != "" {
+		msg += "; retry against the leader (" + env.Error.Leader + ")"
+	}
+	return "cancel failed: " + msg
 }
 
 // drainClose drains and closes a response body so the connection is reused.
@@ -181,10 +212,11 @@ func drainClose(resp *http.Response) {
 	_ = resp.Body.Close()
 }
 
-// psPollMsg is one poll outcome: a fresh snapshot, or the error that ends the
-// view (the /ps read failed -- the engine is gone).
+// psPollMsg is one poll outcome: a fresh snapshot (with a warning line when a
+// soft fetch failed), or the error that ends the view (the /ps read failed).
 type psPollMsg struct {
 	snap psSnapshot
+	warn string
 	err  error
 }
 
@@ -209,15 +241,27 @@ func pollPs(ctx context.Context, c *psDaemonClient, every time.Duration,
 			sendPoll(polls, psPollMsg{err: err})
 			return false
 		}
+		// The listing and the log tail are soft: their last good value rides
+		// along, but the failure is surfaced -- an empty lanes screen on a
+		// healthy engine must say why.
+		var warn string
 		if pipes, perr := c.fetchPipelines(ctx); perr == nil {
 			lastPipes = pipes
+		} else {
+			warn = "pipeline listing unavailable; lanes may be incomplete"
 		}
 		if focus != "" {
 			if logs, lerr := c.fetchRunLogs(ctx, focus); lerr == nil {
 				lastLogs = logs
+			} else if warn == "" {
+				warn = "run logs unavailable"
 			}
 		}
-		sendPoll(polls, psPollMsg{snap: psSnapshot{ps: ps, pipelines: lastPipes, logs: lastLogs}})
+		snap := psSnapshot{ps: ps, pipelines: lastPipes}
+		if focus != "" {
+			snap.logs, snap.logsRun = lastLogs, focus
+		}
+		sendPoll(polls, psPollMsg{snap: snap, warn: warn})
 		return true
 	}
 
@@ -281,7 +325,8 @@ type psView struct {
 
 // runPsLoop is the live view's single writer: render the current state, then
 // absorb exactly one message. It returns nil on a clean exit (q, Ctrl-C,
-// SIGTERM) and errPsEngineGone when the poller lost the daemon.
+// SIGTERM) and the poll error when the poller lost the daemon (a transport
+// failure) or the daemon refused the read (a *psHTTPError).
 func runPsLoop(ctx context.Context, v *psView, m *psModel) error {
 	for {
 		w, h := v.size()
@@ -295,7 +340,7 @@ func runPsLoop(ctx context.Context, v *psView, m *psModel) error {
 			if !ok {
 				return nil
 			}
-			prevFocus := m.wantFocus
+			prevFocus := m.focus()
 			cancelID := m.update(k)
 			if m.quit {
 				return nil
@@ -307,16 +352,17 @@ func runPsLoop(ctx context.Context, v *psView, m *psModel) error {
 					m.note = "cancel already in flight"
 				}
 			}
-			if m.wantFocus != prevFocus {
+			if f := m.focus(); f != prevFocus {
 				select {
-				case v.focusCh <- m.wantFocus:
+				case v.focusCh <- f:
 				default:
 				}
 			}
 		case pm := <-v.polls:
 			if pm.err != nil {
-				return errPsEngineGone
+				return pm.err
 			}
+			m.warn = pm.warn
 			m.absorb(pm.snap)
 		case note := <-v.notes:
 			m.note = note
@@ -353,6 +399,17 @@ func (a *app) runPsLive(cmd *cobra.Command, c *psDaemonClient, first psSnapshot,
 	}
 	err := runPsLoop(ctx, v, m)
 	ts.leave() // explicit: restored before any fault renders on stderr
+
+	// Unblock the stdin reader so it never outlives the view: an in-process
+	// caller (the quickstart tour) reads the same stdin next, and an orphaned
+	// Read would steal its keystrokes. Best-effort -- a stdin that supports no
+	// deadline keeps the old dies-with-the-process behavior.
+	if derr := os.Stdin.SetReadDeadline(time.Now()); derr == nil {
+		// Drain until the decoder closes behind the unblocked reader.
+		for range keys { //nolint:revive // the draining itself is the work
+		}
+		_ = os.Stdin.SetReadDeadline(time.Time{})
+	}
 	return true, err
 }
 

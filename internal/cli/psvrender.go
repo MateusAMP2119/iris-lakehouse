@@ -193,6 +193,24 @@ type psColumn struct {
 	sgr    []string // nil, or one SGR per cell
 }
 
+// psCol builds one plain column from a per-row accessor.
+func psCol(header string, n int, cell func(int) string) psColumn {
+	c := psColumn{header: header, cells: make([]string, n)}
+	for i := range n {
+		c.cells[i] = cell(i)
+	}
+	return c
+}
+
+// psColStyled builds one column whose cells carry a per-row SGR.
+func psColStyled(header string, n int, cell func(int) (string, string)) psColumn {
+	c := psColumn{header: header, cells: make([]string, n), sgr: make([]string, n)}
+	for i := range n {
+		c.cells[i], c.sgr[i] = cell(i)
+	}
+	return c
+}
+
 // renderPsFrame composes the whole frame for the current model state: the
 // outer border carrying the breadcrumb, role, key hints, and target in its
 // edges (the issue's visual contract), the pinned engine line with its rule on
@@ -215,11 +233,17 @@ func renderPsFrame(m *psModel, w, h int, colorless bool) *screenBuf {
 		inner.hrule(1, ansiDim)
 		body = 2
 	}
-	if m.note != "" {
-		inner.text(0, inner.h-1, ansiYellow, m.note)
+	// One advisory line above the footer: a transient action note, or the
+	// standing soft-fetch warning while one is in force.
+	advisory := m.note
+	if advisory == "" {
+		advisory = m.warn
+	}
+	if advisory != "" {
+		inner.text(0, inner.h-1, ansiYellow, advisory)
 	}
 	bodyH := inner.h - body
-	if m.note != "" {
+	if advisory != "" {
 		bodyH--
 	}
 	switch m.screen {
@@ -264,21 +288,29 @@ func (b *screenBuf) blit(src *screenBuf, x, y int) {
 
 // borderRow draws one horizontal border edge with a left and a right text
 // spliced into the rule (the frame's title and footer slots). The right text
-// wins the space when the two collide.
+// wins the space when the two collide; an over-wide right text keeps its tail
+// (the end of a long socket path names the file).
 func (b *screenBuf) borderRow(y int, lead, tail, left, leftSGR, right, rightSGR string) {
 	b.text(0, y, ansiDim, lead+strings.Repeat("─", b.w-2)+tail)
-	rightRunes := len([]rune(right))
-	rx := b.w - 3 - rightRunes
+	rightRunes := []rune(right)
+	if maxRight := b.w - 8; len(rightRunes) > maxRight && maxRight > 0 {
+		rightRunes = rightRunes[len(rightRunes)-maxRight:]
+	}
+	rx := b.w - 3 - len(rightRunes)
 	leftMax := rx - 3
 	leftRunes := []rune(left)
-	if len(leftRunes) > leftMax-2 && leftMax > 2 {
-		leftRunes = leftRunes[:leftMax-2]
+	if len(leftRunes) > leftMax-2 {
+		if leftMax <= 2 {
+			leftRunes = nil
+		} else {
+			leftRunes = leftRunes[:leftMax-2]
+		}
 	}
 	if len(leftRunes) > 0 {
 		b.text(2, y, leftSGR, " "+string(leftRunes)+" ")
 	}
-	if rightRunes > 0 && rx > 2 {
-		b.text(rx, y, rightSGR, " "+right+" ")
+	if len(rightRunes) > 0 && rx > 2 {
+		b.text(rx, y, rightSGR, " "+string(rightRunes)+" ")
 	}
 }
 
@@ -378,71 +410,44 @@ func selIndex(sel string, keys []string) int {
 func renderLanesTable(b *screenBuf, m *psModel, y, bodyH int, colorless bool) {
 	lanes := deriveLanes(m.snap)
 	n := len(lanes)
-	names, pipes, queued, running, cpu, mem := make([]string, n), make([]string, n), make([]string, n), make([]string, n), make([]string, n), make([]string, n)
-	for i, l := range lanes {
-		names[i] = l.name
-		pipes[i] = fmt.Sprintf("%d", l.pipelines)
-		queued[i] = fmt.Sprintf("%d", l.queued)
-		running[i] = fmt.Sprintf("%d", l.running)
-		cpu[i] = cpuText(l.load)
-		mem[i] = memText(l.load)
-	}
+	names := psCol("LANE", n, func(i int) string { return lanes[i].name })
 	renderTable(b, y, bodyH, []psColumn{
-		{header: "LANE", cells: names},
-		{header: "PIPELINES", cells: pipes},
-		{header: "QUEUED", cells: queued},
-		{header: "RUNNING", cells: running},
-		{header: "CPU", cells: cpu},
-		{header: "MEM", cells: mem},
-	}, selIndex(m.selLane, m.laneKeys()), colorless)
+		names,
+		psCol("PIPELINES", n, func(i int) string { return fmt.Sprintf("%d", lanes[i].pipelines) }),
+		psCol("QUEUED", n, func(i int) string { return fmt.Sprintf("%d", lanes[i].queued) }),
+		psCol("RUNNING", n, func(i int) string { return fmt.Sprintf("%d", lanes[i].running) }),
+		psCol("CPU", n, func(i int) string { return cpuText(lanes[i].load) }),
+		psCol("MEM", n, func(i int) string { return memText(lanes[i].load) }),
+	}, selIndex(m.selLane, names.cells), colorless)
 }
 
 // renderPipelinesTable renders level 2: one row per member pipeline.
 func renderPipelinesTable(b *screenBuf, m *psModel, y, bodyH int, colorless bool) {
 	rows := derivePipelines(m.snap, m.lane)
 	n := len(rows)
-	names, latest, queued, running, cpu, mem := make([]string, n), make([]string, n), make([]string, n), make([]string, n), make([]string, n), make([]string, n)
-	latestSGR := make([]string, n)
-	for i, r := range rows {
-		names[i] = r.name
-		latest[i] = r.latest
-		latestSGR[i] = psStateSGR(r.latest)
-		queued[i] = fmt.Sprintf("%d", r.queued)
-		running[i] = fmt.Sprintf("%d", r.running)
-		cpu[i] = cpuText(r.load)
-		mem[i] = memText(r.load)
-	}
+	names := psCol("PIPELINE", n, func(i int) string { return rows[i].name })
 	renderTable(b, y, bodyH, []psColumn{
-		{header: "PIPELINE", cells: names},
-		{header: "LATEST", cells: latest, sgr: latestSGR},
-		{header: "QUEUED", cells: queued},
-		{header: "RUNNING", cells: running},
-		{header: "CPU", cells: cpu},
-		{header: "MEM", cells: mem},
-	}, selIndex(m.selPipeline, m.pipelineKeys()), colorless)
+		names,
+		psColStyled("LATEST", n, func(i int) (string, string) { return rows[i].latest, psStateSGR(rows[i].latest) }),
+		psCol("QUEUED", n, func(i int) string { return fmt.Sprintf("%d", rows[i].queued) }),
+		psCol("RUNNING", n, func(i int) string { return fmt.Sprintf("%d", rows[i].running) }),
+		psCol("CPU", n, func(i int) string { return cpuText(rows[i].load) }),
+		psCol("MEM", n, func(i int) string { return memText(rows[i].load) }),
+	}, selIndex(m.selPipeline, names.cells), colorless)
 }
 
 // renderRunsTable renders level 3: the pipeline's runs, newest first.
 func renderRunsTable(b *screenBuf, m *psModel, y, bodyH int, colorless bool) {
 	runs := deriveRuns(m.snap, m.pipeline, m.showAll)
 	n := len(runs)
-	ids, states, exits, cpu, mem := make([]string, n), make([]string, n), make([]string, n), make([]string, n), make([]string, n)
-	stateSGR := make([]string, n)
-	for i, r := range runs {
-		ids[i] = r.ID
-		states[i] = r.State
-		stateSGR[i] = psStateSGR(r.State)
-		exits[i] = exitCodeCell(r.ExitCode)
-		cpu[i] = cpuText(r.Load)
-		mem[i] = memText(r.Load)
-	}
+	ids := psCol("RUN", n, func(i int) string { return runs[i].ID })
 	renderTable(b, y, bodyH, []psColumn{
-		{header: "RUN", cells: ids},
-		{header: "STATE", cells: states, sgr: stateSGR},
-		{header: "EXIT", cells: exits},
-		{header: "CPU", cells: cpu},
-		{header: "MEM", cells: mem},
-	}, selIndex(m.selRun, m.runKeys()), colorless)
+		ids,
+		psColStyled("STATE", n, func(i int) (string, string) { return runs[i].State, psStateSGR(runs[i].State) }),
+		psCol("EXIT", n, func(i int) string { return exitCodeCell(runs[i].ExitCode) }),
+		psCol("CPU", n, func(i int) string { return cpuText(runs[i].Load) }),
+		psCol("MEM", n, func(i int) string { return memText(runs[i].Load) }),
+	}, selIndex(m.selRun, ids.cells), colorless)
 }
 
 // renderRunDetail renders level 4: the fact line, a rule, then the log tail
@@ -500,11 +505,16 @@ func renderSearchOverlay(b *screenBuf, m *psModel) {
 	b.text(ox+2, oy+resultsH+1, "", "> "+string(s.query)+"▏")
 
 	// Results list, bottom-anchored: the best hit (index 0) sits nearest the
-	// prompt; the selection renders inverted.
+	// prompt; the selection renders inverted. The list windows over the hits
+	// so a selection moved past the pane height stays visible.
 	innerH := resultsH - 2
-	for i := 0; i < len(s.hits) && i < innerH; i++ {
+	top := 0
+	if innerH > 0 && s.sel >= innerH {
+		top = s.sel - innerH + 1
+	}
+	for i := top; i < len(s.hits) && i-top < innerH; i++ {
 		h := s.hits[i]
-		ry := oy + resultsH - 2 - i
+		ry := oy + resultsH - 2 - (i - top)
 		line := fmt.Sprintf("%-8s  %s", h.kind.kindTag(), h.label)
 		marker := "  "
 		if i == s.sel {
@@ -568,17 +578,12 @@ func renderSearchPreview(b *screenBuf, m *psModel, h psHit, x, y, w, ph int) {
 			sub.text(0, 1, "", fact)
 		}
 	}
-	// Splice the sub-frame into the overlay pane; the preview never shows a
-	// selection of its own.
-	for yy := range ph {
-		for xx := range w {
-			c := sub.cells[yy*w+xx]
-			if c.sgr == ansiInverse {
-				c.sgr = ""
-			}
-			if x+xx < b.w && y+yy < b.h {
-				b.cells[(y+yy)*b.w+(x+xx)] = c
-			}
+	// The preview never shows a selection of its own; strip the inversion,
+	// then splice through the one copy routine.
+	for i := range sub.cells {
+		if sub.cells[i].sgr == ansiInverse {
+			sub.cells[i].sgr = ""
 		}
 	}
+	b.blit(sub, x, y)
 }

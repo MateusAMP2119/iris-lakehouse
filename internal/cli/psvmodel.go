@@ -27,11 +27,14 @@ const (
 // psSnapshot is one poll's worth of view data: the /ps payload (always the
 // ?all=true history -- the level-3 toggle filters client-side), the pipeline
 // listing (?all=1, idle pipelines included, each row carrying its lane), and
-// the focused run's log tail when a run is open.
+// the focused run's log tail when a run is open. logsRun names the run the
+// tail belongs to, so a snapshot buffered before a focus switch never paints
+// the previous run's lines under the new run's header.
 type psSnapshot struct {
 	ps        api.PsPayload
 	pipelines []api.PipelineListItem
 	logs      []string
+	logsRun   string
 }
 
 // psModel is the live view's whole state: which screen is open, the breadcrumb
@@ -50,21 +53,28 @@ type psModel struct {
 	selPipeline string
 	selRun      string
 
-	showAll       bool // level 3: 'a' toggled the whole history in
-	follow        bool // level 4: log tail follows new output
-	scroll        int  // level 4: lines scrolled back from the tail when not following
-	confirmCancel bool // level 4: y/N cancel confirm armed
-	note          string
+	showAll       bool   // level 3: 'a' toggled the whole history in
+	follow        bool   // level 4: log tail follows new output
+	scroll        int    // level 4: lines scrolled back from the tail when not following
+	confirmCancel bool   // level 4: y/N cancel confirm armed
+	note          string // transient action outcome, cleared on the next key
+	warn          string // standing soft-fetch warning, cleared by the next good poll
 
 	search *psSearch // non-nil while the search overlay is open
 
 	snap   psSnapshot
 	target string // footer right slot: "remote <host>" or "local <socket>"
+	quit   bool
+}
 
-	// wantFocus is the run id the poller should tail logs for ("" for none);
-	// the event loop forwards changes to the poller after each update.
-	wantFocus string
-	quit      bool
+// focus is the run id the poller should tail logs for: the open run on the
+// detail screen, nothing anywhere else. Derived, never stored -- every exit
+// from the detail screen drops the focus by construction.
+func (m *psModel) focus() string {
+	if m.screen == psScreenRun {
+		return m.runID
+	}
+	return ""
 }
 
 // newPsModel builds the home-screen model over the first snapshot.
@@ -230,9 +240,13 @@ func findRun(s psSnapshot, id string) (api.PsRun, bool) {
 	return api.PsRun{}, false
 }
 
-// absorb replaces the snapshot after a poll and re-clamps every selection so
-// vanished rows never leave a dangling cursor.
+// absorb replaces the snapshot after a poll, drops a log tail that belongs to
+// a previously focused run, and re-clamps the selections so vanished rows
+// never leave a dangling cursor.
 func (m *psModel) absorb(s psSnapshot) {
+	if s.logsRun != m.runID || m.screen != psScreenRun {
+		s.logs, s.logsRun = nil, ""
+	}
 	m.snap = s
 	m.clampSelections()
 	if m.search != nil {
@@ -268,12 +282,19 @@ func (m *psModel) runKeys() []string {
 	return keys
 }
 
-// clampSelections snaps each cursor to a live row (the first, when the
-// selected identity vanished or nothing was selected yet).
+// clampSelections snaps the open screen's cursor to a live row (the first,
+// when the selected identity vanished or nothing was selected yet). Only the
+// visible cursor needs clamping -- descend() re-clamps the next screen's --
+// so a poll never derives the two off-screen tables just to tidy them.
 func (m *psModel) clampSelections() {
-	m.selLane = clampKey(m.selLane, m.laneKeys())
-	m.selPipeline = clampKey(m.selPipeline, m.pipelineKeys())
-	m.selRun = clampKey(m.selRun, m.runKeys())
+	switch m.screen {
+	case psScreenLanes:
+		m.selLane = clampKey(m.selLane, m.laneKeys())
+	case psScreenPipelines:
+		m.selPipeline = clampKey(m.selPipeline, m.pipelineKeys())
+	case psScreenRuns:
+		m.selRun = clampKey(m.selRun, m.runKeys())
+	}
 }
 
 // clampKey keeps sel when it still names a row, else the first row, else "".
@@ -311,10 +332,10 @@ func moveSel(sel string, keys []string, delta int) string {
 	return keys[at]
 }
 
-// update advances the model by one keypress. It is the only mutator the event
-// loop calls; m.quit asks the loop to exit, m.wantFocus names the run whose
-// logs the poller should tail, and m.pendingCancel (returned) names a run the
-// loop should ask the poller to cancel.
+// update advances the model by one keypress and returns the run the loop
+// should ask the poller to cancel ("" almost always). The loop reads its two
+// other signals off the model after the call: m.quit to exit, and m.focus()
+// to re-point the poller's log tail when it changed.
 func (m *psModel) update(k psKey) (cancelRun string) {
 	m.note = ""
 
@@ -401,13 +422,14 @@ func (m *psModel) move(delta int) {
 	}
 }
 
-// clampScroll keeps the scrollback offset within the held tail.
+// clampScroll keeps the scrollback offset within the held tail: at the far
+// end the first line stays on screen (never a blank pane past the top).
 func (m *psModel) clampScroll(lines int) {
 	if m.scroll < 0 {
 		m.scroll = 0
 	}
-	if m.scroll > lines {
-		m.scroll = lines
+	if top := lines - 1; top >= 0 && m.scroll > top {
+		m.scroll = top
 	}
 }
 
@@ -436,16 +458,15 @@ func (m *psModel) descend() {
 	}
 }
 
-// openRun jumps to the level-4 detail of one run and points the poller's log
-// tail at it.
+// openRun jumps to the level-4 detail of one run; the loop reads the changed
+// focus() and points the poller's log tail at it.
 func (m *psModel) openRun(id string) {
 	m.runID = id
 	m.screen = psScreenRun
 	m.follow = true
 	m.scroll = 0
 	m.confirmCancel = false
-	m.wantFocus = id
-	m.snap.logs = nil // stale tail from a previously focused run never flashes
+	m.snap.logs, m.snap.logsRun = nil, "" // a previous run's tail never flashes
 }
 
 // ascend backs out one level (left arrow).
@@ -458,7 +479,6 @@ func (m *psModel) ascend() {
 	case psScreenRun:
 		m.screen = psScreenRuns
 		m.confirmCancel = false
-		m.wantFocus = ""
 	}
 }
 

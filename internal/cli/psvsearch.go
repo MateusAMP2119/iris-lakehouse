@@ -120,21 +120,32 @@ func (m *psModel) jumpTo(h psHit) {
 	}
 }
 
-// searchCandidates enumerates every navigable entity in the snapshot.
+// searchCandidates enumerates every navigable entity in the snapshot: one
+// pass over the listing and one over the run rows (never a per-lane re-scan
+// of the history -- rematch runs on every keystroke and every poll).
 func searchCandidates(s psSnapshot) []psHit {
 	var out []psHit
-	seenPipeline := map[string]bool{}
-	for _, l := range deriveLanes(s) {
-		out = append(out, psHit{kind: psHitLane, lane: l.name, label: l.name})
-		for _, p := range derivePipelines(s, l.name) {
-			if seenPipeline[p.name] {
-				continue
-			}
-			seenPipeline[p.name] = true
-			out = append(out, psHit{kind: psHitPipeline, lane: l.name, pipeline: p.name, label: p.name})
+	lanes := map[string]bool{}
+	pipelines := map[string]bool{}
+	addLane := func(name string) {
+		if !lanes[name] {
+			lanes[name] = true
+			out = append(out, psHit{kind: psHitLane, lane: name, label: name})
 		}
 	}
+	addPipeline := func(lane, name string) {
+		if !pipelines[name] {
+			pipelines[name] = true
+			out = append(out, psHit{kind: psHitPipeline, lane: lane, pipeline: name, label: name})
+		}
+	}
+	for _, p := range s.pipelines {
+		addLane(laneOf(p))
+		addPipeline(laneOf(p), p.Name)
+	}
 	for _, run := range s.ps.Runs {
+		addLane(runLaneOf(run))
+		addPipeline(runLaneOf(run), run.Pipeline)
 		out = append(out, psHit{
 			kind:     psHitRun,
 			lane:     runLaneOf(run),

@@ -133,15 +133,15 @@ func TestPsModelUpdate(t *testing.T) {
 				t.Fatalf("pipeline = %q, want extract", m.pipeline)
 			}
 			m.update(psKey{kind: psKeyEnter}) // run 12
-			if m.screen != psScreenRun || m.runID != "12" || m.wantFocus != "12" || !m.follow {
+			if m.screen != psScreenRun || m.runID != "12" || m.focus() != "12" || !m.follow {
 				t.Fatalf("run screen: %+v", m)
 			}
 			if got := m.breadcrumb(); got != "iris ps · ingest · extract · run 12" {
 				t.Errorf("breadcrumb = %q", got)
 			}
 			m.update(psKey{kind: psKeyLeft})
-			if m.screen != psScreenRuns || m.wantFocus != "" {
-				t.Errorf("ascend from run: screen %d focus %q, want runs screen and no focus", m.screen, m.wantFocus)
+			if m.screen != psScreenRuns || m.focus() != "" {
+				t.Errorf("ascend from run: screen %d focus %q, want runs screen and no focus", m.screen, m.focus())
 			}
 		})
 
@@ -211,12 +211,12 @@ func TestPsModelUpdate(t *testing.T) {
 			for range 10 {
 				m.update(key('k'))
 			}
-			if m.scroll != 4 {
-				t.Errorf("scroll = %d, want clamped at 4 held lines", m.scroll)
+			if m.scroll != 3 {
+				t.Errorf("scroll = %d, want clamped at len-1 so the top line stays visible", m.scroll)
 			}
 			m.update(key('j'))
-			if m.scroll != 3 {
-				t.Errorf("scroll after one down = %d, want 3", m.scroll)
+			if m.scroll != 2 {
+				t.Errorf("scroll after one down = %d, want 2", m.scroll)
 			}
 			m.update(key('f'))
 			if !m.follow || m.scroll != 0 {
@@ -300,8 +300,8 @@ func TestPsSearch(t *testing.T) {
 			m.update(key('1'))
 			m.update(key('4'))
 			m.update(psKey{kind: psKeyEnter})
-			if m.screen != psScreenRun || m.runID != "14" || m.wantFocus != "14" {
-				t.Fatalf("run jump landed wrong: screen %d run %q focus %q", m.screen, m.runID, m.wantFocus)
+			if m.screen != psScreenRun || m.runID != "14" || m.focus() != "14" {
+				t.Fatalf("run jump landed wrong: screen %d run %q focus %q", m.screen, m.runID, m.focus())
 			}
 			if m.lane != "ingest" || m.pipeline != "load_orders" {
 				t.Errorf("run jump breadcrumb: lane %q pipeline %q", m.lane, m.pipeline)
