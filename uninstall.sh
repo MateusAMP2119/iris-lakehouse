@@ -44,7 +44,7 @@ bin=$(command -v iris 2>/dev/null) || {
 }
 
 case "$bin" in
-  /usr/local/bin/iris | "${HOME}/.local/bin/iris") ;;
+  "${HOME}/.iris/bin/iris" | /usr/local/bin/iris | "${HOME}/.local/bin/iris") ;;
   *)
     echo "iris: found at ${bin}, which install.sh does not manage." >&2
     echo "Remove it with the tool that installed it (go install, package manager, manual build)." >&2

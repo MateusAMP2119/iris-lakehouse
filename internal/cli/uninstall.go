@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"math/rand/v2"
 	"os"
@@ -63,7 +62,7 @@ func (a *app) uninstallCmd() *cobra.Command {
 	return daemonless(c)
 }
 
-// uninstallSelf runs the staged sequence: a decline aborts the rest clean (exit 0), a failure exits 4 naming the step, success closes with the FAREWELL! banner and a random quote.
+// uninstallSelf runs the staged sequence: a decline aborts the rest clean (exit 0), a failure exits 4 naming the step, success closes with a random farewell quote.
 func (a *app) uninstallSelf() runE {
 	return func(cmd *cobra.Command, _ []string) error {
 		yes, _ := cmd.Flags().GetBool("yes")
@@ -167,7 +166,6 @@ func (a *app) uninstallSelf() runE {
 					uninstallStep{Step: 3, Name: stepBinary, Status: "skipped"})
 				return a.uninstallAborted(p, jsonMode, path, steps)
 			}
-			say("  • Removing engine state...")
 			removed, rerr := daemon.RemoveEngineArtifacts(settings)
 			if rerr != nil {
 				a.logger.Error("uninstall: engine state removal failed", "err", rerr)
@@ -176,6 +174,9 @@ func (a *app) uninstallSelf() runE {
 					codeStr: "uninstall_failed",
 					message: fmt.Sprintf("iris uninstall: step 2/%d (remove engine state) failed: %v", uninstallSteps, rerr),
 				}
+			}
+			if !jsonMode {
+				a.uninstallProgressBar(p, "• Removing engine state...")
 			}
 			steps = append(steps, uninstallStep{Step: 2, Name: stepEngineState, Status: "removed", Removed: removed})
 			done("Engine state removed.")
@@ -208,7 +209,7 @@ func (a *app) uninstallSelf() runE {
 		}
 		steps = append(steps, uninstallStep{Step: 3, Name: stepBinary, Status: "removed", Removed: []string{path}})
 		if !jsonMode {
-			a.uninstallProgressBar(p)
+			a.uninstallProgressBar(p, "Uninstalling...")
 		}
 		done("Binary removed")
 		done("Traces erased")
@@ -219,10 +220,6 @@ func (a *app) uninstallSelf() runE {
 			}})
 		}
 		say("")
-		if p.enabled {
-			farewellBanner(a.out, p)
-			say("")
-		}
 		a.farewellQuote(p)
 		return nil
 	}
@@ -279,15 +276,15 @@ func (a *app) uninstallAborted(p painter, jsonMode bool, path string, steps []un
 	return nil
 }
 
-// uninstallProgressBar animates step 3's bar in place on a terminal; piped runs draw nothing.
-func (a *app) uninstallProgressBar(p painter) {
+// uninstallProgressBar animates a removal step's bar in place on a terminal, prefix leading the bar; piped runs draw nothing.
+func (a *app) uninstallProgressBar(p painter, prefix string) {
 	if !p.enabled {
 		return
 	}
 	const cells = 10
 	for i := 0; i <= cells; i++ {
 		bar := strings.Repeat("█", i) + strings.Repeat("░", cells-i)
-		fmt.Fprintf(a.out, "\r\033[2K  Uninstalling... [%s] %d%%", p.cyan(bar), i*100/cells)
+		fmt.Fprintf(a.out, "\r\033[2K  %s [%s] %d%%", prefix, p.cyan(bar), i*100/cells)
 		time.Sleep(25 * time.Millisecond)
 	}
 	fmt.Fprintln(a.out)
@@ -304,26 +301,6 @@ func (a *app) uninstallHeaderBox(p painter, version string) {
 	fmt.Fprintln(a.out, p.cyan("  ┌"+rule+"┐"))
 	fmt.Fprintf(a.out, "  %s%s%s\n", bar, styledInner, bar)
 	fmt.Fprintln(a.out, p.cyan("  └"+rule+"┘"))
-}
-
-// irisPalette is the banner's per-row cool gradient (magenta into blue into cyan), the iris flower's colors.
-var irisPalette = []string{ansiMagenta, ansiMagenta, ansiBlue, ansiBlue, ansiCyan, ansiCyan}
-
-// farewellBannerRows is the block-art FAREWELL! mark, the installer banner's letterform family.
-var farewellBannerRows = []string{
-	"   ███████╗ █████╗ ██████╗ ███████╗██╗    ██╗███████╗██╗     ██╗     ██╗",
-	"   ██╔════╝██╔══██╗██╔══██╗██╔════╝██║    ██║██╔════╝██║     ██║     ██║",
-	"   █████╗  ███████║██████╔╝█████╗  ██║ █╗ ██║█████╗  ██║     ██║     ██║",
-	"   ██╔══╝  ██╔══██║██╔══██╗██╔══╝  ██║███╗██║██╔══╝  ██║     ██║     ╚═╝",
-	"   ██║     ██║  ██║██║  ██║███████╗╚███╔███╔╝███████╗███████╗███████╗██╗",
-	"   ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝ ╚══╝╚══╝ ╚══════╝╚══════╝╚══════╝╚═╝",
-}
-
-// farewellBanner paints the FAREWELL! mark one iris-gradient color per row; callers gate it on an enabled painter.
-func farewellBanner(w io.Writer, _ painter) {
-	for i, row := range farewellBannerRows {
-		fmt.Fprintf(w, "%s%s%s\n", irisPalette[i%len(irisPalette)], row, ansiReset)
-	}
 }
 
 // farewellQuote is one entry of the farewell pool.

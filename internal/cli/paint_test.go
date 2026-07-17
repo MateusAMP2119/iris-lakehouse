@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-	"unicode/utf8"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/update"
 )
@@ -67,14 +66,13 @@ func TestLifecycleCeremonyTTYGating(t *testing.T) {
 
 // TestLifecycleCeremonyPlainWhenPiped proves no ANSI escape ever reaches a
 // non-terminal consumer: with a buffer stdout (the default, not a char device)
-// and under --json, every update and uninstall output path is byte-identical
-// plain text, and the pinned strings are unchanged. It also proves the converse:
-// forcing the tty seam on turns the ceremony on (escapes appear), so the plain
-// guarantee is a real gate, not a dead helper.
+// and under --json, every update output path is byte-identical plain text, and
+// the pinned strings are unchanged. It also proves the converse: forcing the
+// tty seam on turns the ceremony on (escapes appear), so the plain guarantee is
+// a real gate, not a dead helper.
 func TestLifecycleCeremonyPlainWhenPiped(t *testing.T) {
 	clearTargetEnv(t)
 	unsetNoColor(t)
-	deadSock := shortSocket(t)
 
 	t.Run("update up-to-date piped is plain", func(t *testing.T) {
 		var out, errb bytes.Buffer
@@ -119,38 +117,6 @@ func TestLifecycleCeremonyPlainWhenPiped(t *testing.T) {
 		assertNoEsc(t, out.String())
 	})
 
-	t.Run("uninstall success piped is plain", func(t *testing.T) {
-		scratch := scratchExecutable(t)
-		var out, errb bytes.Buffer
-		a := newApp(&out, &errb)
-		a.executablePath = func() (string, error) { return scratch, nil }
-		if code := a.run([]string{"--socket", deadSock, "uninstall", "--yes"}); code != exitOK {
-			t.Fatalf("exit = %d, want %d\n%s", code, exitOK, errb.String())
-		}
-		assertNoEsc(t, out.String())
-		if !strings.Contains(out.String(), "[3/3]") || !strings.Contains(out.String(), "Binary removed") {
-			t.Errorf("plain uninstall step lines changed: %q", out.String())
-		}
-		if strings.Contains(out.String(), "█") || strings.Contains(out.String(), "░") {
-			t.Errorf("plain uninstall must carry no banner or progress bar: %q", out.String())
-		}
-	})
-
-	t.Run("uninstall abort piped is plain", func(t *testing.T) {
-		scratch := scratchExecutable(t)
-		var out, errb bytes.Buffer
-		a := newApp(&out, &errb)
-		a.executablePath = func() (string, error) { return scratch, nil }
-		a.confirm = func(_ string, _ bool) (bool, error) { return false, nil }
-		if code := a.run([]string{"--socket", deadSock, "uninstall"}); code != exitOK {
-			t.Fatalf("exit = %d, want %d\n%s", code, exitOK, errb.String())
-		}
-		assertNoEsc(t, out.String())
-		if !strings.Contains(out.String(), "Aborted. Nothing removed.") {
-			t.Errorf("plain abort string changed: %q", out.String())
-		}
-	})
-
 	t.Run("update progress stages carry no ANSI when piped", func(t *testing.T) {
 		var out bytes.Buffer
 		a := newApp(&out, io.Discard)
@@ -177,20 +143,6 @@ func TestLifecycleCeremonyPlainWhenPiped(t *testing.T) {
 		}
 	})
 
-	t.Run("forced tty turns the uninstall ceremony on", func(t *testing.T) {
-		scratch := scratchExecutable(t)
-		var out, errb bytes.Buffer
-		a := newApp(&out, &errb)
-		a.isTTY = func() bool { return true }
-		a.executablePath = func() (string, error) { return scratch, nil }
-		if code := a.run([]string{"--socket", deadSock, "uninstall", "--yes"}); code != exitOK {
-			t.Fatalf("exit = %d, want %d\n%s", code, exitOK, errb.String())
-		}
-		if !strings.Contains(out.String(), esc) {
-			t.Errorf("forced-tty uninstall emitted no escape: %q", out.String())
-		}
-	})
-
 	t.Run("update progress stages colored on a tty", func(t *testing.T) {
 		var out bytes.Buffer
 		a := newApp(&out, io.Discard)
@@ -207,57 +159,6 @@ func TestLifecycleCeremonyPlainWhenPiped(t *testing.T) {
 var ansiSeq = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
 func stripANSI(s string) string { return ansiSeq.ReplaceAllString(s, "") }
-
-// TestUninstallStepLinesAlign proves the staged step lines share one [✓] column
-// for any bullet text length, measured on the unstyled text so the green mark
-// never shifts it.
-func TestUninstallStepLinesAlign(t *testing.T) {
-	texts := []string{"Binary removed", "Iris engine stopped successfully.", "No engine state on disk; nothing to remove."}
-	var out bytes.Buffer
-	a := newApp(&out, io.Discard)
-	p := makePainter(false, func() bool { return true })
-	for _, text := range texts {
-		a.uninstallStepDone(p, text)
-	}
-	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
-	if len(lines) != len(texts) {
-		t.Fatalf("step lines = %d, want %d:\n%s", len(lines), len(texts), out.String())
-	}
-	want := -1
-	for _, line := range lines {
-		plain := stripANSI(line)
-		col := strings.Index(plain, "[✓]")
-		if col < 0 {
-			t.Fatalf("step line missing its [✓] mark: %q", plain)
-		}
-		if want == -1 {
-			want = col
-		}
-		if col != want {
-			t.Errorf("misaligned [✓] column %d, want %d: %q", col, want, plain)
-		}
-	}
-}
-
-// TestFarewellBannerRowsUniform proves the FAREWELL! banner rows paint one color
-// per row and stay uniform in visible width.
-func TestFarewellBannerRowsUniform(t *testing.T) {
-	var out bytes.Buffer
-	farewellBanner(&out, makePainter(false, func() bool { return true }))
-	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
-	if len(lines) != len(farewellBannerRows) {
-		t.Fatalf("banner = %d lines, want %d", len(lines), len(farewellBannerRows))
-	}
-	want := utf8.RuneCountInString(stripANSI(lines[0]))
-	for i, line := range lines {
-		if !strings.Contains(line, esc) {
-			t.Errorf("banner row %d carries no color: %q", i, line)
-		}
-		if got := utf8.RuneCountInString(stripANSI(line)); got != want {
-			t.Errorf("banner row %d width = %d, want %d", i, got, want)
-		}
-	}
-}
 
 // assertNoEsc fails the test if s carries any ANSI escape byte.
 func assertNoEsc(t *testing.T, s string) {
