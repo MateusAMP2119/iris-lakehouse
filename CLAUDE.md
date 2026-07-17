@@ -6,10 +6,10 @@ Reference docs: `docs/Iris Epics.md` (epics + build order).
 ## Commands
 
 - Build: `go build ./...`; binary: `go build -o iris ./cmd/iris` (always cgo-free; release/cross-compile with `CGO_ENABLED=0`).
-- Unit + integration (database-free, what CI runs per Go version): `go test -race ./...` — conformance excluded via `conformance` build tag.
+- Unit + integration (database-free): `go test -race ./...` — conformance excluded via `conformance` build tag.
 - Single test: `go test -race -run 'TestName(/subtest)?' ./internal/<pkg>/`.
-- Conformance suite (real binary, real Postgres 16+): `go test -race -tags conformance -timeout 25m ./internal/conformance/...` Self-sufficient: without `IRIS_PG_DSN` the suite boots ONE shared embedded Postgres for the whole run (first run downloads the pinned binary; no Docker, no system Postgres) and every leg runs. An ambient `IRIS_PG_DSN` (cluster role with CREATEDB + CREATEROLE) overrides it untouched — the CI path (see `.github/workflows/ci.yml`). Slow (~12m); don't run casually.
-- Lint: `golangci-lint run` (config `.golangci.yml`; CI pins version in `ci.yml` — currently v2.12.2).
+- Conformance suite (real binary, real Postgres 16+): `go test -race -tags conformance -timeout 25m ./internal/conformance/...` Self-sufficient: without `IRIS_PG_DSN` the suite boots ONE shared embedded Postgres for the whole run (first run downloads the pinned binary; no Docker, no system Postgres) and every leg runs. An ambient `IRIS_PG_DSN` (cluster role with CREATEDB + CREATEROLE) overrides it untouched. Slow (~12m); don't run casually.
+- Lint: `golangci-lint run` (config `.golangci.yml`; pinned version v2.12.2).
 
 ## Branching rules
 

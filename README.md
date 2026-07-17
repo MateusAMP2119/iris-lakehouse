@@ -9,7 +9,6 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/MateusAMP2119/iris-lakehouse/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/MateusAMP2119/iris-lakehouse/ci.yml?branch=development&style=for-the-badge&label=CI" alt="CI"></a>
   <img src="https://img.shields.io/badge/Go-1.25%2B-00ADD8?style=for-the-badge&logo=go" alt="Go 1.25+">
   <img src="https://img.shields.io/badge/Postgres-16%2B-4169E1?style=for-the-badge&logo=postgresql&logoColor=white" alt="Postgres 16+">
   <img src="https://img.shields.io/badge/cgo-free-brightgreen?style=for-the-badge" alt="cgo-free">
