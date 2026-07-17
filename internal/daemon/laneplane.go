@@ -196,6 +196,7 @@ func newLaneLoop(
 	data turnData,
 	grants grantsReader,
 	objects *store.ObjectStore,
+	counters *turnCounters,
 	passCounter *dispatch.PassCounter,
 	retention store.RetentionReader,
 	retain int64,
@@ -226,6 +227,7 @@ func newLaneLoop(
 		grants:    grants,
 		access:    newAccessCache(),
 		objects:   objects,
+		counters:  counters,
 		runLogs:   runLogs,
 		residents: residents,
 		logger:    logger,
@@ -354,6 +356,7 @@ type laneExec struct {
 	grants    grantsReader  // declared-access read seam; nil resolves no declared access
 	access    *accessCache  // per-pipeline declared-access cache keyed by declaration checksum
 	objects   *store.ObjectStore
+	counters  *turnCounters // resident turn tallies for the ps readout; nil skips
 	runLogs   *RunLogWriter // per-run output capture; nil discards (shape tests)
 	residents *residentRuns // live resident sessions, one per pipeline
 	logger    *slog.Logger
@@ -421,6 +424,7 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 
 	case turnDone:
 		if len(res.rows) == 0 && !feed.Advanced {
+			m.counters.bump(rec.Pipeline, false)
 			return dispatch.RunQuiet, nil // the quiet turn: two JSON lines, zero writes
 		}
 		if len(res.rows) == 0 {
@@ -429,6 +433,7 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 			if _, err := m.data.CommitTurn(ctx, pg.TurnCommit{Pipeline: rec.Pipeline, Position: feed.Position, AdvancePosition: true}); err != nil {
 				return dispatch.RunSucceeded, fmt.Errorf("lane turn %q: advance feed position: %w", rec.Pipeline, err)
 			}
+			m.counters.bump(rec.Pipeline, false)
 			return dispatch.RunQuiet, nil
 		}
 		if m.data == nil {
@@ -437,6 +442,7 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 		// Producing turn: mint running, commit data atomically, complete with the
 		// turn's stamps. A crash between mint and complete leaves a running run
 		// for the next leader's reconciliation -- never data without a record.
+		m.counters.bump(rec.Pipeline, true)
 		if err := m.submit.Submit(ctx, func(w *store.Writer) error { return w.CreateTurnRun(ctx, trec) }); err != nil {
 			return dispatch.RunSucceeded, fmt.Errorf("lane turn %q: mint: %w", rec.Pipeline, err)
 		}
@@ -500,6 +506,7 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 // its offending line quoted, or the death disposition) and flushes the turn's
 // buffered log against the minted id. A failed turn always records.
 func (m *laneExec) deadLetterFreshTurn(ctx context.Context, trec store.TurnRunRecord, buf *turnLogBuffer, detail string) (dispatch.RunOutcome, error) {
+	m.counters.bump(trec.Pipeline, true)
 	if err := m.submit.Submit(ctx, func(w *store.Writer) error {
 		return w.DeadLetterTurnRun(ctx, trec, store.ReasonFailed, detail)
 	}); err != nil {
@@ -662,6 +669,9 @@ func (m *laneExec) runToTerminal(ctx context.Context, pipeline string, target st
 	defer m.inflight.untrack(runID)
 
 	res := driveTurn(ctx, ses, ses.nextTurn(), feed.Rows, acc.writes)
+	if res.kind != turnShutdown {
+		m.counters.bump(pipeline, true) // a pre-minted run's row always records
+	}
 	deadLetter := func(detail string) (dispatch.RunOutcome, error) {
 		// Guarded on the running state, so a cancel's stopped reason stands.
 		if derr := m.submit.Submit(ctx, func(w *store.Writer) error {

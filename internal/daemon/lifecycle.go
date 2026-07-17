@@ -240,7 +240,10 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// over the reader pool composed with the live leadership role and the
 	// host-load probe, so the readout reports what the engine is running and what
 	// it costs the host -- the daemon's own tree plus the managed Postgres's.
-	psp := NewPsPlane(role, client.Reader(), ManagedPostmasterPID(s), logger)
+	// The resident turn counters (#206): quiet turns write no rows, so this
+	// in-memory tally is the ps readout's only trace of a quiet loop.
+	turnTally := newTurnCounters()
+	psp := NewPsPlane(role, client.Reader(), ManagedPostmasterPID(s), turnTally, logger)
 
 	// The dead-letter plane serves GET /dead_letters/{run}/impact (the blast readout
 	// `iris deadletter show` renders) on any node from the reader pool, and POST
@@ -316,9 +319,10 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// the resolved retain, each pruned run's log dying with its row). The run's data
 	// connection targets the engine-owned data database, retargeted from the admin DSN.
 	laneBuild := func(submit dispatch.Submitter, events *dispatch.Events) *dispatch.Loop {
+		turnTally.reset() // a new leadership term starts a fresh turn account
 		return newLaneLoop(submit, inflight, residents, workspace, client.RegistryReader(), client.ManualReader(),
 			client.QueuedManualReader(), events,
-			exec.NewOSRunner(), data, data, client.ShowReader(), objects, passCounter,
+			exec.NewOSRunner(), data, data, client.ShowReader(), objects, turnTally, passCounter,
 			client.RetentionReader(), s.Retain, runLogs, logger)
 	}
 
