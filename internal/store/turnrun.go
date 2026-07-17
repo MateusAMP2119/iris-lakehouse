@@ -48,11 +48,15 @@ SELECT new_run.id, upstream
 FROM new_run, unnest($8::bigint[]) AS upstream`
 
 // completeTurnRunSQL closes a producing turn's run: the guarded running ->
-// succeeded transition stamping exit code zero and the turn's snapshot pin
-// (LSN, journal floor and ceiling) in one statement.
+// succeeded transition stamping exit code zero, the turn's snapshot pin
+// (LSN, journal floor and ceiling), and the log reference in one statement.
 const completeTurnRunSQL = `UPDATE runs
-SET state = $1, exit_code = 0, snapshot_lsn = $2, journal_floor = $3, journal_ceiling = $4
-WHERE id = $5 AND state = $6`
+SET state = $1, exit_code = 0, snapshot_lsn = $2, journal_floor = $3, journal_ceiling = $4, log_ref = NULLIF($5, '')
+WHERE id = $6 AND state = $7`
+
+// stampRunLogRefSQL records a run's log reference after the fact: the failed-turn
+// mint cannot know its run-id-keyed log path before the id exists.
+const stampRunLogRefSQL = `UPDATE runs SET log_ref = NULLIF($1, '') WHERE id = $2`
 
 // deadLetterTurnRunSQL mints a failed turn's run directly dead-lettered with its
 // worklist row, one atomic CTE (the DeadLetterPropagated shape with the cause and
@@ -100,11 +104,21 @@ func (w *Writer) CreateTurnRun(ctx context.Context, rec TurnRunRecord) error {
 
 // CompleteTurnRun records a producing turn's successful terminal transition and
 // its snapshot pin in one guarded statement: running -> succeeded, exit code
-// zero, and the turn's LSN and journal window, so the whole terminal state is a
-// single meta write.
-func (w *Writer) CompleteTurnRun(ctx context.Context, id string, snapshotLSN string, journalFloor, journalCeiling int64) error {
-	if err := w.conn.Exec(ctx, completeTurnRunSQL, RunSucceeded, snapshotLSN, journalFloor, journalCeiling, id, RunRunning); err != nil {
+// zero, the turn's LSN and journal window, and the run-id-keyed log reference,
+// so the whole terminal state is a single meta write.
+func (w *Writer) CompleteTurnRun(ctx context.Context, id string, snapshotLSN string, journalFloor, journalCeiling int64, logRef string) error {
+	if err := w.conn.Exec(ctx, completeTurnRunSQL, RunSucceeded, snapshotLSN, journalFloor, journalCeiling, logRef, id, RunRunning); err != nil {
 		return fmt.Errorf("store: writer complete turn run %s: %w", id, err)
+	}
+	return nil
+}
+
+// StampRunLogRef records a run's log reference after its row exists: a failed
+// turn's run is minted before its run-id-keyed log can be opened, so the
+// reference lands in this one follow-up write.
+func (w *Writer) StampRunLogRef(ctx context.Context, id string, logRef string) error {
+	if err := w.conn.Exec(ctx, stampRunLogRefSQL, logRef, id); err != nil {
+		return fmt.Errorf("store: writer stamp run log ref %s: %w", id, err)
 	}
 	return nil
 }

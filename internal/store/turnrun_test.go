@@ -58,7 +58,7 @@ func TestCompleteTurnRunStampsTerminalInOneWrite(t *testing.T) {
 	rec := storetest.NewWriteRecorder()
 	w := store.NewWriter(rec)
 
-	if err := w.CompleteTurnRun(context.Background(), "7", "0/1A2B3C", 40, 44); err != nil {
+	if err := w.CompleteTurnRun(context.Background(), "7", "0/1A2B3C", 40, 44, "logs/run-7.log"); err != nil {
 		t.Fatalf("CompleteTurnRun: %v", err)
 	}
 	stmts := rec.Statements()
@@ -66,15 +66,15 @@ func TestCompleteTurnRunStampsTerminalInOneWrite(t *testing.T) {
 		t.Fatalf("want one guarded UPDATE, got %d", len(stmts))
 	}
 	e := stmts[0]
-	for _, want := range []string{"state = $1", "exit_code = 0", "snapshot_lsn", "journal_floor", "journal_ceiling", "AND state = $6"} {
+	for _, want := range []string{"state = $1", "exit_code = 0", "snapshot_lsn", "journal_floor", "journal_ceiling", "log_ref", "AND state = $7"} {
 		if !strings.Contains(e.SQL, want) {
 			t.Errorf("terminal stamp misses %q:\n%s", want, e.SQL)
 		}
 	}
-	if e.Args[0] != any(store.RunSucceeded) || e.Args[5] != any(store.RunRunning) {
+	if e.Args[0] != any(store.RunSucceeded) || e.Args[6] != any(store.RunRunning) {
 		t.Errorf("terminal transition args = %v, want running -> succeeded", e.Args)
 	}
-	if e.Args[1] != "0/1A2B3C" || e.Args[2] != int64(40) || e.Args[3] != int64(44) {
+	if e.Args[1] != "0/1A2B3C" || e.Args[2] != int64(40) || e.Args[3] != int64(44) || e.Args[4] != "logs/run-7.log" {
 		t.Errorf("stamp args = %v", e.Args)
 	}
 }
