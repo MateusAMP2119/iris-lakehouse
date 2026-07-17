@@ -40,7 +40,8 @@ import (
 //     protocol violation -- the run is minted directly dead_lettered (cause=loop,
 //     exit_code NULL, dead_letters reason=failed with the offending line quoted)
 //     and the turn's whole data transaction commits NOTHING, valid earlier frames
-//     included; the next turn recovers and commits normally.
+//     included; the failed dead letter engages the no-retry brake, and a manual
+//     release recovers and commits normally.
 //   - turn-window-attributes-whole-write-set: a producing run's recorded journal
 //     window [journal_floor, journal_ceiling] contains its entire write set -- the
 //     handle a wipe reverts.
@@ -76,18 +77,23 @@ func TestRunAttribution(t *testing.T) {
 	defer func() { _ = data.Close(ctx) }()
 
 	// Drain the phased scripts: the loop drives attr_writer through its two
-	// producing turns and attr_atomic through its violating turn and its recovery
-	// turn, then both answer quiet turns and park. Every wait is on recorded meta
+	// producing turns and attr_atomic through its violating turn (whose failed
+	// dead letter engages the no-retry brake until the manual release below),
+	// then both answer quiet turns and park. Every wait is on recorded meta
 	// state, never elapsed time.
 	awaitCount(ctx, t, meta, 2, 120*time.Second,
 		"SELECT count(*) FROM runs WHERE pipeline='attr_writer' AND cause='loop' AND state='succeeded'")
 	awaitCount(ctx, t, meta, 1, 120*time.Second,
 		"SELECT count(*) FROM runs WHERE pipeline='attr_atomic' AND cause='loop' AND state='dead_lettered'")
+	// The violation engaged the loop's no-retry brake (a failed dead letter is
+	// never retried on its own), so the recovery turn is an operator release: a
+	// manual run, executing the phased script's producing turn.
+	bin.Run(t, RunOptions{Args: []string{"pipeline", "run", "attr_atomic"}, Dir: ws, Timeout: 2 * time.Minute}).RequireExit(t, 0)
 	awaitCount(ctx, t, meta, 1, 120*time.Second,
-		"SELECT count(*) FROM runs WHERE pipeline='attr_atomic' AND cause='loop' AND state='succeeded'")
+		"SELECT count(*) FROM runs WHERE pipeline='attr_atomic' AND cause='manual' AND state='succeeded'")
 
 	// The four recorded runs, in commit order: attr_writer's two producing turns,
-	// attr_atomic's violating turn and its recovery turn.
+	// attr_atomic's violating turn and its manual recovery run.
 	w1 := scanID(ctx, t, meta, "SELECT min(id) FROM runs WHERE pipeline='attr_writer' AND state='succeeded'")
 	w2 := scanID(ctx, t, meta, "SELECT max(id) FROM runs WHERE pipeline='attr_writer' AND state='succeeded'")
 	violated := scanID(ctx, t, meta, "SELECT id FROM runs WHERE pipeline='attr_atomic' AND state='dead_lettered'")
@@ -192,9 +198,10 @@ func TestRunAttribution(t *testing.T) {
 			`SELECT count(*) FROM public.data_journal WHERE schema='attrdata' AND "table"='ledger' AND row_pk='600'`)
 		assertCount(ctx, t, data, 0, "SELECT count(*) FROM public.data_journal WHERE run_id=$1", violated)
 
-		// The next turn (a fresh worker: the violated session was recycled)
-		// recovers: its row commits and journals to its own run, and the table
-		// holds exactly the recovery row -- the violating turn's row never landed.
+		// The manual release (a fresh one-shot worker: the violated session was
+		// recycled and the brake parked the loop) recovers: its row commits and
+		// journals to its own run, and the table holds exactly the recovery row --
+		// the violating turn's row never landed.
 		assertCount(ctx, t, data, 1,
 			"SELECT count(*) FROM public.data_journal WHERE run_id=$1 AND row_pk='601' AND op='insert' AND undo='open'", recovered)
 		assertCount(ctx, t, data, 1, "SELECT count(*) FROM public.data_journal WHERE run_id=$1", recovered)
@@ -209,7 +216,7 @@ func TestRunAttribution(t *testing.T) {
 		for _, leg := range []struct {
 			run    int64
 			stamps int64
-		}{{w1, 2}, {w2, 2}, {recovered, 1}} {
+		}{{w1, 2}, {w2, 2}} {
 			var floor, ceiling *int64
 			if err := meta.QueryRow(ctx, "SELECT journal_floor, journal_ceiling FROM runs WHERE id=$1", leg.run).Scan(&floor, &ceiling); err != nil {
 				t.Fatalf("read journal window of run %d: %v", leg.run, err)
@@ -222,6 +229,17 @@ func TestRunAttribution(t *testing.T) {
 			assertCount(ctx, t, data, 0,
 				"SELECT count(*) FROM public.data_journal WHERE run_id=$1 AND (id <= $2 OR id > $3)", leg.run, *floor, *ceiling)
 		}
+		// The manual recovery run is pre-minted (no dispatch-time floor); its
+		// terminal ceiling still bounds its whole write set.
+		var recCeiling *int64
+		if err := meta.QueryRow(ctx, "SELECT journal_ceiling FROM runs WHERE id=$1", recovered).Scan(&recCeiling); err != nil {
+			t.Fatalf("read journal ceiling of run %d: %v", recovered, err)
+		}
+		if recCeiling == nil {
+			t.Fatal("manual recovery run recorded no journal ceiling")
+		}
+		assertCount(ctx, t, data, 0,
+			"SELECT count(*) FROM public.data_journal WHERE run_id=$1 AND id > $2", recovered, *recCeiling)
 	})
 
 	t.Run("quiet-loop-parks-and-manual-run-attributes", func(t *testing.T) {

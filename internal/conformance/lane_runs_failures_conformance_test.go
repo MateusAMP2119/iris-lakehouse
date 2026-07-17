@@ -295,11 +295,14 @@ turn_loop(on_turn)
 
 		meta := openMeta(t, ws)
 		pipes := []string{"extract_orders", "reset_counters", "load_orders"}
-		// The successor of the old idle no-op chain (#206): the loop still drives every
-		// member's turn (the markers are the proof, since a quiet turn leaves no run
-		// row), but a quiet turn writes NOTHING -- no run row, no watermark bump -- so
-		// an all-quiet lane parks instead of chaining passes forever.
-		for _, p := range pipes {
+		// The successor of the old idle no-op chain (#206): the loop still drives the
+		// ungated members' turns (the markers are the proof, since a quiet turn
+		// leaves no run row), but a quiet turn writes NOTHING -- no run row, no
+		// watermark bump -- so an all-quiet lane parks instead of chaining passes
+		// forever. load_orders is edge-gated on extract_orders, whose quiet turns
+		// mint no runs, so its gate never opens and it never takes a turn at all --
+		// its zero run rows below are that gate's own proof.
+		for _, p := range []string{"extract_orders", "reset_counters"} {
 			waitFile(t, filepath.Join(ws, "pipelines", "ingest", p, "turns.marker"), 90*time.Second)
 		}
 		// A short settle so a contract break (a quiet turn minting a row) has passes in
