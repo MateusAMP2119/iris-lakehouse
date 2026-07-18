@@ -42,7 +42,7 @@ const rankMain = 100
 // rule is: a shipped package may import another shipped package only when the
 // target's rank is strictly lower. That single rule captures the whole layering
 // at once -- cli -> daemon -> api -> dispatch -> store/pg/exec, archive beside
-// dispatch, config/declare/build/pat/buildinfo as leaves -- and, because a
+// dispatch, config/declare/build/pat/plugin/buildinfo as leaves -- and, because a
 // strictly-lower target is required, it also forbids the banned same-rank
 // crossings: store<->pg ("two clients, two databases, never crossed") and
 // archive<->dispatch (siblings coordinated from above).
@@ -60,6 +60,7 @@ var productRanks = map[string]int{
 	"declare":   1,
 	"build":     1,
 	"pat":       1,
+	"plugin":    1,
 	"update":    1,
 	"store":     2,
 	"pg":        2,
