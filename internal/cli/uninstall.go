@@ -278,7 +278,7 @@ func (a *app) uninstallAborted(p painter, jsonMode bool, path string, steps []un
 	return nil
 }
 
-// uninstallProgressBar animates a removal step's bar in place on a terminal, prefix leading the bar; piped runs draw nothing.
+// uninstallProgressBar animates a removal step's bar in place on a terminal, prefix leading the bar; plain glyphs match the installer's engine bar exactly. Piped runs draw nothing.
 func (a *app) uninstallProgressBar(p painter, prefix string) {
 	if !p.enabled {
 		return
@@ -286,7 +286,7 @@ func (a *app) uninstallProgressBar(p painter, prefix string) {
 	const cells = 10
 	for i := 0; i <= cells; i++ {
 		bar := strings.Repeat("█", i) + strings.Repeat("░", cells-i)
-		fmt.Fprintf(a.out, "\r\033[2K  %s [%s] %d%%", prefix, p.cyan(bar), i*100/cells)
+		fmt.Fprintf(a.out, "\r\033[2K  %s [%s] %d%%", prefix, bar, i*100/cells)
 		time.Sleep(25 * time.Millisecond)
 	}
 	fmt.Fprintln(a.out)
