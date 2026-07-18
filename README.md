@@ -207,7 +207,7 @@ The suite is database-free: unit tests for pure logic and integration tests that
 go test -race ./...   # unit + integration (database-free)
 ```
 
-CI runs the suite on Go 1.25 and 1.26, plus golangci-lint and the cross-compile matrix. Nothing merges red.
+There is no test CI: the suite and golangci-lint run locally before every merge. Nothing merges red.
 
 ---
 
@@ -239,6 +239,6 @@ Merging a PR into `master` is now the **only** action required to produce a new 
 
 ## Status
 
-All 15 epics (E00–E14) are **complete on `development`**: full CI green under `-race`. Epic checkpoint merges to `master` are in progress.
+All 15 epics (E00–E14) are **complete on `development`**: full suite green under `-race`. Epic checkpoint merges to `master` are in progress.
 
 Built test-first, end to end, by AI coding agents working under the conventions in [CLAUDE.md](CLAUDE.md): every line of source written against failing tests, nothing merged red.

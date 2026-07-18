@@ -10,7 +10,6 @@ The test suite is the durable asset; implementation is regenerable. Behaviour ge
 1. Test tiers, cheapest first — write the test at the lowest tier that can actually observe the behaviour:
    - `unit` — pure logic, no I/O.
    - `integration` — fakes + local process I/O, no live Postgres.
-   Unit + integration are what CI runs per Go version.
 2. Write the failing test first, then implement to green.
 3. Never weaken a test to make it pass. If a test is genuinely wrong, change it deliberately as an intended behaviour change — never to silence a red run.
 4. Nothing merges red: full suite green before merge.
@@ -18,9 +17,9 @@ The test suite is the durable asset; implementation is regenerable. Behaviour ge
 ## Commands
 
 - Build: `go build ./...`; binary: `go build -o iris ./cmd/iris` (always cgo-free; release/cross-compile with `CGO_ENABLED=0`).
-- Unit + integration (database-free, what CI runs per Go version): `go test -race ./...`.
+- Unit + integration (database-free): `go test -race ./...`.
 - Single test: `go test -race -run 'TestName(/subtest)?' ./internal/<pkg>/`.
-- Lint: `golangci-lint run` (config `.golangci.yml`; CI pins version in `ci.yml` — currently v2.12.2).
+- Lint: `golangci-lint run` (config `.golangci.yml`; pinned version v2.12.2).
 
 ## Branching rules
 
@@ -28,7 +27,7 @@ The test suite is the durable asset; implementation is regenerable. Behaviour ge
 - `development`: integration line. All issue branches merge here.
 - Issue branches: `issue/EXX.Y-short-name`, cut from `development`. PR title `EXX.Y <task name>`; PR body lists a Done-when checklist. Small tweaks may go on plain feature branches.
 - Epic completes → PR `Epic EXX` goes `development` → `master`, waits for human review.
-- Issue PRs merge on CI green — no per-PR review step.
+- Issue PRs merge on a green local run (`go test -race ./...` + lint) — no per-PR review step; there is no test CI.
 
 ## Conventions
 
