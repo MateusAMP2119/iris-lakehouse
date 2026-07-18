@@ -439,11 +439,11 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 		return dispatch.RunSucceeded, ctx.Err()
 
 	case turnDone:
-		if len(res.rows) == 0 && !feed.Advanced {
+		if len(res.rows) == 0 && len(res.calls) == 0 && !feed.Advanced {
 			m.counters.bump(rec.Pipeline, false)
 			return dispatch.RunQuiet, nil // the quiet turn: two JSON lines, zero writes
 		}
-		if len(res.rows) == 0 {
+		if len(res.rows) == 0 && len(res.calls) == 0 {
 			// Input consumed, nothing produced: persist only the feed position (one
 			// small data transaction, no run row -- nothing happened worth a record).
 			if _, err := m.data.CommitTurn(ctx, pg.TurnCommit{Pipeline: rec.Pipeline, Position: feed.Position, AdvancePosition: true}); err != nil {
@@ -451,6 +451,39 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 			}
 			m.counters.bump(rec.Pipeline, false)
 			return dispatch.RunQuiet, nil
+		}
+		if len(res.rows) == 0 {
+			// Calls-only turn (#215): zero declared writes, but external effects
+			// happened -- they must land in the ledger, so the run records. Mint
+			// running (pins and calls ride the mint), advance the consumed feed
+			// position if any, complete with no snapshot stamps.
+			m.counters.bump(rec.Pipeline, true)
+			if err := m.submit.Submit(ctx, func(w *store.Writer) error { return w.CreateTurnRun(ctx, trec) }); err != nil {
+				return dispatch.RunSucceeded, fmt.Errorf("lane turn %q: mint calls-only: %w", rec.Pipeline, err)
+			}
+			id, err := m.mintedRunID(ctx, rec.Pipeline)
+			if err != nil {
+				return dispatch.RunSucceeded, err
+			}
+			runID := strconv.FormatInt(id, 10)
+			ref := m.flushTurnLog(runID, rec.Pipeline, target, buf, tr, "succeeded")
+			if feed.Advanced {
+				if _, cerr := m.data.CommitTurn(ctx, pg.TurnCommit{Pipeline: rec.Pipeline, Position: feed.Position, AdvancePosition: true}); cerr != nil {
+					detail := fmt.Sprintf("turn commit failed: %v", cerr)
+					if derr := m.submit.Submit(ctx, func(w *store.Writer) error {
+						return w.DeadLetterRun(ctx, runID, store.ReasonFailed, detail)
+					}); derr != nil {
+						return dispatch.RunSucceeded, fmt.Errorf("lane turn %s: dead-letter: %w", runID, derr)
+					}
+					return dispatch.RunDeadLettered, nil
+				}
+			}
+			if err := m.submit.Submit(ctx, func(w *store.Writer) error {
+				return w.CompleteTurnRun(ctx, runID, "", 0, 0, ref)
+			}); err != nil {
+				return dispatch.RunSucceeded, fmt.Errorf("lane turn %s: record succeeded: %w", runID, err)
+			}
+			return dispatch.RunSucceeded, nil
 		}
 		if m.data == nil {
 			return dispatch.RunSucceeded, fmt.Errorf("lane turn %q: produced %d rows with no data seam wired", rec.Pipeline, len(res.rows))

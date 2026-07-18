@@ -105,7 +105,7 @@ const (
 	selectPipelineRunTargetSQL = `SELECT p.folder, p.run, coalesce(l.split, false), coalesce(l.stamp, false)
     FROM pipelines p LEFT JOIN pipeline_logs l ON l.pipeline = p.name
     WHERE p.name = $1`
-	selectLatestRunSQL         = `SELECT r.id, r.state, coalesce(d.reason, ''), coalesce(d.error, '')
+	selectLatestRunSQL = `SELECT r.id, r.state, coalesce(d.reason, ''), coalesce(d.error, '')
     FROM runs r LEFT JOIN dead_letters d ON d.run_id = r.id
     WHERE r.pipeline = $1 ORDER BY r.id DESC LIMIT 1`
 	selectQueuedManualRunsSQL = `SELECT id, artifact_hash FROM runs WHERE pipeline = $1 AND state = 'queued' AND cause = 'manual' ORDER BY id`

@@ -265,14 +265,16 @@ func TestPruneRunsBatchesOneTransaction(t *testing.T) {
 			t.Fatalf("PruneRuns issued %d transactions for 3 runs, want exactly one", len(txns))
 		}
 		stmts := txns[0]
-		if len(stmts) != 9 {
-			t.Fatalf("batch carries %d statements for 3 runs, want 9 (3 per run)", len(stmts))
+		if len(stmts) != 15 {
+			t.Fatalf("batch carries %d statements for 3 runs, want 15 (5 per run)", len(stmts))
 		}
 		for i, run := range batch {
-			triple := stmts[i*3 : i*3+3]
+			triple := stmts[i*5 : i*5+5]
 			if !strings.Contains(triple[0].SQL, "INSERT INTO run_summaries") ||
 				!strings.Contains(triple[1].SQL, "DELETE FROM run_inputs") ||
-				!strings.Contains(triple[2].SQL, "DELETE FROM runs") {
+				!strings.Contains(triple[2].SQL, "DELETE FROM run_plugins") ||
+				!strings.Contains(triple[3].SQL, "DELETE FROM run_plugin_calls") ||
+				!strings.Contains(triple[4].SQL, "DELETE FROM runs") {
 				t.Fatalf("run %d triple out of order (summary insert, inputs cascade, run delete):\n%v", run.RunID, triple)
 			}
 			if got := triple[0].Args[0]; got != run.RunID {
