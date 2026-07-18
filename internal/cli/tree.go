@@ -247,6 +247,9 @@ func (a *app) runCmd() *cobra.Command {
 		Use: "logs <run>", Short: "Print a run's captured output",
 		Args: cobra.ExactArgs(1), RunE: a.runLogs(),
 	}
+	logs.Flags().Bool("log", false, "framed captures: only the pipeline's log lines")
+	logs.Flags().Bool("frames", false, "framed captures: only the protocol transcript")
+	logs.Flags().Bool("tagged", false, "framed captures: the raw tagged file, unrendered")
 	cancel := &cobra.Command{
 		Use: "cancel <run>", Short: "Cancel one running run (kills its process group)",
 		Args: cobra.ExactArgs(1), RunE: a.runCancel(),

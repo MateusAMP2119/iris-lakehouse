@@ -7,8 +7,8 @@ import (
 	"github.com/MateusAMP2119/iris-lakehouse/internal/store"
 )
 
-// TestEighteenTableRoster proves the bootstrap DDL creates exactly twenty-one engine
-// tables: the twenty meta control tables plus public.data_journal in the data
+// TestEighteenTableRoster proves the bootstrap DDL creates exactly twenty-two engine
+// tables: the twenty-one meta control tables plus public.data_journal in the data
 // database. The eighteenth meta table is engine_key (moving the engine signing key
 // from a per-database GUC into an engine-owned single-row meta table); the
 // nineteenth is read_pool_credential (persisting the shared read-pool login secret
@@ -35,8 +35,8 @@ func TestEighteenTableRoster(t *testing.T) {
 	}
 
 	total := len(meta.Tables) + 1
-	if total != 21 {
-		t.Errorf("engine table roster = %d, want exactly 21 (20 meta + data_journal)", total)
+	if total != 22 {
+		t.Errorf("engine table roster = %d, want exactly 22 (21 meta + data_journal)", total)
 	}
 
 	// data_journal is not a meta control table: the twenty-first table lives on the

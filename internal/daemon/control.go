@@ -225,7 +225,14 @@ func (o *controlOrchestrator) apply(ctx context.Context, req api.ControlRequest)
 				return api.ControlResult{}, err
 			}
 		}
-		return api.ControlResult{Kind: decl.Kind.String(), Target: decl.Pipeline.Name, DryRun: req.DryRun}, nil
+		// The recording contract is advisory-defaulted: an omitted logs block
+		// applies the engine default (combined raw stream, no stamp) and rides
+		// a warning, so the declaration is nudged toward stating it.
+		var warnings []string
+		if decl.Pipeline.Logs == nil {
+			warnings = append(warnings, fmt.Sprintf("pipeline %q declares no logs block; engine default applies (combined stream, no stamp); declare logs: {split: true, stamp: true} to state the recording contract", decl.Pipeline.Name))
+		}
+		return api.ControlResult{Kind: decl.Kind.String(), Target: decl.Pipeline.Name, DryRun: req.DryRun, Warnings: warnings}, nil
 	case declare.KindComposer:
 		// Composer apply validates the whole folder against its surface (member subset plus pairwise write claims), so a shrinking surface refuses instead of stranding members.
 		if decl.Composer.HasSurface() {

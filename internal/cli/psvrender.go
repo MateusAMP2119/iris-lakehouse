@@ -855,7 +855,7 @@ func renderLogsPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 		start = 0
 	}
 	for i, line := range logs[start:end] {
-		b.text(x+2, y+1+i, "", line)
+		b.text(x+2, y+1+i, logLineStyle(line), line)
 	}
 	if len(logs) > 0 {
 		tail := fmt.Sprintf(" %d lines ", len(logs))
@@ -951,4 +951,20 @@ func renderSearchPreview(b *screenBuf, m *psModel, h psHit, x, y, w, ph int) {
 		}
 	}
 	b.blit(sub, x, y)
+}
+
+// logLineStyle picks the logs pane's style for one naturalized capture line: a
+// framed capture's protocol and stamp lines render marked by origin ([engine],
+// [pipeline], [iris]); the pipeline's own log lines stay unstyled.
+func logLineStyle(line string) string {
+	switch {
+	case strings.HasPrefix(line, "[engine] "):
+		return ansiCyan
+	case strings.HasPrefix(line, "[pipeline] "):
+		return ansiOrange
+	case strings.HasPrefix(line, "[iris] "):
+		return ansiDim
+	default:
+		return ""
+	}
 }

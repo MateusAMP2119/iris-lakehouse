@@ -10,6 +10,13 @@ meta: CREATE TABLE IF NOT EXISTS pipelines (
     CHECK (artifact IN ('source', 'built')),
     CHECK (data_mode IN ('disposable', 'permanent'))
 );
+meta: CREATE TABLE IF NOT EXISTS pipeline_logs (
+    pipeline text,
+    split boolean NOT NULL,
+    stamp boolean NOT NULL,
+    PRIMARY KEY (pipeline),
+    FOREIGN KEY (pipeline) REFERENCES pipelines (name)
+);
 meta: CREATE TABLE IF NOT EXISTS dependencies (
     from_pipeline text,
     to_pipeline text,

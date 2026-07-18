@@ -194,7 +194,7 @@ func (s *syncBuffer) String() string {
 // staticLogs serves a run's captured output for the loop's poller tests.
 type staticLogs struct{ text string }
 
-func (s staticLogs) Logs(context.Context, string) (io.ReadCloser, error) {
+func (s staticLogs) Logs(context.Context, string, api.LogsOptions) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader(s.text)), nil
 }
 

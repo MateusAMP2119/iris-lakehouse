@@ -51,7 +51,7 @@ func psTestLoads(runs RunSnapshotReader, probe loadProber) *loadHistory {
 
 // psTestPlane builds a plane over the fakes and a once-ticked collector.
 func psTestPlane(runs RunSnapshotReader, probe loadProber, role api.RoleReporter) *psPlane {
-	p := NewPsPlane(role, runs, psTestLoads(runs, probe), nil, nil).(*psPlane)
+	p := NewPsPlane(role, runs, psTestLoads(runs, probe), nil, nil, nil).(*psPlane)
 	p.pid = 100
 	return p
 }
@@ -190,7 +190,7 @@ func TestPsPlaneComposesReadout(t *testing.T) {
 	})
 
 	t.Run("a nil collector reads as never sampled", func(t *testing.T) {
-		p := NewPsPlane(leaderRoleState(), fakeRunReader{runs: runs}, nil, nil, nil).(*psPlane)
+		p := NewPsPlane(leaderRoleState(), fakeRunReader{runs: runs}, nil, nil, nil, nil).(*psPlane)
 		got, err := p.Ps(context.Background(), false, true)
 		if err != nil {
 			t.Fatalf("Ps: %v", err)

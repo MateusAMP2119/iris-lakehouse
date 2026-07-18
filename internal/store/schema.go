@@ -286,6 +286,23 @@ func MetaSchema() Schema {
 					{Column: "data_mode", Values: []string{"disposable", "permanent"}},
 				},
 			},
+			// pipeline_logs: the declared run-log recording contract, one row per
+			// registered pipeline. An absent row means the engine default (one
+			// combined raw stream, no stamp); apply rewrites the row wholesale. A
+			// separate table rather than pipelines columns keeps the meta DDL
+			// purely additive (CREATE IF NOT EXISTS, no ALTER) across upgrades.
+			{
+				Name: "pipeline_logs",
+				Columns: []Column{
+					{Name: "pipeline", Type: "text"},
+					{Name: "split", Type: "boolean"},
+					{Name: "stamp", Type: "boolean"},
+				},
+				PrimaryKey: []string{"pipeline"},
+				ForeignKeys: []ForeignKey{
+					{Column: "pipeline", RefTable: "pipelines", RefColumn: "name"},
+				},
+			},
 			// dependencies: the depends_on graph as edge rows, indexed both directions.
 			{
 				Name: "dependencies",

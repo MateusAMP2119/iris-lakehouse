@@ -259,7 +259,8 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	loads := newLoadHistory(client.Reader(), ManagedPostmasterPID(s), loadStore, logger)
 	go loads.run(ctx)
 	turnTally := newTurnCounters()
-	psp := NewPsPlane(role, client.Reader(), loads, turnTally, logger)
+	runLogs := NewRunLogWriter(s)
+	psp := NewPsPlane(role, client.Reader(), loads, turnTally, runLogs, logger)
 
 	// The dead-letter plane serves GET /dead_letters/{run}/impact (the blast readout
 	// `iris deadletter show` renders) on any node from the reader pool, and POST
@@ -286,7 +287,8 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// its run-id-keyed file (runs.log_ref), the post-pass pruner deletes the file
 	// with the run row, and the run-logs plane serves it back (GET /runs/{id}/logs,
 	// a read on any role -- the log lives on the node that executed the run).
-	runLogs := NewRunLogWriter(s)
+	// runLogs itself is built beside the ps plane above, which stats the same
+	// files for the per-run log metadata.
 	runTrace := newRunTracePlane(client.Reader(), logger)
 	pipelineGate := newPipelineGatePlane(client.ShowReader(), logger)
 

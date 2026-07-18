@@ -11,6 +11,14 @@ CREATE TABLE IF NOT EXISTS pipelines (
     CHECK (data_mode IN ('disposable', 'permanent'))
 );
 
+CREATE TABLE IF NOT EXISTS pipeline_logs (
+    pipeline text,
+    split boolean NOT NULL,
+    stamp boolean NOT NULL,
+    PRIMARY KEY (pipeline),
+    FOREIGN KEY (pipeline) REFERENCES pipelines (name)
+);
+
 CREATE TABLE IF NOT EXISTS dependencies (
     from_pipeline text,
     to_pipeline text,
