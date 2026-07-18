@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// This file holds the embedded meta schema: the twenty control tables of the
+// This file holds the embedded meta schema: the twenty-two control tables of the
 // dedicated meta database, modeled as Go data that renders deterministically to
 // create-if-missing DDL and is directly assertable for the roster, foreign-key
 // graph, and identity-ordering contracts. The model is the single source; the
@@ -262,7 +262,7 @@ func dependenciesSatisfied(t Table, emitted map[string]bool) bool {
 	return true
 }
 
-// MetaSchema returns the meta control-plane schema: the twenty tables, in roster
+// MetaSchema returns the meta control-plane schema: the twenty-two tables, in roster
 // order. Roster order is not a safe DDL emission order (runs precedes artifacts it references); DDL() emits in
 // FK-dependency order instead. Ordering keys are monotonic bigint identity
 // columns; recorded_at is an opaque non-ordering text audit string throughout.
@@ -388,6 +388,47 @@ func MetaSchema() Schema {
 				},
 				Indexes: []Index{
 					{Name: "run_inputs_upstream_run_id_idx", Columns: []string{"upstream_run_id"}},
+				},
+			},
+			// run_plugins: the plugin pins a run executed under. One row per
+			// declared alias, recorded when the run records: (plugin, version,
+			// digest) is the trust anchor a resolve verified before the turn
+			// started, so lineage names exactly which plugin binary acted.
+			{
+				Name: "run_plugins",
+				Columns: []Column{
+					{Name: "run_id", Type: "bigint"},
+					{Name: "alias", Type: "text"},
+					{Name: "plugin", Type: "text"},
+					{Name: "version", Type: "text"},
+					{Name: "digest", Type: "text"},
+				},
+				PrimaryKey: []string{"run_id", "alias"},
+				ForeignKeys: []ForeignKey{
+					{Column: "run_id", RefTable: "runs", RefColumn: "id"},
+				},
+			},
+			// plugin_calls: the per-call audit ledger. Every mid-run verb call
+			// records its verb, args digest, and response digest (or error), so
+			// an external effect is a recorded event, never a hole in lineage.
+			{
+				Name: "plugin_calls",
+				Columns: []Column{
+					{Name: "run_id", Type: "bigint"},
+					{Name: "call_id", Type: "text"},
+					{Name: "verb", Type: "text"},
+					{Name: "args_digest", Type: "text"},
+					{Name: "response_digest", Type: "text", Nullable: true},
+					{Name: "status", Type: "text"},
+					{Name: "error", Type: "text", Nullable: true},
+					{Name: "recorded_at", Type: "text"},
+				},
+				PrimaryKey: []string{"run_id", "call_id"},
+				ForeignKeys: []ForeignKey{
+					{Column: "run_id", RefTable: "runs", RefColumn: "id"},
+				},
+				Checks: []Check{
+					{Column: "status", Values: []string{"ok", "err"}},
 				},
 			},
 			// dead_letters: the outstanding worklist. run_id PK FK.

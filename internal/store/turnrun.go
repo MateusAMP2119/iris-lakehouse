@@ -32,6 +32,9 @@ type TurnRunRecord struct {
 	// ConsumedUpstreamRunIDs are the upstream runs the turn's gate resolved,
 	// one run_inputs row each.
 	ConsumedUpstreamRunIDs []int64
+	// Plugins are the plugin pins the turn resolved before it started, one
+	// run_plugins row each.
+	Plugins []RunPluginPin
 }
 
 // createTurnRunSQL mints a producing turn's run directly in the running state,
@@ -42,16 +45,22 @@ const createTurnRunSQL = `WITH new_run AS (
         (pipeline, state, cause, artifact_hash, declaration_checksum, handle, log_ref, recorded_at)
     VALUES ($1, $2, $3, $4, $5, NULLIF($6, 0), NULLIF($7, ''), now()::text)
     RETURNING id
+), inputs AS (
+    INSERT INTO run_inputs (run_id, upstream_run_id)
+    SELECT new_run.id, upstream
+    FROM new_run, unnest($8::bigint[]) AS upstream
 )
-INSERT INTO run_inputs (run_id, upstream_run_id)
-SELECT new_run.id, upstream
-FROM new_run, unnest($8::bigint[]) AS upstream`
+INSERT INTO run_plugins (run_id, alias, plugin, version, digest)
+SELECT new_run.id, a, p, v, d
+FROM new_run, unnest($9::text[], $10::text[], $11::text[], $12::text[]) AS t(a, p, v, d)`
 
 // completeTurnRunSQL closes a producing turn's run: the guarded running ->
 // succeeded transition stamping exit code zero, the turn's snapshot pin
-// (LSN, journal floor and ceiling), and the log reference in one statement.
+// (LSN, journal floor and ceiling), and the log reference in one statement. A
+// calls-only turn (plugin calls, no data commit) completes with no LSN; NULLIF
+// keeps its pin honestly absent rather than an empty string.
 const completeTurnRunSQL = `UPDATE runs
-SET state = $1, exit_code = 0, snapshot_lsn = $2, journal_floor = $3, journal_ceiling = $4, log_ref = NULLIF($5, '')
+SET state = $1, exit_code = 0, snapshot_lsn = NULLIF($2, ''), journal_floor = $3, journal_ceiling = $4, log_ref = NULLIF($5, '')
 WHERE id = $6 AND state = $7`
 
 // stampRunLogRefSQL records a run's log reference after the fact: the failed-turn
@@ -69,10 +78,14 @@ const deadLetterTurnRunSQL = `WITH new_run AS (
 ), letter AS (
     INSERT INTO dead_letters (run_id, reason, error)
     SELECT id, $8, $9 FROM new_run
+), inputs AS (
+    INSERT INTO run_inputs (run_id, upstream_run_id)
+    SELECT new_run.id, upstream
+    FROM new_run, unnest($10::bigint[]) AS upstream
 )
-INSERT INTO run_inputs (run_id, upstream_run_id)
-SELECT new_run.id, upstream
-FROM new_run, unnest($10::bigint[]) AS upstream`
+INSERT INTO run_plugins (run_id, alias, plugin, version, digest)
+SELECT new_run.id, a, p, v, d
+FROM new_run, unnest($11::text[], $12::text[], $13::text[], $14::text[]) AS t(a, p, v, d)`
 
 // CreateTurnRun mints a producing turn's run row directly in the running state
 // with its consumption ledger, one atomic meta transaction. The caller commits
@@ -83,6 +96,7 @@ func (w *Writer) CreateTurnRun(ctx context.Context, rec TurnRunRecord) error {
 	if rec.ArtifactHash != nil {
 		artifactHash = *rec.ArtifactHash
 	}
+	aliases, plugins, versions, digests := pluginPinArrays(rec.Plugins)
 	stmts := []Statement{{
 		SQL: createTurnRunSQL,
 		Args: []any{
@@ -94,6 +108,7 @@ func (w *Writer) CreateTurnRun(ctx context.Context, rec TurnRunRecord) error {
 			rec.Handle,
 			rec.LogRef,
 			rec.ConsumedUpstreamRunIDs,
+			aliases, plugins, versions, digests,
 		},
 	}}
 	if err := w.execTx(ctx, stmts); err != nil {
@@ -151,6 +166,7 @@ func (w *Writer) DeadLetterTurnRun(ctx context.Context, rec TurnRunRecord, reaso
 	if detail != "" {
 		errDetail = detail
 	}
+	aliases, plugins, versions, digests := pluginPinArrays(rec.Plugins)
 	stmts := []Statement{{
 		SQL: deadLetterTurnRunSQL,
 		Args: []any{
@@ -164,6 +180,7 @@ func (w *Writer) DeadLetterTurnRun(ctx context.Context, rec TurnRunRecord, reaso
 			string(reason),
 			errDetail,
 			rec.ConsumedUpstreamRunIDs,
+			aliases, plugins, versions, digests,
 		},
 	}}
 	if err := w.execTx(ctx, stmts); err != nil {

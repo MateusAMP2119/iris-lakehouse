@@ -3,6 +3,8 @@ package dispatch
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
 // This file is the turn protocol model (#206): the pure frame codec and per-turn
@@ -29,6 +31,14 @@ const (
 	TurnEventDone = "done"
 	// TurnEventError is the pipeline's declared-failure terminal: {"event":"error","turn":N,"reason":"...","detail":{}}.
 	TurnEventError = "error"
+	// TurnEventCall is a mid-turn plugin verb call from the pipeline:
+	// {"event":"call","id":"c1","verb":"mail.send","args":{...}}. The engine
+	// always answers with a res frame before the turn proceeds.
+	TurnEventCall = "call"
+	// TurnEventRes is the engine's reply to a call: {"event":"res","id":"c1","ok":{...}}
+	// on success, {"event":"res","id":"c1","err":"..."} on failure. The engine
+	// always replies -- a crashed or timed-out plugin produces an err, never silence.
+	TurnEventRes = "res"
 )
 
 // turnFrame is the one wire shape both protocol halves share; a field absent from
@@ -40,6 +50,11 @@ type turnFrame struct {
 	Row    json.RawMessage `json:"row,omitempty"`
 	Reason string          `json:"reason,omitempty"`
 	Detail json.RawMessage `json:"detail,omitempty"`
+	ID     string          `json:"id,omitempty"`
+	Verb   string          `json:"verb,omitempty"`
+	Args   json.RawMessage `json:"args,omitempty"`
+	OK     json.RawMessage `json:"ok,omitempty"`
+	Err    string          `json:"err,omitempty"`
 }
 
 // EncodeGoFrame renders the turn-opening header the engine writes first.
@@ -64,6 +79,45 @@ func EncodeRowFrame(table string, row json.RawMessage) (string, error) {
 	return string(b), nil
 }
 
+// EncodeResOKFrame renders the engine's success reply to a call: the call id
+// and the verb's JSON result. A nil result marshals as an empty object, so an
+// ok reply always carries an ok field distinct from an err reply.
+func EncodeResOKFrame(id string, result json.RawMessage) (string, error) {
+	if len(result) == 0 {
+		result = json.RawMessage("{}")
+	}
+	b, err := json.Marshal(turnFrame{Event: TurnEventRes, ID: id, OK: result})
+	if err != nil {
+		return "", fmt.Errorf("dispatch: encode res frame for call %s: %w", id, err)
+	}
+	return string(b), nil
+}
+
+// EncodeResErrFrame renders the engine's failure reply to a call: the call id
+// and the failure message. The engine always replies -- a plugin crash or
+// timeout produces this frame, never silence.
+func EncodeResErrFrame(id, msg string) string {
+	b, err := json.Marshal(turnFrame{Event: TurnEventRes, ID: id, Err: msg})
+	if err != nil {
+		// A string and a RawMessage-free frame cannot fail to marshal; the
+		// fallback keeps the always-reply promise regardless.
+		return `{"event":"res","id":` + strconv.Quote(id) + `,"err":"plugin call failed"}`
+	}
+	return string(b)
+}
+
+// TurnCall is one mid-turn plugin verb call as collected: the pipeline-chosen
+// call id, the alias-qualified verb ("mail.send"), and the JSON arguments
+// verbatim.
+type TurnCall struct {
+	// ID is the pipeline's call id, echoed on the reply.
+	ID string
+	// Verb is the alias-qualified verb: <declared alias>.<manifest verb>.
+	Verb string
+	// Args are the call's JSON arguments, verbatim.
+	Args json.RawMessage
+}
+
 // FrameError is a turn protocol violation: an offending stdout line and why it
 // violates the protocol. The daemon dead-letters the turn with the line quoted
 // verbatim in the dead letter's detail, so the operator sees exactly what the
@@ -78,6 +132,13 @@ type FrameError struct {
 // Error renders the violation with the offending line quoted.
 func (e *FrameError) Error() string {
 	return fmt.Sprintf("turn protocol violation: %s: %q", e.Cause, e.Line)
+}
+
+// CutVerb splits an alias-qualified verb at its first dot: "mail.send" is
+// alias "mail", verb "send". A verb with no dot is malformed. The collector
+// validates the shape; the engine's verb dispatch resolves the halves.
+func CutVerb(qualified string) (alias, verb string, ok bool) {
+	return strings.Cut(qualified, ".")
 }
 
 // WriteSet is a pipeline's declared writes: dotted schema.table to the set of
@@ -135,10 +196,11 @@ type TurnEnd struct {
 // is pure per-turn state; the daemon builds one per turn and feeds it every
 // protocol line the session's scanner yields until it reports terminal.
 type TurnCollector struct {
-	turn   int64
-	writes WriteSet
-	rows   []TurnRow
-	ended  bool
+	turn    int64
+	writes  WriteSet
+	rows    []TurnRow
+	ended   bool
+	pending *TurnCall
 }
 
 // NewTurnCollector builds the collector for one turn over the pipeline's
@@ -150,6 +212,18 @@ func NewTurnCollector(turn int64, writes WriteSet) *TurnCollector {
 // Rows returns the output rows collected so far, in arrival order.
 func (c *TurnCollector) Rows() []TurnRow {
 	return c.rows
+}
+
+// TakeCall returns and clears the pending plugin call a call frame parked, if
+// any. The driver takes the call, invokes the verb, and replies with a res
+// frame before feeding the next line, so at most one call is ever outstanding.
+func (c *TurnCollector) TakeCall() (TurnCall, bool) {
+	if c.pending == nil {
+		return TurnCall{}, false
+	}
+	call := *c.pending
+	c.pending = nil
+	return call, true
 }
 
 // Feed consumes one stdout line. It returns the terminal frame and true once the
@@ -165,6 +239,19 @@ func (c *TurnCollector) Feed(line string) (TurnEnd, bool, error) {
 		return TurnEnd{}, false, &FrameError{Line: line, Cause: "unparseable frame"}
 	}
 	switch f.Event {
+	case TurnEventCall:
+		if c.pending != nil {
+			return TurnEnd{}, false, &FrameError{Line: line, Cause: "call frame while a call is outstanding"}
+		}
+		if f.ID == "" {
+			return TurnEnd{}, false, &FrameError{Line: line, Cause: "call frame has no id"}
+		}
+		alias, verb, ok := CutVerb(f.Verb)
+		if !ok || alias == "" || verb == "" {
+			return TurnEnd{}, false, &FrameError{Line: line, Cause: "call frame verb is not alias.verb"}
+		}
+		c.pending = &TurnCall{ID: f.ID, Verb: f.Verb, Args: f.Args}
+		return TurnEnd{}, false, nil
 	case TurnEventRow:
 		if f.Table == "" {
 			return TurnEnd{}, false, &FrameError{Line: line, Cause: "row frame has no table"}

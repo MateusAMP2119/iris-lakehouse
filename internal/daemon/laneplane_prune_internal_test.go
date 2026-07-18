@@ -103,14 +103,17 @@ func pruneBatches(rec *storetest.WriteRecorder) []int64 {
 		if len(tx) == 0 || !strings.Contains(tx[0].SQL, "INSERT INTO run_summaries") {
 			continue
 		}
-		if len(tx)%3 != 0 {
-			return nil // malformed batch: statements must come in per-run triples
+		const perRun = 5
+		if len(tx)%perRun != 0 {
+			return nil // malformed batch: statements must come in per-run groups
 		}
-		for i := 0; i < len(tx); i += 3 {
+		for i := 0; i < len(tx); i += perRun {
 			if !strings.Contains(tx[i].SQL, "INSERT INTO run_summaries") ||
 				!strings.Contains(tx[i+1].SQL, "DELETE FROM run_inputs") ||
-				!strings.Contains(tx[i+2].SQL, "DELETE FROM runs") {
-				return nil // malformed triple: summary insert, inputs cascade, run delete -- in that order
+				!strings.Contains(tx[i+2].SQL, "DELETE FROM run_plugins") ||
+				!strings.Contains(tx[i+3].SQL, "DELETE FROM plugin_calls") ||
+				!strings.Contains(tx[i+4].SQL, "DELETE FROM runs") {
+				return nil // malformed group: summary insert, cascades, run delete -- in that order
 			}
 			ids = append(ids, tx[i].Args[0].(int64))
 		}

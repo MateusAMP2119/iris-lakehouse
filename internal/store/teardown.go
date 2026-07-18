@@ -32,6 +32,8 @@ import (
 //
 //	run_inputs      -> runs (both endpoints of the consumption ledger)
 //	dead_letters    -> runs and pipelines (worklist + failed_upstream)
+//	run_plugins     -> runs (per-run plugin pins)
+//	plugin_calls    -> runs (per-call audit ledger)
 //	runs            -> pipelines and artifacts (history root; references artifacts.hash)
 //	artifacts       -> pipelines (content-addressed index; runs already gone)
 //	dependencies    -> pipelines (both endpoints of every edge touching the target)
@@ -55,9 +57,19 @@ WHERE run_id IN (SELECT id FROM runs WHERE pipeline = $1)
 WHERE run_id IN (SELECT id FROM runs WHERE pipeline = $1)
    OR failed_upstream = $1`
 
-	// retireRunsSQL clears the target's run history. It runs after run_inputs and
-	// dead_letters (its children) and before artifacts (runs.artifact_hash references
-	// artifacts.hash).
+	// retireRunPluginsSQL clears the plugin pins of the target's runs, before the
+	// runs they reference.
+	retireRunPluginsSQL = `DELETE FROM run_plugins
+WHERE run_id IN (SELECT id FROM runs WHERE pipeline = $1)`
+
+	// retirePluginCallsSQL clears the plugin-call audit rows of the target's runs,
+	// before the runs they reference.
+	retirePluginCallsSQL = `DELETE FROM plugin_calls
+WHERE run_id IN (SELECT id FROM runs WHERE pipeline = $1)`
+
+	// retireRunsSQL clears the target's run history. It runs after run_inputs,
+	// dead_letters, run_plugins, and plugin_calls (its children) and before
+	// artifacts (runs.artifact_hash references artifacts.hash).
 	retireRunsSQL = `DELETE FROM runs WHERE pipeline = $1`
 
 	// retireArtifactsSQL clears the target's content-addressed artifact index rows.
@@ -112,6 +124,8 @@ func (w *Writer) RetirePipeline(ctx context.Context, name string) error {
 	stmts := []Statement{
 		{SQL: retireRunInputsSQL, Args: []any{name}},
 		{SQL: retireDeadLettersSQL, Args: []any{name}},
+		{SQL: retireRunPluginsSQL, Args: []any{name}},
+		{SQL: retirePluginCallsSQL, Args: []any{name}},
 		{SQL: retireRunsSQL, Args: []any{name}},
 		{SQL: retireArtifactsSQL, Args: []any{name}},
 		{SQL: retireDependenciesSQL, Args: []any{name}},
@@ -133,7 +147,7 @@ func (w *Writer) RetirePipeline(ctx context.Context, name string) error {
 // transaction. Summaries are inserted first so that journal stamps resolve to a
 // summary after the runs are deleted.
 func (w *Writer) RetirePipelineWithSummaries(ctx context.Context, name string, sums []RunSummary) error {
-	stmts := make([]Statement, 0, len(sums)+9)
+	stmts := make([]Statement, 0, len(sums)+12)
 	for _, s := range sums {
 		stmts = append(stmts, Statement{
 			SQL: insertRunSummarySQL,
@@ -147,6 +161,8 @@ func (w *Writer) RetirePipelineWithSummaries(ctx context.Context, name string, s
 	stmts = append(stmts,
 		Statement{SQL: retireRunInputsSQL, Args: []any{name}},
 		Statement{SQL: retireDeadLettersSQL, Args: []any{name}},
+		Statement{SQL: retireRunPluginsSQL, Args: []any{name}},
+		Statement{SQL: retirePluginCallsSQL, Args: []any{name}},
 		Statement{SQL: retireRunsSQL, Args: []any{name}},
 		Statement{SQL: retireArtifactsSQL, Args: []any{name}},
 		Statement{SQL: retireDependenciesSQL, Args: []any{name}},

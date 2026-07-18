@@ -2,6 +2,9 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -10,6 +13,7 @@ import (
 	"github.com/MateusAMP2119/iris-lakehouse/internal/dispatch"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/exec"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/pg"
+	"github.com/MateusAMP2119/iris-lakehouse/internal/store"
 )
 
 // This file is the daemon-side turn driver (#206): the one place a resident
@@ -33,10 +37,12 @@ type turnData interface {
 }
 
 // declaredAccess is a pipeline's declared access resolved for the turn protocol:
-// the reads the feed covers and the writes the collector enforces.
+// the reads the feed covers, the writes the collector enforces, and the plugins
+// the engine's verb dispatch serves.
 type declaredAccess struct {
-	reads  []pg.TurnRead
-	writes dispatch.WriteSet
+	reads   []pg.TurnRead
+	writes  dispatch.WriteSet
+	plugins map[string]declare.PluginRequirement
 }
 
 // accessFromDeclaration resolves a pipeline's declared access straight from its
@@ -61,6 +67,7 @@ func accessFromDeclaration(decl *declare.Pipeline) declaredAccess {
 			acc.writes[w.Table][f] = true
 		}
 	}
+	acc.plugins = decl.Plugins
 	return acc
 }
 
@@ -162,23 +169,81 @@ const (
 	turnShutdown
 )
 
-// turnResult is one driven turn's ending: its kind and the kind's payload.
+// turnResult is one driven turn's ending: its kind, the kind's payload, and the
+// plugin calls the turn made (recorded whatever the ending -- an external effect
+// happened, so it must land in the ledger).
 type turnResult struct {
 	kind      turnKind
 	rows      []dispatch.TurnRow
 	end       dispatch.TurnEnd
 	violation error
 	status    exec.ExitStatus
+	calls     []store.PluginCallRecord
+}
+
+// verbCaller is the engine-side plugin verb dispatch a turn drives its call
+// frames through. The production implementation execs the resolved tool binary
+// per call (pluginVerbCaller); nil means the pipeline declared no plugins and
+// every call is answered with an err frame.
+type verbCaller interface {
+	// Call invokes one verb and returns its JSON result; an error becomes the
+	// err reply (the engine always replies, never silence).
+	Call(ctx context.Context, call dispatch.TurnCall) (json.RawMessage, error)
+}
+
+// serveCall answers one collected call frame: it invokes the verb through
+// caller, sends the ok or err reply through send (the driver's recorded frame
+// writer, so replies land in the frame transcript too), and returns the audit
+// record. Every path replies -- a nil caller, a failed verb, and an unframeable
+// result all produce an err frame, never silence.
+func serveCall(ctx context.Context, send func(line string) bool, caller verbCaller, call dispatch.TurnCall) store.PluginCallRecord {
+	rec := store.PluginCallRecord{
+		CallID:     call.ID,
+		Verb:       call.Verb,
+		ArgsDigest: hexDigest(call.Args),
+		Status:     store.PluginCallErr,
+	}
+	if caller == nil {
+		rec.Error = "pipeline declares no plugins"
+		_ = send(dispatch.EncodeResErrFrame(call.ID, rec.Error))
+		return rec
+	}
+	result, err := caller.Call(ctx, call)
+	if err != nil {
+		rec.Error = err.Error()
+		_ = send(dispatch.EncodeResErrFrame(call.ID, rec.Error))
+		return rec
+	}
+	frame, err := dispatch.EncodeResOKFrame(call.ID, result)
+	if err != nil {
+		rec.Error = err.Error()
+		_ = send(dispatch.EncodeResErrFrame(call.ID, "plugin result could not be framed"))
+		return rec
+	}
+	rec.Status = store.PluginCallOK
+	rec.ResponseDigest = hexDigest(result)
+	_ = send(frame)
+	return rec
+}
+
+// hexDigest returns the hex sha256 of b, the digest form plugin_calls pins.
+// Absent args and an empty result digest as the empty input, deterministically.
+func hexDigest(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // driveTurn runs one turn over a live session: it writes the go/row/run frames,
-// feeds every stdout line to the turn collector, and classifies the ending. A
+// feeds every stdout line to the turn collector, serves any plugin calls through
+// caller (replying before the next line is fed, so one call is outstanding at a
+// time), and classifies the ending. A
 // send failure is not an ending of its own -- the process is gone, and its exit
 // reports through the session's exited channel. On process exit the scanner's
 // already-delivered lines are drained first, so a one-shot pipeline that answers
 // its frames and exits cleanly still ends in done, not death.
-func driveTurn(ctx context.Context, ses *residentSession, turn int64, feed []pg.FeedRow, writes dispatch.WriteSet, rec frameRecorder) turnResult {
+func driveTurn(ctx context.Context, ses *residentSession, turn int64, feed []pg.FeedRow, writes dispatch.WriteSet, rec frameRecorder, caller verbCaller) turnResult {
 	col := dispatch.NewTurnCollector(turn, writes)
+	var calls []store.PluginCallRecord
 
 	sendRecorded := func(line string) bool {
 		if rec != nil {
@@ -208,15 +273,19 @@ func driveTurn(ctx context.Context, ses *residentSession, turn int64, feed []pg.
 		}
 		end, terminal, err := col.Feed(line)
 		if err != nil {
-			return turnResult{kind: turnViolated, violation: err, rows: col.Rows()}, true
+			return turnResult{kind: turnViolated, violation: err, rows: col.Rows(), calls: calls}, true
+		}
+		if call, ok := col.TakeCall(); ok {
+			calls = append(calls, serveCall(ctx, sendRecorded, caller, call))
+			return turnResult{}, false
 		}
 		if !terminal {
 			return turnResult{}, false
 		}
 		if end.Errored {
-			return turnResult{kind: turnErrored, end: end, rows: col.Rows()}, true
+			return turnResult{kind: turnErrored, end: end, rows: col.Rows(), calls: calls}, true
 		}
-		return turnResult{kind: turnDone, rows: col.Rows()}, true
+		return turnResult{kind: turnDone, rows: col.Rows(), calls: calls}, true
 	}
 
 	for {
@@ -235,11 +304,11 @@ func driveTurn(ctx context.Context, ses *residentSession, turn int64, feed []pg.
 						return res
 					}
 				default:
-					return turnResult{kind: turnDied, rows: col.Rows(), status: ses.status}
+					return turnResult{kind: turnDied, rows: col.Rows(), status: ses.status, calls: calls}
 				}
 			}
 		case <-ctx.Done():
-			return turnResult{kind: turnShutdown}
+			return turnResult{kind: turnShutdown, calls: calls}
 		}
 	}
 }

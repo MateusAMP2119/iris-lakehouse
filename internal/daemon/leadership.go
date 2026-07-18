@@ -129,6 +129,11 @@ type Candidate struct {
 	// Nil leaves manual runs uncaptured (shape-test compositions).
 	runLogs *RunLogWriter
 
+	// plugins resolves declared plugins against the engine home's installed
+	// plugin store and dispatches their verbs (#215). Nil refuses every
+	// plugin-declaring pipeline's runs (shape-test compositions).
+	plugins *pluginResolver
+
 	// patGrantLedger is the meta read of every data-PAT role's ledgered grants:
 	// the authoritative set the leader reconciles each role's live Postgres
 	// grants against on winning leadership (additive re-grants applied, strays
@@ -381,6 +386,18 @@ func WithWipePlane(wp *wipePlane, reader store.Reader, data dataPlane) Candidate
 func WithRunLogs(logs *RunLogWriter) CandidateOption {
 	return func(c *Candidate) {
 		c.runLogs = logs
+	}
+}
+
+// WithPluginStore wires the declared-plugin seam (#215) over the engine home's
+// installed plugin store: pipelines that declare plugins have them resolved and
+// digest-verified before each turn, their verbs served over the turn protocol,
+// and their pins and calls recorded in the run ledger. The resolver is shared
+// with the lane loop so both planes draw one resolution cache. Absent, a
+// plugin-declaring pipeline's runs are refused (shape-test compositions).
+func WithPluginStore(plugins *pluginResolver) CandidateOption {
+	return func(c *Candidate) {
+		c.plugins = plugins
 	}
 }
 
@@ -728,7 +745,7 @@ func (c *Candidate) lead(ctx context.Context) (demoted bool, err error) {
 		// store (the *pg.Client that also serves as the journal high-watermark), the
 		// meta seal read seam, the single dispatcher (checkpoint insert + archive
 		// flip), and the object store. Nil seams (the shape tests) leave sealing off.
-		mo := newManualOrchestrator(c.workspace, d, c.registry, c.manualReader, c.objects, c.runner, c.journalHM, c.turnDB, reg, c.buildSealer(d), c.runLogs, c.logger)
+		mo := newManualOrchestrator(c.workspace, d, c.registry, c.manualReader, c.objects, c.runner, c.journalHM, c.turnDB, c.plugins, reg, c.buildSealer(d), c.runLogs, c.logger)
 		c.pipelines.install(mo)
 		defer c.pipelines.clear()
 	}

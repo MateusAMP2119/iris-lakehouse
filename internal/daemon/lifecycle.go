@@ -336,11 +336,20 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// bookkeeping (failure propagation, then count-based retention pruning down to
 	// the resolved retain, each pruned run's log dying with its row). The run's data
 	// connection targets the engine-owned data database, retargeted from the admin DSN.
+	// The declared-plugin seam (#215): one resolver over the engine home's plugin
+	// store, shared by the lane loop and the manual plane so both draw one
+	// digest-verified resolution cache.
+	engineHome, err := config.Home(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("daemon: resolve engine home for the plugin store: %w", err)
+	}
+	pluginStore := newPluginResolver(engineHome)
+
 	laneBuild := func(submit dispatch.Submitter, events *dispatch.Events) *dispatch.Loop {
 		turnTally.reset() // a new leadership term starts a fresh turn account
 		return newLaneLoop(submit, inflight, residents, workspace, client.RegistryReader(), client.ManualReader(),
 			client.QueuedManualReader(), events,
-			exec.NewOSRunner(), data, data, objects, turnTally, passCounter,
+			exec.NewOSRunner(), data, data, pluginStore, objects, turnTally, passCounter,
 			client.RetentionReader(), s.Retain, runLogs, logger)
 	}
 
@@ -356,6 +365,7 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 		WithLanePlane(lanes),
 		WithTeardownSeams(client.RetentionReader()),
 		WithGrantDrift(client.DataPATGrantsReader()),
+		WithPluginStore(pluginStore),
 		WithRunLogs(runLogs),
 		WithPassCounter(passCounter),
 		WithDeadletterPlane(deadletters),

@@ -106,6 +106,85 @@ func TestTurnCollectorViolations(t *testing.T) {
 	}
 }
 
+func TestTurnCollectorCall(t *testing.T) {
+	c := NewTurnCollector(5, testWrites())
+	if _, terminal, err := c.Feed(`{"event":"call","id":"c1","verb":"mail.send","args":{"to":"ops@example.com"}}`); err != nil || terminal {
+		t.Fatalf("call feed: terminal=%v err=%v", terminal, err)
+	}
+	call, ok := c.TakeCall()
+	if !ok {
+		t.Fatal("TakeCall found no pending call after a call frame")
+	}
+	if call.ID != "c1" || call.Verb != "mail.send" || string(call.Args) != `{"to":"ops@example.com"}` {
+		t.Fatalf("call = %+v", call)
+	}
+	if _, ok := c.TakeCall(); ok {
+		t.Fatal("TakeCall did not clear the pending call")
+	}
+	// The turn proceeds normally after the call.
+	if _, terminal, err := c.Feed(`{"event":"done","turn":5}`); err != nil || !terminal {
+		t.Fatalf("done after call: terminal=%v err=%v", terminal, err)
+	}
+}
+
+func TestTurnCollectorCallViolations(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+	}{
+		{"no id", `{"event":"call","verb":"mail.send","args":{}}`},
+		{"no verb", `{"event":"call","id":"c1"}`},
+		{"unqualified verb", `{"event":"call","id":"c1","verb":"send"}`},
+		{"empty alias", `{"event":"call","id":"c1","verb":".send"}`},
+		{"empty verb half", `{"event":"call","id":"c1","verb":"mail."}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewTurnCollector(5, testWrites())
+			var fe *FrameError
+			if _, _, err := c.Feed(tc.line); !errors.As(err, &fe) {
+				t.Fatalf("want *FrameError, got %v", err)
+			}
+		})
+	}
+
+	t.Run("call while outstanding", func(t *testing.T) {
+		c := NewTurnCollector(5, testWrites())
+		if _, _, err := c.Feed(`{"event":"call","id":"c1","verb":"mail.send"}`); err != nil {
+			t.Fatalf("first call: %v", err)
+		}
+		var fe *FrameError
+		if _, _, err := c.Feed(`{"event":"call","id":"c2","verb":"mail.send"}`); !errors.As(err, &fe) {
+			t.Fatalf("second call while outstanding: want *FrameError, got %v", err)
+		}
+	})
+}
+
+func TestEncodeResFrames(t *testing.T) {
+	ok, err := EncodeResOKFrame("c1", json.RawMessage(`{"message_id":"m9"}`))
+	if err != nil {
+		t.Fatalf("encode ok frame: %v", err)
+	}
+	if ok != `{"event":"res","id":"c1","ok":{"message_id":"m9"}}` {
+		t.Fatalf("ok frame: %s", ok)
+	}
+	empty, err := EncodeResOKFrame("c1", nil)
+	if err != nil {
+		t.Fatalf("encode empty ok frame: %v", err)
+	}
+	if empty != `{"event":"res","id":"c1","ok":{}}` {
+		t.Fatalf("empty ok frame: %s", empty)
+	}
+	if got := EncodeResErrFrame("c1", `plugin "mail" timed out`); got != `{"event":"res","id":"c1","err":"plugin \"mail\" timed out"}` {
+		t.Fatalf("err frame: %s", got)
+	}
+	for _, f := range []string{ok, empty, EncodeResErrFrame("c1", "x\ny")} {
+		if strings.ContainsRune(f, '\n') {
+			t.Fatalf("res frame is not one line: %q", f)
+		}
+	}
+}
+
 func TestTurnCollectorFrameAfterTerminal(t *testing.T) {
 	c := NewTurnCollector(3, testWrites())
 	if _, terminal, err := c.Feed(`{"event":"done","turn":3}`); err != nil || !terminal {

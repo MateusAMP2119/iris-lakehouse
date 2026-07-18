@@ -33,9 +33,13 @@ func TestPruneStatementsNeverTouchJournal(t *testing.T) {
 		}
 	}
 
-	// Closed set: every table a prune statement touches is one of the three run-
-	// history tables -- run_summaries, run_inputs, runs -- and nothing else.
-	allowed := map[string]bool{"run_summaries": true, "run_inputs": true, "runs": true}
+	// Closed set: every table a prune statement touches is one of the run-history
+	// tables -- run_summaries, run_inputs, run_plugins, plugin_calls, runs -- and
+	// nothing else.
+	allowed := map[string]bool{
+		"run_summaries": true, "run_inputs": true,
+		"run_plugins": true, "plugin_calls": true, "runs": true,
+	}
 	for _, s := range stmts {
 		found := false
 		for tbl := range allowed {
@@ -45,7 +49,7 @@ func TestPruneStatementsNeverTouchJournal(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("prune statement touches a table outside the closed run-history set {run_summaries, run_inputs, runs}:\n%s", s.SQL)
+			t.Errorf("prune statement touches a table outside the closed run-history set {run_summaries, run_inputs, run_plugins, plugin_calls, runs}:\n%s", s.SQL)
 		}
 	}
 }

@@ -241,7 +241,7 @@ func TestPruneRunSummarySameTxn(t *testing.T) {
 
 // TestPruneRunsBatchesOneTransaction proves the batch pruner archives and
 // deletes MANY runs in exactly one atomic meta transaction: the statements are
-// the runs' per-run triples concatenated in order (each summary INSERT preceding
+// the runs' per-run batches concatenated in order (each summary INSERT preceding
 // that run's DELETE), the per-run logs are deleted only after the one commit and
 // in batch order, an empty batch writes nothing, and an injected meta failure
 // rolls the whole chunk back deleting no log -- so a failed backlog drain leaves
@@ -254,7 +254,7 @@ func TestPruneRunsBatchesOneTransaction(t *testing.T) {
 	}
 	batch := []store.PrunableRun{runAt(1), runAt(2), runAt(3)}
 
-	t.Run("many runs share one atomic transaction, triples in per-run order", func(t *testing.T) {
+	t.Run("many runs share one atomic transaction, batches in per-run order", func(t *testing.T) {
 		rec := storetest.NewWriteRecorder()
 		w := store.NewWriter(rec)
 		if err := w.PruneRuns(context.Background(), batch, nil); err != nil {
@@ -265,18 +265,21 @@ func TestPruneRunsBatchesOneTransaction(t *testing.T) {
 			t.Fatalf("PruneRuns issued %d transactions for 3 runs, want exactly one", len(txns))
 		}
 		stmts := txns[0]
-		if len(stmts) != 9 {
-			t.Fatalf("batch carries %d statements for 3 runs, want 9 (3 per run)", len(stmts))
+		const perRun = 5
+		if len(stmts) != perRun*3 {
+			t.Fatalf("batch carries %d statements for 3 runs, want %d (%d per run)", len(stmts), perRun*3, perRun)
 		}
 		for i, run := range batch {
-			triple := stmts[i*3 : i*3+3]
-			if !strings.Contains(triple[0].SQL, "INSERT INTO run_summaries") ||
-				!strings.Contains(triple[1].SQL, "DELETE FROM run_inputs") ||
-				!strings.Contains(triple[2].SQL, "DELETE FROM runs") {
-				t.Fatalf("run %d triple out of order (summary insert, inputs cascade, run delete):\n%v", run.RunID, triple)
+			group := stmts[i*perRun : i*perRun+perRun]
+			if !strings.Contains(group[0].SQL, "INSERT INTO run_summaries") ||
+				!strings.Contains(group[1].SQL, "DELETE FROM run_inputs") ||
+				!strings.Contains(group[2].SQL, "DELETE FROM run_plugins") ||
+				!strings.Contains(group[3].SQL, "DELETE FROM plugin_calls") ||
+				!strings.Contains(group[4].SQL, "DELETE FROM runs") {
+				t.Fatalf("run %d batch out of order (summary insert, cascades, run delete):\n%v", run.RunID, group)
 			}
-			if got := triple[0].Args[0]; got != run.RunID {
-				t.Errorf("triple %d archives run %v, want %d (batch must preserve input order)", i, got, run.RunID)
+			if got := group[0].Args[0]; got != run.RunID {
+				t.Errorf("batch %d archives run %v, want %d (batch must preserve input order)", i, got, run.RunID)
 			}
 		}
 	})

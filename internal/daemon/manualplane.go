@@ -140,7 +140,7 @@ type manualOrchestrator struct {
 // is the turn seam (#206): an immediate manual run executes as one
 // protocol turn -- the engine feeds the declared-read delta and performs the declared
 // writes itself with the run's exact attribution; the subprocess holds no credentials.
-func newManualOrchestrator(workspace string, submit dispatch.Submitter, registry store.RegistryReader, manual store.ManualReader, objects *store.ObjectStore, runner exec.Runner, journal dispatch.JournalHighWatermark, data turnData, inflight *inflightRuns, sealer *journalSealer, runLogs *RunLogWriter, logger *slog.Logger) *manualOrchestrator {
+func newManualOrchestrator(workspace string, submit dispatch.Submitter, registry store.RegistryReader, manual store.ManualReader, objects *store.ObjectStore, runner exec.Runner, journal dispatch.JournalHighWatermark, data turnData, plugins *pluginResolver, inflight *inflightRuns, sealer *journalSealer, runLogs *RunLogWriter, logger *slog.Logger) *manualOrchestrator {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -153,6 +153,7 @@ func newManualOrchestrator(workspace string, submit dispatch.Submitter, registry
 		journal:   journal,
 		data:      data,
 		access:    newAccessCache(),
+		plugins:   plugins,
 		inflight:  inflight,
 		sealer:    sealer,
 		runLogs:   runLogs,
@@ -310,9 +311,10 @@ type manualExec struct {
 	objects   *store.ObjectStore // the leader's own objects_path for built run argv resolution via ResolveRunArgv
 	runner    exec.Runner
 	journal   dispatch.JournalHighWatermark
-	data      turnData       // data-database turn seam (#206); nil composes shape tests (no feed, producing turns dead-letter)
-	access    *accessCache   // per-pipeline declared-access cache keyed by declaration checksum
-	inflight  *inflightRuns  // tracks this run's live process group so a self-demotion kills it; nil in the shape tests
+	data      turnData        // data-database turn seam (#206); nil composes shape tests (no feed, producing turns dead-letter)
+	access    *accessCache    // per-pipeline declared-access cache keyed by declaration checksum
+	plugins   *pluginResolver // declared-plugin resolve + verb dispatch; nil refuses plugin-declaring pipelines (shape tests)
+	inflight  *inflightRuns   // tracks this run's live process group so a self-demotion kills it; nil in the shape tests
 	sealer    *journalSealer // the opportunistic post-pass seal step; nil in the shape tests leaves sealing off
 	runLogs   *RunLogWriter  // per-run output capture; nil discards (shape tests)
 	logger    *slog.Logger
@@ -407,6 +409,7 @@ func (m *manualExec) runNow(ctx context.Context, rec store.RunRecord) (dispatch.
 	if err != nil {
 		return dispatch.RunSucceeded, err
 	}
+	plugres, perr := m.plugins.resolve(rec.Pipeline, sum, acc.plugins)
 	var feed pg.TurnFeed
 	if m.data != nil && len(acc.reads) > 0 {
 		if feed, err = m.data.ReadTurnFeed(ctx, rec.Pipeline, acc.reads); err != nil {
@@ -457,13 +460,6 @@ func (m *manualExec) runNow(ctx context.Context, rec store.RunRecord) (dispatch.
 		defer m.inflight.untrack(runID)
 	}
 
-	res := driveTurn(ctx, ses, ses.nextTurn(), feed.Rows, acc.writes, sink)
-
-	// The declared stamp's close line carries the run's ending (the deferred
-	// close writes it); a dead-letter on any later path overwrites it below.
-	if res.kind == turnShutdown {
-		sink.SetOutcome("shutdown")
-	}
 	deadLetter := func(detail string) (dispatch.RunOutcome, error) {
 		sink.SetOutcome("dead_lettered")
 		// Guarded on the running state, so a cancel's stopped reason stands.
@@ -478,8 +474,30 @@ func (m *manualExec) runNow(ctx context.Context, rec store.RunRecord) (dispatch.
 		m.sealAfterPass(ctx)
 		return dispatch.RunDeadLettered, nil
 	}
+
+	// Declared plugins resolved before the drive: a missing install or a drifted
+	// digest refuses the run (recorded as its dead letter), and the pins record
+	// at run start per the ledger contract.
+	if perr != nil {
+		return deadLetter("manual run dead-lettered: plugin resolve failed: " + perr.Error())
+	}
+	if len(plugres.pins) > 0 {
+		if err := m.submitter.Submit(ctx, func(w *store.Writer) error { return w.RecordRunPlugins(ctx, runID, plugres.pins) }); err != nil {
+			return deadLetter(fmt.Sprintf("manual run dead-lettered: record plugin pins failed: %v", err))
+		}
+	}
+
+	res := driveTurn(ctx, ses, ses.nextTurn(), feed.Rows, acc.writes, sink, plugres.caller(m.runner, filepath.Join(m.workspace, target.Folder)))
+	if len(res.calls) > 0 {
+		if err := m.submitter.Submit(ctx, func(w *store.Writer) error { return w.RecordPluginCalls(ctx, runID, res.calls) }); err != nil {
+			m.logger.Warn("manual run: could not record plugin calls", "run", runID, "err", err)
+		}
+	}
 	switch res.kind {
 	case turnShutdown:
+		// The declared stamp's close line carries the run's ending (the deferred
+		// close writes it); a dead-letter on any later path overwrites it.
+		sink.SetOutcome("shutdown")
 		return dispatch.RunSucceeded, ctx.Err()
 	case turnErrored:
 		return deadLetter("manual run dead-lettered: pipeline error: " + errorTurnDetail(res.end))

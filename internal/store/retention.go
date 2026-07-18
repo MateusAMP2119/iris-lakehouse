@@ -109,17 +109,23 @@ VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8, $9, now()::text)`
 	// deletes a surviving downstream's ledger row (that would erase a live run's
 	// provenance and re-open its gate).
 	deleteRunInputsSQL = `DELETE FROM run_inputs WHERE run_id = $1`
+	// deleteRunPluginsSQL cascades the pruned run's plugin pins; the archival
+	// summary does not carry them (the pins matter while the run is live lineage).
+	deleteRunPluginsSQL = `DELETE FROM run_plugins WHERE run_id = $1`
+	// deletePluginCallsSQL cascades the pruned run's plugin-call audit rows.
+	deletePluginCallsSQL = `DELETE FROM plugin_calls WHERE run_id = $1`
 	// deleteRunSQL removes the run row itself -- last, after its summary is written
-	// and its run_inputs cascaded.
+	// and its run_inputs, run_plugins, and plugin_calls cascaded.
 	deleteRunSQL = `DELETE FROM runs WHERE id = $1`
 )
 
 // pruneStatements builds the atomic batch that prunes one run: the archival
 // summary INSERT first, then the run's run_inputs cascade, then the run DELETE.
 // The order is load-bearing -- the summary is written before the run is deleted
-// (so a surviving reference never dangles), and run_inputs is deleted before runs
-// (the ledger rows reference the run row). It is pure and closed: the batch names
-// only run_summaries, run_inputs, and runs -- never data_journal (capture rows
+// (so a surviving reference never dangles), and run_inputs, run_plugins, and
+// plugin_calls are deleted before runs (the ledger rows reference the run row).
+// It is pure and closed: the batch names only run_summaries, run_inputs,
+// run_plugins, plugin_calls, and runs -- never data_journal (capture rows
 // are bounded by the journal's own lifecycle) and never a DELETE against the
 // insert-only run_summaries. PruneRuns concatenates these per-run batches, in
 // order, into the one meta transaction it submits.
@@ -130,6 +136,8 @@ func pruneStatements(s RunSummary) []Statement {
 			s.ConsumedUpstreamRunIDsJSON, s.SnapshotLSN, s.JournalFloor, s.JournalCeiling,
 		}},
 		{SQL: deleteRunInputsSQL, Args: []any{s.RunID}},
+		{SQL: deleteRunPluginsSQL, Args: []any{s.RunID}},
+		{SQL: deletePluginCallsSQL, Args: []any{s.RunID}},
 		{SQL: deleteRunSQL, Args: []any{s.RunID}},
 	}
 }

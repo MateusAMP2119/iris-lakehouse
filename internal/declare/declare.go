@@ -16,6 +16,7 @@ package declare
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -97,7 +98,33 @@ type Logs struct {
 	Stamp bool `yaml:"stamp"`
 }
 
-// Pipeline is a parsed pipeline declaration: the nine-field declaration shape.
+// The plugin lifetimes a declaration may ask for. A run instance lives for one
+// run; a lane instance is shared across a lane's serial walk; a resident
+// instance survives across runs, its state visible in lineage via attach
+// events. Only run-lifetime tool plugins execute today; the others parse so the
+// service epic has a model to build on.
+const (
+	// LifetimeRun is the default: one instance per run.
+	LifetimeRun = "run"
+	// LifetimeLane shares one instance across a lane's serial walk.
+	LifetimeLane = "lane"
+	// LifetimeResident keeps one instance alive across runs.
+	LifetimeResident = "resident"
+)
+
+// PluginRequirement is one plugins entry: the pinned plugin this pipeline
+// needs, and how long an instance lives. The alias key it sits under is the
+// call prefix the pipeline uses mid-run (alias "mail" makes "mail.send"
+// callable). The ref's full name@version rules are the engine's (the plugin
+// package owns them); this leaf checks the shape.
+type PluginRequirement struct {
+	// Ref pins the plugin as name@version.
+	Ref string `yaml:"ref"`
+	// Lifetime is run, lane or resident; empty means run.
+	Lifetime string `yaml:"lifetime"`
+}
+
+// Pipeline is a parsed pipeline declaration: the ten-field declaration shape.
 // name and run are required; the rest are optional.
 type Pipeline struct {
 	// Name is the pipeline name; required, and must match its folder.
@@ -119,6 +146,8 @@ type Pipeline struct {
 	Writes []Access `yaml:"writes"`
 	// DependsOn names the pipelines this one gates on (the data gate).
 	DependsOn []string `yaml:"depends_on"`
+	// Plugins are the pipeline's declared plugin needs, keyed by call alias.
+	Plugins map[string]PluginRequirement `yaml:"plugins"`
 }
 
 // Composer is a parsed lane composer: the lane name, its serial order, and the optional folder surface (surface.go owns its rules).
@@ -144,15 +173,16 @@ type Declaration struct {
 	Composer *Composer
 }
 
-// pipelineFields is the nine-field whitelist for a pipeline declaration.
+// pipelineFields is the ten-field whitelist for a pipeline declaration.
 var pipelineFields = map[string]bool{
 	"name": true, "run": true, "env": true, "env_file": true,
 	"lane": true, "logs": true, "reads": true, "writes": true, "depends_on": true,
+	"plugins": true,
 }
 
 // pipelineFieldList is the human-readable rendering of pipelineFields, in
 // declaration order, for error messages.
-const pipelineFieldList = "name, run, env, env_file, lane, logs, reads, writes, depends_on"
+const pipelineFieldList = "name, run, env, env_file, lane, logs, reads, writes, depends_on, plugins"
 
 // logsFields is the whitelist for the logs block inside a pipeline declaration.
 var logsFields = map[string]bool{"split": true, "stamp": true}
@@ -204,6 +234,9 @@ func parsePipeline(raw map[string]any, data []byte) (*Declaration, error) {
 		return nil, err
 	}
 	if err := checkLogsShape(raw); err != nil {
+		return nil, err
+	}
+	if err := checkPluginsShape(raw); err != nil {
 		return nil, err
 	}
 	var p Pipeline
@@ -312,6 +345,72 @@ func requireArgvList(raw map[string]any) error {
 		}
 	}
 	return nil
+}
+
+// pluginAliasRE is the shape of a plugins alias key: a lowercase identifier,
+// since the alias becomes the call prefix ("mail" makes "mail.send" callable).
+var pluginAliasRE = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
+
+// pluginEntryFields is the whitelist for one plugins entry.
+var pluginEntryFields = map[string]bool{"ref": true, "lifetime": true}
+
+// checkPluginsShape validates the optional plugins block: a map of alias keys
+// to {ref, lifetime} entries. Each alias is a lowercase identifier, each ref a
+// non-empty name@version string, each lifetime one of run, lane, resident (or
+// absent). The ref's full rules are the engine's at resolve time; this leaf
+// checks the declared shape.
+func checkPluginsShape(raw map[string]any) error {
+	v, ok := raw["plugins"]
+	if !ok {
+		return nil
+	}
+	entries, ok := v.(map[string]any)
+	if !ok {
+		return fmt.Errorf("declare: field %q must be a map of alias to {ref, lifetime}", "plugins")
+	}
+	aliases := make([]string, 0, len(entries))
+	for alias := range entries {
+		aliases = append(aliases, alias)
+	}
+	sort.Strings(aliases)
+	for _, alias := range aliases {
+		if !pluginAliasRE.MatchString(alias) {
+			return fmt.Errorf("declare: plugins alias %q is invalid; an alias is a lowercase identifier (it becomes the call prefix)", alias)
+		}
+		entry, ok := entries[alias].(map[string]any)
+		if !ok {
+			return fmt.Errorf("declare: plugins entry %q must be a map with ref (and optional lifetime)", alias)
+		}
+		if err := checkKeys(entry, pluginEntryFields, "ref, lifetime"); err != nil {
+			return fmt.Errorf("declare: plugins entry %q: %w", alias, stripPrefix(err))
+		}
+		ref, ok := entry["ref"].(string)
+		if !ok || strings.TrimSpace(ref) == "" {
+			return fmt.Errorf("declare: plugins entry %q needs a ref (name@version)", alias)
+		}
+		if !strings.Contains(ref, "@") {
+			return fmt.Errorf("declare: plugins entry %q ref %q is not name@version", alias, ref)
+		}
+		if lt, ok := entry["lifetime"]; ok {
+			s, isStr := lt.(string)
+			if !isStr {
+				return fmt.Errorf("declare: plugins entry %q lifetime must be a string", alias)
+			}
+			switch s {
+			case LifetimeRun, LifetimeLane, LifetimeResident:
+			default:
+				return fmt.Errorf("declare: plugins entry %q lifetime %q is not one of run, lane, resident", alias, s)
+			}
+		}
+	}
+	return nil
+}
+
+// stripPrefix drops the "declare: " prefix from a nested validation error so
+// wrapping it under an entry context does not double the package tag.
+func stripPrefix(err error) error {
+	msg := strings.TrimPrefix(err.Error(), "declare: ")
+	return fmt.Errorf("%s", msg)
 }
 
 // requireStringList requires key to be present in raw as a list of strings.

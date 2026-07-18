@@ -71,6 +71,28 @@ meta: CREATE TABLE IF NOT EXISTS run_inputs (
     FOREIGN KEY (run_id) REFERENCES runs (id)
 );
 meta: CREATE INDEX IF NOT EXISTS run_inputs_upstream_run_id_idx ON run_inputs (upstream_run_id);
+meta: CREATE TABLE IF NOT EXISTS run_plugins (
+    run_id bigint,
+    alias text,
+    plugin text NOT NULL,
+    version text NOT NULL,
+    digest text NOT NULL,
+    PRIMARY KEY (run_id, alias),
+    FOREIGN KEY (run_id) REFERENCES runs (id)
+);
+meta: CREATE TABLE IF NOT EXISTS plugin_calls (
+    run_id bigint,
+    call_id text,
+    verb text NOT NULL,
+    args_digest text NOT NULL,
+    response_digest text,
+    status text NOT NULL,
+    error text,
+    recorded_at text NOT NULL,
+    PRIMARY KEY (run_id, call_id),
+    FOREIGN KEY (run_id) REFERENCES runs (id),
+    CHECK (status IN ('ok', 'err'))
+);
 meta: CREATE TABLE IF NOT EXISTS dead_letters (
     run_id bigint,
     reason text NOT NULL,

@@ -7,39 +7,41 @@ import (
 	"github.com/MateusAMP2119/iris-lakehouse/internal/store"
 )
 
-// TestEighteenTableRoster proves the bootstrap DDL creates exactly twenty-two engine
-// tables: the twenty-one meta control tables plus public.data_journal in the data
+// TestEighteenTableRoster proves the bootstrap DDL creates exactly twenty-four engine
+// tables: the twenty-three meta control tables plus public.data_journal in the data
 // database. The eighteenth meta table is engine_key (moving the engine signing key
 // from a per-database GUC into an engine-owned single-row meta table); the
 // nineteenth is read_pool_credential (persisting the shared read-pool login secret
 // create-once, so a restart or HA standby reuses one stable credential); the
 // twentieth is leadership (the leader's advertised address a standby reads to name
-// the leader). The test name keeps its original count though the roster grew.
+// the leader); the plugin epic adds run_plugins (per-run plugin pins) and
+// plugin_calls (the per-call audit ledger). The test name keeps its original
+// count though the roster grew.
 func TestEighteenTableRoster(t *testing.T) {
 	meta := store.MetaSchema()
 
 	if got := len(meta.Tables); got != len(metaRoster) {
 		t.Fatalf("meta schema has %d tables, want %d", got, len(metaRoster))
 	}
-	// The twenty meta tables are exactly the roster, in order.
+	// The meta tables are exactly the roster, in order.
 	for i, want := range metaRoster {
 		if meta.Tables[i].Name != want {
 			t.Errorf("meta table %d = %q, want %q", i, meta.Tables[i].Name, want)
 		}
 	}
 
-	// The twenty-first table is public.data_journal in the data database.
+	// The twenty-third table is public.data_journal in the data database.
 	jt := pg.JournalTable()
 	if jt.Name != "data_journal" {
 		t.Errorf("data table name = %q, want data_journal", jt.Name)
 	}
 
 	total := len(meta.Tables) + 1
-	if total != 22 {
-		t.Errorf("engine table roster = %d, want exactly 22 (21 meta + data_journal)", total)
+	if total != 24 {
+		t.Errorf("engine table roster = %d, want exactly 24 (23 meta + data_journal)", total)
 	}
 
-	// data_journal is not a meta control table: the twenty-first table lives on the
+	// data_journal is not a meta control table: the twenty-third table lives on the
 	// data side, never doubled into meta.
 	for _, m := range meta.Tables {
 		if m.Name == "data_journal" {

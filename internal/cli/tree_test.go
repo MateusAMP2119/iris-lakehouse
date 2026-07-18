@@ -84,6 +84,7 @@ var wantTree = map[string][]string{
 	"deadletter": {"list", "show", "replay", "drain"},
 	"endpoint":   {"apply", "remove", "list", "show"},
 	"pat":        {"create", "list", "revoke"},
+	"plugin":     {"install", "list", "remove", "verify"},
 }
 
 // TestCommandTree pins the shape of the whole tree.
