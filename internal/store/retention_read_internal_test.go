@@ -13,7 +13,7 @@ import (
 // selected run's consumed upstream ids from run_inputs and passes the selected ids
 // through as the query parameter. The terminal-only state predicate is SQL-side
 // and is pinned by the statement text asserted here; its behaviour against a real
-// Postgres rides the conformance tier like every other reader's.
+// Postgres shows only inside a live engine, like every other reader's.
 
 // retentionScriptRows is a poolRows fake over a fixed result set for the retention
 // reader's scan shapes: int64, string, nullable *string and *int64 columns.

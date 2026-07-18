@@ -24,8 +24,8 @@ import (
 // content-addressed object store under that hash, and records the hash as an
 // immutable artifacts row through the single meta writer. The toolchain subprocess is
 // a fake (the exec seam's whole point: it records the invocation and materializes the
-// binary bytes with no real PyInstaller/pkg -- real toolchain invocations are
-// conformance work, E13); the hashing, object storage, and single-writer record are
+// binary bytes with no real PyInstaller/pkg -- real toolchain invocations run only
+// inside a live engine); the hashing, object storage, and single-writer record are
 // the real production path.
 
 // toolchainRunner is a fake exec.Runner standing in for a build toolchain: it

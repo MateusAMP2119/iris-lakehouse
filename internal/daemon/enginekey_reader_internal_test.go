@@ -18,7 +18,7 @@ import (
 // into an EngineKey exposing only the public half, and that a read failure or an
 // empty table maps to ErrEngineNotInstalled so `iris engine info` reports a clear
 // operation failure. The meta byte-load is faked (integration tier, no live
-// Postgres); the real byte read over meta is proven at conformance.
+// Postgres); the real byte read over meta happens only inside a live engine.
 func TestMetaEngineKeyReaderDerivesPublicFromStoredPrivate(t *testing.T) {
 	// The private half exactly as the engine_key table stores it (raw ed25519
 	// bytes): the meta store returns these bytes to the reader.

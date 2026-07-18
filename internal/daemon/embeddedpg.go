@@ -23,8 +23,7 @@ const managedStartTimeout = 90 * time.Second
 // subprocess -- never linked into the engine binary, so the engine stays a single
 // cgo-free static executable. It is wrapped behind the Supervisor seam so the
 // daemon logic depends only on the interface: integration tests use a fake, and
-// only the conformance tier drives this real path (which downloads a real
-// Postgres).
+// only a live engine drives this real path (which downloads a real Postgres).
 
 // pinnedEmbeddedVersion is the exact embedded-postgres build the engine pins. Its
 // major must equal PinnedMajorVersion; the two are bumped together as a deliberate

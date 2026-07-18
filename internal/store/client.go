@@ -20,10 +20,9 @@ import (
 //   - a *pgxpool.Pool -- readers, plain MVCC, no session pinning, no busy-retry.
 //
 // This is the sole entry point the daemon calls; the daemon never imports pgx, so
-// store stays the only meta database client. It is exercised against a real
-// Postgres at conformance tier (the one tier with a live database); the seams it
-// composes (leader lock, reader, writer) are proven with fakes at integration
-// tier.
+// store stays the only meta database client. It meets a real Postgres only inside
+// a live engine; the seams it composes (leader lock, reader, writer) are proven
+// with fakes at integration tier.
 
 // Client is the live meta client: the leader's session (lock + writes) and the
 // reader pool, all derived from the one admin DSN. Build it with Connect and tear

@@ -53,7 +53,7 @@ type ErrorBody struct {
 
 // Health is the payload of GET /healthz: the daemon's liveness and its leadership
 // role. Role is leader, standby, or unknown (before election resolves), reported on
-// both listeners so the CLI's daemon-reachability check and the conformance harness
+// both listeners so the CLI's daemon-reachability check and any HTTP consumer
 // can read the daemon's role.
 type Health struct {
 	// Status is "ok" when the daemon is serving.
@@ -222,9 +222,8 @@ func (m *mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// serveHealthz handles GET /healthz: the liveness-plus-role probe both the
-// CLI's daemon-reachability check and the conformance harness hit, served
-// identically on every role.
+// serveHealthz handles GET /healthz: the liveness-plus-role probe the CLI's
+// daemon-reachability check hits, served identically on every role.
 func (m *mux) serveHealthz(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET /healthz only")

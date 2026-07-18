@@ -23,7 +23,7 @@ import (
 // backed by fergusstrange/embedded-postgres). Integration tests drive a fake
 // Supervisor through the same seam, so lifecycle ordering and socket-vs-TCP
 // configuration are proven with no download and no live Postgres; the real
-// subprocess path is proven by the conformance tier.
+// subprocess path runs only inside a live engine.
 //
 // # Two modes, one code path
 //

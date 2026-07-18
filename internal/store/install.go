@@ -13,9 +13,8 @@ import (
 // never imports pgx, so the live probe / CREATE DATABASE / control-table
 // connections live here, in store, and the daemon drives them through the
 // store.Execer seam its install-sequence test proves with recording fakes. The
-// recording fakes stand in at integration tier; these are exercised against a
-// real cluster at conformance tier (the one tier with a live database), the
-// single place the bootstrap DDL meets a real catalog.
+// recording fakes stand in at integration tier; the bootstrap DDL meets a real
+// catalog only inside a live engine.
 
 // InstallConns are the live pgx connections the meta bootstrap of `iris engine
 // install` rides: an admin/maintenance connection for the meta-existence probe and

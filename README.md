@@ -201,16 +201,13 @@ cli ──► daemon/api ──► dispatch ──► store (meta db) / pg (data
 
 ## Tested
 
-The suite runs in two tiers. The default tier is database-free: unit tests for pure logic and integration tests that use fakes and local process I/O — including the architecture tests that fail the build when a dependency points the wrong way. The conformance tier is the opposite end: it builds the real binary, starts a real daemon, talks to it over its socket, and runs against real Postgres, so the shipped artifact is what gets exercised. It sits behind the `conformance` build tag and is excluded from the default run.
+The suite is database-free: unit tests for pure logic and integration tests that use fakes and local process I/O — including the architecture tests that fail the build when a dependency points the wrong way.
 
 ```sh
-go test -race ./...                                                        # unit + integration (database-free)
-go test -race -tags conformance -timeout 20m ./internal/conformance/...   # real binary + real Postgres, ~11 min
+go test -race ./...   # unit + integration (database-free)
 ```
 
-Conformance wants `IRIS_PG_DSN` pointing at a Postgres 16+ cluster whose role has `CREATEDB` + `CREATEROLE`; without it, the suite provisions embedded Postgres where it can.
-
-CI runs both tiers on Go 1.25 and 1.26, plus golangci-lint and the cross-compile matrix, with conformance against Postgres 17. Nothing merges red.
+CI runs the suite on Go 1.25 and 1.26, plus golangci-lint and the cross-compile matrix. Nothing merges red.
 
 ---
 
@@ -242,6 +239,6 @@ Merging a PR into `master` is now the **only** action required to produce a new 
 
 ## Status
 
-All 15 epics (E00–E14) are **complete on `development`**: full CI green, full conformance suite passing under `-race`. Epic checkpoint merges to `master` are in progress.
+All 15 epics (E00–E14) are **complete on `development`**: full CI green under `-race`. Epic checkpoint merges to `master` are in progress.
 
 Built test-first, end to end, by AI coding agents working under the conventions in [CLAUDE.md](CLAUDE.md): every line of source written against failing tests, nothing merged red.
