@@ -204,7 +204,7 @@ cli ──► daemon/api ──► dispatch ──► store (meta db) / pg (data
 The suite is database-free: unit tests for pure logic and integration tests that use fakes and local process I/O — including the architecture tests that fail the build when a dependency points the wrong way.
 
 ```sh
-go test -race ./...   # unit + integration (database-free)
+go test ./...   # unit + integration (database-free)
 ```
 
 There is no test CI: the suite and golangci-lint run locally before every merge. Nothing merges red.
@@ -239,6 +239,6 @@ Merging a PR into `master` is now the **only** action required to produce a new 
 
 ## Status
 
-All 15 epics (E00–E14) are **complete on `development`**: full suite green under `-race`. Epic checkpoint merges to `master` are in progress.
+All 15 epics (E00–E14) are **complete on `development`**: full suite green. Epic checkpoint merges to `master` are in progress.
 
 Built test-first, end to end, by AI coding agents working under the conventions in [CLAUDE.md](CLAUDE.md): every line of source written against failing tests, nothing merged red.

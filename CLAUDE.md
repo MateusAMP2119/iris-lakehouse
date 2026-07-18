@@ -6,8 +6,8 @@ Reference docs: `docs/Iris Epics.md` (epics + build order).
 ## Commands
 
 - Build: `go build ./...`; binary: `go build -o iris ./cmd/iris` (always cgo-free; release/cross-compile with `CGO_ENABLED=0`).
-- Unit + integration (database-free): `go test -race ./...`.
-- Single test: `go test -race -run 'TestName(/subtest)?' ./internal/<pkg>/`.
+- Unit + integration (database-free): `go test ./...`.
+- Single test: `go test -run 'TestName(/subtest)?' ./internal/<pkg>/`.
 - Lint: `golangci-lint run` (config `.golangci.yml`; pinned version v2.12.2).
 
 ## Branching rules

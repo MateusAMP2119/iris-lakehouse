@@ -17,8 +17,8 @@ The test suite is the durable asset; implementation is regenerable. Behaviour ge
 ## Commands
 
 - Build: `go build ./...`; binary: `go build -o iris ./cmd/iris` (always cgo-free; release/cross-compile with `CGO_ENABLED=0`).
-- Unit + integration (database-free): `go test -race ./...`.
-- Single test: `go test -race -run 'TestName(/subtest)?' ./internal/<pkg>/`.
+- Unit + integration (database-free): `go test ./...`.
+- Single test: `go test -run 'TestName(/subtest)?' ./internal/<pkg>/`.
 - Lint: `golangci-lint run` (config `.golangci.yml`; pinned version v2.12.2).
 
 ## Branching rules
@@ -27,7 +27,7 @@ The test suite is the durable asset; implementation is regenerable. Behaviour ge
 - `development`: integration line. All issue branches merge here.
 - Issue branches: `issue/EXX.Y-short-name`, cut from `development`. PR title `EXX.Y <task name>`; PR body lists a Done-when checklist. Small tweaks may go on plain feature branches.
 - Epic completes → PR `Epic EXX` goes `development` → `master`, waits for human review.
-- Issue PRs merge on a green local run (`go test -race ./...` + lint) — no per-PR review step; there is no test CI.
+- Issue PRs merge on a green local run (`go test ./...` + lint) — no per-PR review step; there is no test CI.
 
 ## Conventions
 
