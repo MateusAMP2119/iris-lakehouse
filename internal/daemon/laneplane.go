@@ -187,6 +187,7 @@ func newLaneLoop(
 	inflight *inflightRuns,
 	residents *residentRuns,
 	workspace string,
+	pluginsRoot string,
 	registry store.RegistryReader,
 	manual store.ManualReader,
 	queued store.QueuedManualReader,
@@ -215,20 +216,21 @@ func newLaneLoop(
 		latest: manual,
 	}
 	runnerSeam := &laneExec{
-		workspace: workspace,
-		submit:    submit,
-		inflight:  inflight,
-		manual:    manual,
-		queued:    queued,
-		runner:    runner,
-		journal:   journal,
-		data:      data,
-		access:    newAccessCache(),
-		objects:   objects,
-		counters:  counters,
-		runLogs:   runLogs,
-		residents: residents,
-		logger:    logger,
+		workspace:   workspace,
+		pluginsRoot: pluginsRoot,
+		submit:      submit,
+		inflight:    inflight,
+		manual:      manual,
+		queued:      queued,
+		runner:      runner,
+		journal:     journal,
+		data:        data,
+		access:      newAccessCache(),
+		objects:     objects,
+		counters:    counters,
+		runLogs:     runLogs,
+		residents:   residents,
+		logger:      logger,
 	}
 	var deleteLog RunLogPruneFunc
 	if runLogs != nil {
@@ -343,20 +345,21 @@ func (g lanePassGate) Eligible(ctx context.Context, pipeline string) (dispatch.D
 // records nothing. A queued manual run rides the same protocol drive against its
 // pre-minted row.
 type laneExec struct {
-	workspace string
-	submit    dispatch.Submitter
-	inflight  *inflightRuns
-	manual    store.ManualReader
-	queued    store.QueuedManualReader // enqueued lane-member manual runs; nil skips pickup (shape tests)
-	runner    exec.Runner
-	journal   dispatch.JournalHighWatermark
-	data      turnData     // data-database turn seam; nil composes shape tests (no feed, producing turns fault)
-	access    *accessCache // per-pipeline declared-access cache keyed by declaration checksum
-	objects   *store.ObjectStore
-	counters  *turnCounters // resident turn tallies for the ps readout; nil skips
-	runLogs   *RunLogWriter // per-run output capture; nil discards (shape tests)
-	residents *residentRuns // live resident sessions, one per pipeline
-	logger    *slog.Logger
+	workspace   string
+	pluginsRoot string // installed-plugins root (~/.iris/plugins); "" refuses plugin-declaring turns
+	submit      dispatch.Submitter
+	inflight    *inflightRuns
+	manual      store.ManualReader
+	queued      store.QueuedManualReader // enqueued lane-member manual runs; nil skips pickup (shape tests)
+	runner      exec.Runner
+	journal     dispatch.JournalHighWatermark
+	data        turnData     // data-database turn seam; nil composes shape tests (no feed, producing turns fault)
+	access      *accessCache // per-pipeline declared-access cache keyed by declaration checksum
+	objects     *store.ObjectStore
+	counters    *turnCounters // resident turn tallies for the ps readout; nil skips
+	runLogs     *RunLogWriter // per-run output capture; nil discards (shape tests)
+	residents   *residentRuns // live resident sessions, one per pipeline
+	logger      *slog.Logger
 }
 
 // StartFresh runs one fresh cause=loop turn for rec's pipeline, blocking until
@@ -415,7 +418,18 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 		ConsumedUpstreamRunIDs: rec.ConsumedUpstreamRunIDs,
 	}
 
-	res := driveTurn(ctx, ses, ses.nextTurn(), feed.Rows, acc.writes, tr)
+	// Declared plugins pin at turn start; a resolution failure refuses the turn
+	// (dead-lettered, always recorded) before any frame is sent (#215).
+	rp, perr := resolveTurnPlugins(m.pluginsRoot, acc.plugins, m.runner, buf)
+	if perr != nil {
+		return m.deadLetterFreshTurn(ctx, trec, target, buf, tr, "plugin resolution failed: "+perr.Error())
+	}
+	if rp != nil {
+		trec.Plugins = rp.pins
+	}
+
+	res := driveTurn(ctx, ses, ses.nextTurn(), feed.Rows, acc.writes, rp, tr)
+	trec.Calls = res.calls
 	switch res.kind {
 	case turnShutdown:
 		// Term over: end the session outright (the runner's ctx watcher kills the
@@ -425,11 +439,11 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 		return dispatch.RunSucceeded, ctx.Err()
 
 	case turnDone:
-		if len(res.rows) == 0 && !feed.Advanced {
+		if len(res.rows) == 0 && len(res.calls) == 0 && !feed.Advanced {
 			m.counters.bump(rec.Pipeline, false)
 			return dispatch.RunQuiet, nil // the quiet turn: two JSON lines, zero writes
 		}
-		if len(res.rows) == 0 {
+		if len(res.rows) == 0 && len(res.calls) == 0 {
 			// Input consumed, nothing produced: persist only the feed position (one
 			// small data transaction, no run row -- nothing happened worth a record).
 			if _, err := m.data.CommitTurn(ctx, pg.TurnCommit{Pipeline: rec.Pipeline, Position: feed.Position, AdvancePosition: true}); err != nil {
@@ -437,6 +451,39 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 			}
 			m.counters.bump(rec.Pipeline, false)
 			return dispatch.RunQuiet, nil
+		}
+		if len(res.rows) == 0 {
+			// Calls-only turn (#215): zero declared writes, but external effects
+			// happened -- they must land in the ledger, so the run records. Mint
+			// running (pins and calls ride the mint), advance the consumed feed
+			// position if any, complete with no snapshot stamps.
+			m.counters.bump(rec.Pipeline, true)
+			if err := m.submit.Submit(ctx, func(w *store.Writer) error { return w.CreateTurnRun(ctx, trec) }); err != nil {
+				return dispatch.RunSucceeded, fmt.Errorf("lane turn %q: mint calls-only: %w", rec.Pipeline, err)
+			}
+			id, err := m.mintedRunID(ctx, rec.Pipeline)
+			if err != nil {
+				return dispatch.RunSucceeded, err
+			}
+			runID := strconv.FormatInt(id, 10)
+			ref := m.flushTurnLog(runID, rec.Pipeline, target, buf, tr, "succeeded")
+			if feed.Advanced {
+				if _, cerr := m.data.CommitTurn(ctx, pg.TurnCommit{Pipeline: rec.Pipeline, Position: feed.Position, AdvancePosition: true}); cerr != nil {
+					detail := fmt.Sprintf("turn commit failed: %v", cerr)
+					if derr := m.submit.Submit(ctx, func(w *store.Writer) error {
+						return w.DeadLetterRun(ctx, runID, store.ReasonFailed, detail)
+					}); derr != nil {
+						return dispatch.RunSucceeded, fmt.Errorf("lane turn %s: dead-letter: %w", runID, derr)
+					}
+					return dispatch.RunDeadLettered, nil
+				}
+			}
+			if err := m.submit.Submit(ctx, func(w *store.Writer) error {
+				return w.CompleteTurnRun(ctx, runID, "", 0, 0, ref)
+			}); err != nil {
+				return dispatch.RunSucceeded, fmt.Errorf("lane turn %s: record succeeded: %w", runID, err)
+			}
+			return dispatch.RunSucceeded, nil
 		}
 		if m.data == nil {
 			return dispatch.RunSucceeded, fmt.Errorf("lane turn %q: produced %d rows with no data seam wired", rec.Pipeline, len(res.rows))
@@ -675,15 +722,6 @@ func (m *laneExec) runToTerminal(ctx context.Context, pipeline string, target st
 	m.inflight.track(runID, ses.handle)
 	defer m.inflight.untrack(runID)
 
-	res := driveTurn(ctx, ses, ses.nextTurn(), feed.Rows, acc.writes, sink)
-	if res.kind != turnShutdown {
-		m.counters.bump(pipeline, true) // a pre-minted run's row always records
-	}
-	// The declared stamp's close line carries the run's ending (the deferred
-	// close writes it); a dead-letter on any later path overwrites it below.
-	if res.kind == turnShutdown {
-		sink.SetOutcome("shutdown")
-	}
 	deadLetter := func(detail string) (dispatch.RunOutcome, error) {
 		sink.SetOutcome("dead_lettered")
 		// Guarded on the running state, so a cancel's stopped reason stands.
@@ -696,6 +734,29 @@ func (m *laneExec) runToTerminal(ctx context.Context, pipeline string, target st
 			return dispatch.StampTerminal(ctx, w, m.journal, runID)
 		})
 		return dispatch.RunDeadLettered, nil
+	}
+
+	// Declared plugins pin at run start; a resolution failure refuses the run (#215).
+	rp, perr := resolveTurnPlugins(m.pluginsRoot, acc.plugins, m.runner, sink)
+	if perr != nil {
+		m.counters.bump(pipeline, true)
+		return deadLetter("plugin resolution failed: " + perr.Error())
+	}
+
+	res := driveTurn(ctx, ses, ses.nextTurn(), feed.Rows, acc.writes, rp, sink)
+	if res.kind != turnShutdown {
+		m.counters.bump(pipeline, true) // a pre-minted run's row always records
+		if rp != nil {
+			prec := store.TurnRunRecord{Plugins: rp.pins, Calls: res.calls}
+			if lerr := m.submit.Submit(ctx, func(w *store.Writer) error { return w.RecordRunPlugins(ctx, runID, prec) }); lerr != nil {
+				m.logger.Warn("lane run: could not record plugin ledger", "run", runID, "err", lerr)
+			}
+		}
+	}
+	// The declared stamp's close line carries the run's ending (the deferred
+	// close writes it); a dead-letter on any later path overwrites it below.
+	if res.kind == turnShutdown {
+		sink.SetOutcome("shutdown")
 	}
 	switch res.kind {
 	case turnShutdown:

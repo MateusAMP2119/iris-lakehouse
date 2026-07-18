@@ -118,4 +118,3 @@ func TestPsStaleOpen(t *testing.T) {
 		}
 	})
 }
-

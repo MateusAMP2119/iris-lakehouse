@@ -109,8 +109,12 @@ VALUES ($1, $2, $3, $4, $5, $6::json, $7, $8, $9, now()::text)`
 	// deletes a surviving downstream's ledger row (that would erase a live run's
 	// provenance and re-open its gate).
 	deleteRunInputsSQL = `DELETE FROM run_inputs WHERE run_id = $1`
+	// deleteRunPluginsSQL cascades the pruned run's plugin pin rows (#215).
+	deleteRunPluginsSQL = `DELETE FROM run_plugins WHERE run_id = $1`
+	// deleteRunPluginCallsSQL cascades the pruned run's plugin call ledger (#215).
+	deleteRunPluginCallsSQL = `DELETE FROM run_plugin_calls WHERE run_id = $1`
 	// deleteRunSQL removes the run row itself -- last, after its summary is written
-	// and its run_inputs cascaded.
+	// and its children cascaded.
 	deleteRunSQL = `DELETE FROM runs WHERE id = $1`
 )
 
@@ -130,6 +134,8 @@ func pruneStatements(s RunSummary) []Statement {
 			s.ConsumedUpstreamRunIDsJSON, s.SnapshotLSN, s.JournalFloor, s.JournalCeiling,
 		}},
 		{SQL: deleteRunInputsSQL, Args: []any{s.RunID}},
+		{SQL: deleteRunPluginsSQL, Args: []any{s.RunID}},
+		{SQL: deleteRunPluginCallsSQL, Args: []any{s.RunID}},
 		{SQL: deleteRunSQL, Args: []any{s.RunID}},
 	}
 }
@@ -170,7 +176,7 @@ func (w *Writer) PruneRuns(ctx context.Context, runs []PrunableRun, deleteLog fu
 	if len(runs) == 0 {
 		return nil
 	}
-	stmts := make([]Statement, 0, 3*len(runs))
+	stmts := make([]Statement, 0, 5*len(runs))
 	for _, run := range runs {
 		stmts = append(stmts, pruneStatements(BuildRunSummary(run))...)
 	}
