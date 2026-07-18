@@ -62,4 +62,4 @@ while read -r line; do
 done
 ```
 
-Python speakers: see the demo pipelines under `pipelines/healthy/` (`quake_feed/main.py`, `quake_report/main.py`) and the catalog samples (`iris catalog`).
+Python speakers: see the catalog samples (`iris catalog show quake-monitor`) — the embedded starter pack's `quake_feed/main.py` and `quake_report/main.py` under `internal/catalog/packs/quake-monitor/`.

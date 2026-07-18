@@ -80,6 +80,8 @@ type Candidate struct {
 	registry   store.RegistryReader
 	appliedHds store.AppliedHeadReader
 	data       dataPlane
+	// catalogs is the pack-install plane (#217), riding the control orchestrator's apply seam.
+	catalogs *catalogPlane
 
 	// Manual-run wiring, installed on winning leadership and cleared on demotion so
 	// the api mux's POST /pipeline/run reaches the single meta writer and the exec
@@ -262,6 +264,11 @@ func WithControlPlane(cp *controlPlane, workspace string, reg store.RegistryRead
 		c.appliedHds = heads
 		c.data = data
 	}
+}
+
+// WithCatalogPlane wires the leader-side catalog plane (#217): its orchestrator installs with the control plane's, so pack installs ride the same workspace, registry reader, and apply path. A nil cp leaves installs unwired.
+func WithCatalogPlane(cp *catalogPlane) CandidateOption {
+	return func(c *Candidate) { c.catalogs = cp }
 }
 
 // WithDeadletterPlane wires the leader-side dead-letter plane: on winning leadership
@@ -730,6 +737,13 @@ func (c *Candidate) lead(ctx context.Context) (demoted bool, err error) {
 		)
 		c.control.install(orch)
 		defer c.control.clear()
+
+		// The catalog orchestrator rides the control orchestrator's apply path, so a
+		// pack install's declare sequence is the ordinary leader-side apply.
+		if c.catalogs != nil {
+			c.catalogs.install(newCatalogOrchestrator(c.workspace, c.registry, orch.apply, c.logger))
+			defer c.catalogs.clear()
+		}
 	}
 
 	// Install the leader-side manual-run orchestrator over the single dispatcher, the

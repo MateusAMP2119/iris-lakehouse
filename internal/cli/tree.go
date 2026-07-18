@@ -100,6 +100,7 @@ func (a *app) newRootCommand() *cobra.Command {
 		a.endpointCmd(),
 		a.patCmd(),
 		a.pluginCmd(),
+		a.catalogCmd(),
 		a.updateCmd(),
 		a.uninstallCmd(),
 	)

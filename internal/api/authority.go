@@ -91,6 +91,9 @@ func requiredScope(path string) pat.Scope {
 		return pat.ScopeData
 	case "apply", "destroy":
 		return pat.ScopeControl
+	case "catalog":
+		// Catalog install is a control mutation; catalog reads arrive with the ps overlay (#219).
+		return pat.ScopeControl
 	case "pipeline":
 		// The control-plane pipeline verbs mutate (control); the listing is an
 		// engine-state read.

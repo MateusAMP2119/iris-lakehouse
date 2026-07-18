@@ -52,6 +52,8 @@ func TestDaemonlessLifecycleCommands(t *testing.T) {
 			"iris plugin list":              true,
 			"iris plugin remove":            true,
 			"iris plugin verify":            true,
+			"iris catalog list":             true,
+			"iris catalog show":             true,
 		}
 		gotDaemonless := map[string]bool{}
 

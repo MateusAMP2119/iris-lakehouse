@@ -212,6 +212,8 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// orchestrator.
 	role := api.NewRoleState()
 	control := newControlPlane()
+	// The catalog plane serves POST /catalog/install once this daemon leads (#217).
+	catalogCtl := newCatalogPlane()
 	// The pipeline plane serves iris pipeline list from the reader pool (any node) and,
 	// once this daemon leads, POST /pipeline/run through the single writer and exec seam.
 	pipelines := newPipelinePlane(client.PipelineLister(), logger)
@@ -318,7 +320,7 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 		api.WithInspect(inspect), api.WithPipelineShow(pipelineShow),
 		api.WithDeadImpact(deadletters), api.WithReplay(deadletters), api.WithDrain(deadletters),
 		api.WithRuns(runs), api.WithRunTrace(runTrace), api.WithPipelineGate(pipelineGate),
-		api.WithRunLogs(NewRunLogsPlane(runLogs)),
+		api.WithRunLogs(NewRunLogsPlane(runLogs)), api.WithCatalog(catalogCtl),
 	), WithServerLogger(logger), WithVerifier(verifier))
 	if err := srv.Start(ctx); err != nil {
 		return err
@@ -380,6 +382,7 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 		WithFreshSessions(freshLeaderSession(ctx, client, logger)),
 		WithEndpointPlane(endpointCtl, endpointRegistry, data, workspace),
 		WithPATPlane(patMint, endpointRegistry, workspace),
+		WithCatalogPlane(catalogCtl),
 		// Leader advertisement: on winning the lock this candidate advertises its TCP
 		// listen address (empty when socket-only) into the leadership meta table, and
 		// while a standby it polls that table to name the live leader for retargeting
