@@ -12,10 +12,7 @@
 # repo's accepted style and genuinely have no per-site variation worth annotating.
 version: "2"
 
-run:
-  # The conformance-tagged files (the runner's end-to-end tests) are linted too.
-  build-tags:
-    - conformance
+run: {}
 
 linters:
   default: none
@@ -31,9 +28,9 @@ linters:
   settings:
     gosec:
       excludes:
-        # Subprocess launched with variable arguments: the conformance runner and
-        # the exec package drive the built iris binary with caller-supplied args
-        # by design. (Not covered by any active exclusion preset, so this is live.)
+        # Subprocess launched with variable arguments: the exec package drives
+        # the built iris binary with caller-supplied args by design. (Not
+        # covered by any active exclusion preset, so this is live.)
         - G204
         # File permissions (0o644): the repo's accepted style for the golden-file
         # writer (internal/golden), the archive round-trip temp file
@@ -44,9 +41,9 @@ linters:
         # WalkDir/ReadFile in a callback (symlink-TOCTOU). Defensive: the pinned
         # gosec (v2.26.1) does not currently emit G122, so this entry is inert
         # today -- it is kept so the tree walkers in internal/fixtures,
-        # internal/arch, internal/roundtrip and the store + conformance tests,
-        # which all read every file under a trusted repo or temp tree, stay
-        # covered if the rule lands in a later gosec.
+        # internal/arch, internal/roundtrip and the store tests, which all read
+        # every file under a trusted repo or temp tree, stay covered if the
+        # rule lands in a later gosec.
         - G122
         # Bounded slice index inside a length-checked loop: a false positive in
         # the pre-existing equalStrings test helper.

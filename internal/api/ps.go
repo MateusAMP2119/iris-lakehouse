@@ -145,6 +145,25 @@ type PsRun struct {
 	// Load is the run's process group's sampled host load, present only on a
 	// running run whose process group answered the probe.
 	Load *PsLoad `json:"load,omitempty"`
+	// Log is the run's captured-output metadata, present only when the
+	// answering node holds the run's capture file.
+	Log *PsRunLog `json:"log,omitempty"`
+}
+
+// PsRunLog is one run's captured-output metadata on the ps readout: where the
+// capture lives on the answering node, how big it is, and its last line -- the
+// at-a-glance tail the run table shows without a second request.
+type PsRunLog struct {
+	// Ref is the capture file's path on the answering node (runs.log_ref).
+	Ref string `json:"ref"`
+	// SizeBytes is the capture file's current size.
+	SizeBytes int64 `json:"size_bytes"`
+	// LastLine is the capture's last line, naturalized (framing tags stripped);
+	// empty for an empty capture.
+	LastLine string `json:"last_line,omitempty"`
+	// Framed reports a line-framed capture (a declared logs block): the file
+	// separates log, protocol-frame, and stamp lines by tag.
+	Framed bool `json:"framed,omitempty"`
 }
 
 // PsHandler serves the process-status readout. The daemon implements it over

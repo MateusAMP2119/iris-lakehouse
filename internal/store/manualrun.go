@@ -35,6 +35,12 @@ type PipelineRunTarget struct {
 	Folder string
 	// Argv is the declared direct-exec command (pipelines.run).
 	Argv []string
+	// LogSplit is the declared stdout/stderr split (pipeline_logs.split); false
+	// for a pipeline registered without a logs block.
+	LogSplit bool
+	// LogStamp is the declared metadata stamp (pipeline_logs.stamp); false for a
+	// pipeline registered without a logs block.
+	LogStamp bool
 }
 
 // LatestRunInfo is a pipeline's most recent run: its id and lifecycle state, the
@@ -96,7 +102,9 @@ type ManualReader interface {
 // The manual-run read statements. Each is a single plain SELECT: an MVCC snapshot, no
 // locking clause, no advisory-lock interplay.
 const (
-	selectPipelineRunTargetSQL = `SELECT folder, run FROM pipelines WHERE name = $1`
+	selectPipelineRunTargetSQL = `SELECT p.folder, p.run, coalesce(l.split, false), coalesce(l.stamp, false)
+    FROM pipelines p LEFT JOIN pipeline_logs l ON l.pipeline = p.name
+    WHERE p.name = $1`
 	selectLatestRunSQL         = `SELECT r.id, r.state, coalesce(d.reason, ''), coalesce(d.error, '')
     FROM runs r LEFT JOIN dead_letters d ON d.run_id = r.id
     WHERE r.pipeline = $1 ORDER BY r.id DESC LIMIT 1`
@@ -139,14 +147,15 @@ func (r *pgxManualReader) PipelineRunTarget(ctx context.Context, name string) (P
 		return PipelineRunTarget{}, false, nil
 	}
 	var folder, runJSON string
-	if err := rows.Scan(&folder, &runJSON); err != nil {
+	var logSplit, logStamp bool
+	if err := rows.Scan(&folder, &runJSON, &logSplit, &logStamp); err != nil {
 		return PipelineRunTarget{}, false, fmt.Errorf("store: scan pipeline run target %q: %w", name, err)
 	}
 	var argv []string
 	if err := json.Unmarshal([]byte(runJSON), &argv); err != nil {
 		return PipelineRunTarget{}, false, fmt.Errorf("store: decode run argv for %q: %w", name, err)
 	}
-	return PipelineRunTarget{Folder: folder, Argv: argv}, true, nil
+	return PipelineRunTarget{Folder: folder, Argv: argv, LogSplit: logSplit, LogStamp: logStamp}, true, nil
 }
 
 // LatestRun reads a pipeline's most recent run (highest id) in one plain MVCC query.

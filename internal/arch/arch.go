@@ -22,7 +22,7 @@
 //   - Main: cmd/iris, the single main package, the top of the direction (it may
 //     import product packages downward and nothing may import it).
 //   - Harness: every other package under internal/ -- the test-support
-//     scaffolding (golden, roundtrip, fixtures, socketio, conformance) and the
+//     scaffolding (golden, roundtrip, fixtures, socketio) and the
 //     recording-fake subpackages (store/storetest, pg/pgtest, exec/exectest).
 //     Harness packages carry no layer rank and sit outside the product graph:
 //     shipped code (Product or Main) never imports harness, but harness freely

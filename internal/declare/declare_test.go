@@ -34,11 +34,11 @@ func invalidDecl(t *testing.T, name string) []byte {
 	return b
 }
 
-// TestEightFieldWhitelist proves that pipeline-declaration parsing admits
-// exactly the eight allowed fields and rejects every other key, naming it.
-func TestEightFieldWhitelist(t *testing.T) {
-	t.Run("eight-field-whitelist", func(t *testing.T) {
-		// Accept: the golden load_orders declaration exercises seven of the eight
+// TestNineFieldWhitelist proves that pipeline-declaration parsing admits
+// exactly the nine allowed fields and rejects every other key, naming it.
+func TestNineFieldWhitelist(t *testing.T) {
+	t.Run("nine-field-whitelist", func(t *testing.T) {
+		// Accept: the golden load_orders declaration exercises most of the nine
 		// fields (name, run, env, env_file, lane, reads, writes, depends_on).
 		good := goldenDecl(t, "pipelines", "ingest", "load_orders", "iris-declare.yaml")
 		decl, err := declare.ParseDeclaration(good)
@@ -54,7 +54,7 @@ func TestEightFieldWhitelist(t *testing.T) {
 			t.Fatalf("minimal name+run declaration rejected: %v", err)
 		}
 
-		// Reject: the unknown_field fixture carries `schedule`, outside the eight.
+		// Reject: the unknown_field fixture carries `schedule`, outside the nine.
 		if _, err := declare.ParseDeclaration(invalidDecl(t, "unknown_field")); err == nil {
 			t.Error("unknown_field fixture accepted; expected rejection")
 		}
@@ -247,4 +247,56 @@ func equalOrder(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestLogsBlockShape proves the optional logs block parses into the declared
+// recording contract and that every malformed shape is rejected naming the
+// offending key or value.
+func TestLogsBlockShape(t *testing.T) {
+	t.Run("declared", func(t *testing.T) {
+		src := []byte("name: p\nrun: [sh, main.sh]\nlogs:\n  split: true\n  stamp: false\n")
+		decl, err := declare.ParseDeclaration(src)
+		if err != nil {
+			t.Fatalf("declared logs block rejected: %v", err)
+		}
+		l := decl.Pipeline.Logs
+		if l == nil {
+			t.Fatal("declared logs block parsed as nil")
+		}
+		if !l.Split || l.Stamp {
+			t.Errorf("logs = split:%v stamp:%v, want split:true stamp:false", l.Split, l.Stamp)
+		}
+	})
+
+	t.Run("omitted-is-nil", func(t *testing.T) {
+		decl, err := declare.ParseDeclaration([]byte("name: p\nrun: [sh, main.sh]\n"))
+		if err != nil {
+			t.Fatalf("minimal declaration rejected: %v", err)
+		}
+		if decl.Pipeline.Logs != nil {
+			t.Errorf("omitted logs block parsed as %+v, want nil (engine default)", decl.Pipeline.Logs)
+		}
+	})
+
+	reject := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"non-mapping", "name: p\nrun: [sh, main.sh]\nlogs: true\n", "logs"},
+		{"unknown-key", "name: p\nrun: [sh, main.sh]\nlogs:\n  rotate: true\n", "rotate"},
+		{"non-bool-split", "name: p\nrun: [sh, main.sh]\nlogs:\n  split: always\n", "split"},
+		{"non-bool-stamp", "name: p\nrun: [sh, main.sh]\nlogs:\n  stamp: 1\n", "stamp"},
+	}
+	for _, tc := range reject {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := declare.ParseDeclaration([]byte(tc.src))
+			if err == nil {
+				t.Fatalf("malformed logs block (%s) accepted; expected rejection", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q does not name %q", err, tc.want)
+			}
+		})
+	}
 }

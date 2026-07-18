@@ -177,10 +177,17 @@ type turnResult struct {
 // reports through the session's exited channel. On process exit the scanner's
 // already-delivered lines are drained first, so a one-shot pipeline that answers
 // its frames and exits cleanly still ends in done, not death.
-func driveTurn(ctx context.Context, ses *residentSession, turn int64, feed []pg.FeedRow, writes dispatch.WriteSet) turnResult {
+func driveTurn(ctx context.Context, ses *residentSession, turn int64, feed []pg.FeedRow, writes dispatch.WriteSet, rec frameRecorder) turnResult {
 	col := dispatch.NewTurnCollector(turn, writes)
 
-	alive := ses.send(dispatch.EncodeGoFrame(turn)) == nil
+	sendRecorded := func(line string) bool {
+		if rec != nil {
+			rec.EngineFrame(line)
+		}
+		return ses.send(line) == nil
+	}
+
+	alive := sendRecorded(dispatch.EncodeGoFrame(turn))
 	for _, r := range feed {
 		if !alive {
 			break
@@ -189,13 +196,16 @@ func driveTurn(ctx context.Context, ses *residentSession, turn int64, feed []pg.
 		if err != nil {
 			continue // a feed row that cannot frame is skipped, never fatal
 		}
-		alive = ses.send(line) == nil
+		alive = sendRecorded(line)
 	}
 	if alive {
-		_ = ses.send(dispatch.EncodeRunFrame())
+		_ = sendRecorded(dispatch.EncodeRunFrame())
 	}
 
 	feedLine := func(line string) (turnResult, bool) {
+		if rec != nil {
+			rec.PipelineFrame(line)
+		}
 		end, terminal, err := col.Feed(line)
 		if err != nil {
 			return turnResult{kind: turnViolated, violation: err, rows: col.Rows()}, true

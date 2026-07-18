@@ -10,8 +10,7 @@ The test suite is the durable asset; implementation is regenerable. Behaviour ge
 1. Test tiers, cheapest first — write the test at the lowest tier that can actually observe the behaviour:
    - `unit` — pure logic, no I/O.
    - `integration` — fakes + local process I/O, no live Postgres.
-   - `conformance` — real binary, running daemon, real Postgres.
-   Unit + integration are what CI runs per Go version; conformance sits behind the `conformance` build tag.
+   Unit + integration are what CI runs per Go version.
 2. Write the failing test first, then implement to green.
 3. Never weaken a test to make it pass. If a test is genuinely wrong, change it deliberately as an intended behaviour change — never to silence a red run.
 4. Nothing merges red: full suite green before merge.
@@ -19,9 +18,8 @@ The test suite is the durable asset; implementation is regenerable. Behaviour ge
 ## Commands
 
 - Build: `go build ./...`; binary: `go build -o iris ./cmd/iris` (always cgo-free; release/cross-compile with `CGO_ENABLED=0`).
-- Unit + integration (database-free, what CI runs per Go version): `go test -race ./...` — conformance excluded via `conformance` build tag.
+- Unit + integration (database-free, what CI runs per Go version): `go test -race ./...`.
 - Single test: `go test -race -run 'TestName(/subtest)?' ./internal/<pkg>/`.
-- Conformance suite (real binary, real Postgres 16+): `go test -race -tags conformance -timeout 20m ./internal/conformance/...` Needs `IRIS_PG_DSN` pointing at cluster whose role has CREATEDB + CREATEROLE (see `.github/workflows/ci.yml`); without it, suite provisions embedded Postgres where possible, but CI parity = DSN path. Slow (~11m); don't run casually.
 - Lint: `golangci-lint run` (config `.golangci.yml`; CI pins version in `ci.yml` — currently v2.12.2).
 
 ## Branching rules

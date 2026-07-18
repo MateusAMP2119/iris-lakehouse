@@ -415,10 +415,11 @@ func (m *manualExec) runNow(ctx context.Context, rec store.RunRecord) (dispatch.
 	}
 
 	// Open the per-run output capture: the run's stderr streams into the
-	// run-id-keyed log under .iris/logs (stdout is protocol-only), and its path is
-	// recorded as runs.log_ref. Capture is best-effort -- a failed open runs the
-	// pipeline uncaptured (warned) rather than blocking the run.
-	sink, logRef := openRunLog(m.runLogs, runID, m.logger)
+	// run-id-keyed log under .iris/logs (stdout is protocol-only), framed per the
+	// pipeline's declared recording contract, and its path is recorded as
+	// runs.log_ref. Capture is best-effort -- a failed open runs the pipeline
+	// uncaptured (warned) rather than blocking the run.
+	sink, logRef := openRunLog(m.runLogs, runID, rec.Pipeline, target.LogSplit, target.LogStamp, m.logger)
 
 	argv := dispatch.ResolveRunArgv(target.Argv, nil, m.objects)
 	// objects is this leader's (wired at candidate construction; a promoted failover
@@ -456,9 +457,15 @@ func (m *manualExec) runNow(ctx context.Context, rec store.RunRecord) (dispatch.
 		defer m.inflight.untrack(runID)
 	}
 
-	res := driveTurn(ctx, ses, ses.nextTurn(), feed.Rows, acc.writes)
+	res := driveTurn(ctx, ses, ses.nextTurn(), feed.Rows, acc.writes, sink)
 
+	// The declared stamp's close line carries the run's ending (the deferred
+	// close writes it); a dead-letter on any later path overwrites it below.
+	if res.kind == turnShutdown {
+		sink.SetOutcome("shutdown")
+	}
 	deadLetter := func(detail string) (dispatch.RunOutcome, error) {
+		sink.SetOutcome("dead_lettered")
 		// Guarded on the running state, so a cancel's stopped reason stands.
 		if derr := m.submitter.Submit(ctx, func(w *store.Writer) error {
 			return w.DeadLetterRun(ctx, runID, store.ReasonFailed, detail)
@@ -499,6 +506,7 @@ func (m *manualExec) runNow(ctx context.Context, rec store.RunRecord) (dispatch.
 		}
 	}
 
+	sink.SetOutcome("succeeded")
 	if serr := m.submitter.Submit(ctx, func(w *store.Writer) error { return w.MarkRunSucceeded(ctx, runID) }); serr != nil {
 		return dispatch.RunSucceeded, fmt.Errorf("record manual run %s succeeded: %w", runID, serr)
 	}

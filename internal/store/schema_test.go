@@ -10,7 +10,7 @@ import (
 	"github.com/MateusAMP2119/iris-lakehouse/internal/store"
 )
 
-// metaRoster is the exact twenty-table roster of the meta control-plane database.
+// metaRoster is the exact twenty-one-table roster of the meta control-plane database.
 // The order is the create-if-missing emission order. engine_key follows
 // journal_checkpoints: the engine-owned ed25519 signing key moved from a
 // per-database GUC into this single-row meta table. read_pool_credential follows
@@ -20,6 +20,7 @@ import (
 // standby reads to name the leader for retargeting.
 var metaRoster = []string{
 	"pipelines",
+	"pipeline_logs",
 	"dependencies",
 	"lanes",
 	"runs",
@@ -46,6 +47,7 @@ var metaRoster = []string{
 // no more and no fewer.
 var specFKEdges = []string{
 	"runs.pipeline->pipelines.name",
+	"pipeline_logs.pipeline->pipelines.name",
 	"dependencies.from_pipeline->pipelines.name",
 	"dependencies.to_pipeline->pipelines.name",
 	"artifacts.pipeline->pipelines.name",

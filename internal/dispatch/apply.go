@@ -47,6 +47,12 @@ func (a *Applier) ApplyPipeline(ctx context.Context, folder string, decl *declar
 		Artifact: store.ArtifactSource,
 		DataMode: store.DataDisposable,
 	}
+	// The recording contract rides the registration; an omitted logs block
+	// registers the engine default (combined stream, no stamp) explicitly.
+	if decl.Logs != nil {
+		row.LogSplit = decl.Logs.Split
+		row.LogStamp = decl.Logs.Stamp
+	}
 	// Validate and write on the single-writer path: the graph is read, the
 	// depends_on edges validated against it, and the row written inside one
 	// dispatcher closure, so no concurrent apply can commit an edge between the read

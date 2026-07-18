@@ -85,6 +85,10 @@ WHERE run_id IN (SELECT id FROM runs WHERE pipeline = $1)
 	// and credentials and before the pipelines row they reference.
 	retireRolesSQL = `DELETE FROM roles WHERE pipeline = $1`
 
+	// retirePipelineLogsSQL clears the pipeline's declared run-log recording
+	// contract, before the pipelines row it references.
+	retirePipelineLogsSQL = `DELETE FROM pipeline_logs WHERE pipeline = $1`
+
 	// retirePipelineSQL deletes the registry root last: with every child row already
 	// gone, the pipelines row can be removed without tripping a foreign key, and until
 	// this point journal stamps still resolve the binary's name.
@@ -115,6 +119,7 @@ func (w *Writer) RetirePipeline(ctx context.Context, name string) error {
 		{SQL: retireGrantsSQL, Args: []any{name}},
 		{SQL: retireCredentialsSQL, Args: []any{name}},
 		{SQL: retireRolesSQL, Args: []any{name}},
+		{SQL: retirePipelineLogsSQL, Args: []any{name}},
 		{SQL: retirePipelineSQL, Args: []any{name}},
 	}
 	if err := w.execTx(ctx, stmts); err != nil {
@@ -149,6 +154,7 @@ func (w *Writer) RetirePipelineWithSummaries(ctx context.Context, name string, s
 		Statement{SQL: retireGrantsSQL, Args: []any{name}},
 		Statement{SQL: retireCredentialsSQL, Args: []any{name}},
 		Statement{SQL: retireRolesSQL, Args: []any{name}},
+		Statement{SQL: retirePipelineLogsSQL, Args: []any{name}},
 		Statement{SQL: retirePipelineSQL, Args: []any{name}},
 	)
 	if err := w.execTx(ctx, stmts); err != nil {

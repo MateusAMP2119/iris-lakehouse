@@ -82,7 +82,22 @@ func (s *StringList) UnmarshalYAML(b []byte) error {
 	return nil
 }
 
-// Pipeline is a parsed pipeline declaration: the eight-field declaration shape.
+// Logs is a pipeline's declared run-log recording contract: how the engine
+// captures the run's stdout and stderr. Omitted, the engine default applies
+// (one combined raw stream, no stamp) and the apply surfaces an advisory
+// warning, so the recording contract stays visible in the declaration.
+type Logs struct {
+	// Split captures stdout and stderr as separately tagged streams in one
+	// ordered capture, so consumers can tell error output apart or filter a
+	// single stream, instead of one undifferentiated byte stream.
+	Split bool `yaml:"split"`
+	// Stamp frames the capture with machine-readable run metadata: a header
+	// carrying the run id, pipeline, and start time, and a footer carrying the
+	// end time and exit code.
+	Stamp bool `yaml:"stamp"`
+}
+
+// Pipeline is a parsed pipeline declaration: the nine-field declaration shape.
 // name and run are required; the rest are optional.
 type Pipeline struct {
 	// Name is the pipeline name; required, and must match its folder.
@@ -95,6 +110,9 @@ type Pipeline struct {
 	EnvFile StringList `yaml:"env_file"`
 	// Lane is the pipeline's lane; omitted means its own lane.
 	Lane string `yaml:"lane"`
+	// Logs is the pipeline's run-log recording contract; nil means the engine
+	// default (combined raw stream, no stamp), surfaced as an apply warning.
+	Logs *Logs `yaml:"logs"`
 	// Reads are the pipeline's declared read access entries.
 	Reads []Access `yaml:"reads"`
 	// Writes are the pipeline's declared write access entries.
@@ -126,15 +144,21 @@ type Declaration struct {
 	Composer *Composer
 }
 
-// pipelineFields is the eight-field whitelist for a pipeline declaration.
+// pipelineFields is the nine-field whitelist for a pipeline declaration.
 var pipelineFields = map[string]bool{
 	"name": true, "run": true, "env": true, "env_file": true,
-	"lane": true, "reads": true, "writes": true, "depends_on": true,
+	"lane": true, "logs": true, "reads": true, "writes": true, "depends_on": true,
 }
 
 // pipelineFieldList is the human-readable rendering of pipelineFields, in
 // declaration order, for error messages.
-const pipelineFieldList = "name, run, env, env_file, lane, reads, writes, depends_on"
+const pipelineFieldList = "name, run, env, env_file, lane, logs, reads, writes, depends_on"
+
+// logsFields is the whitelist for the logs block inside a pipeline declaration.
+var logsFields = map[string]bool{"split": true, "stamp": true}
+
+// logsFieldList is the human-readable rendering of logsFields.
+const logsFieldList = "split, stamp"
 
 // composerFields is the whitelist for a lane composer.
 var composerFields = map[string]bool{"lane": true, "order": true, "reads": true, "writes": true}
@@ -179,11 +203,41 @@ func parsePipeline(raw map[string]any, data []byte) (*Declaration, error) {
 	if err := requireArgvList(raw); err != nil {
 		return nil, err
 	}
+	if err := checkLogsShape(raw); err != nil {
+		return nil, err
+	}
 	var p Pipeline
 	if err := yaml.Unmarshal(data, &p); err != nil {
 		return nil, fmt.Errorf("declare: parse pipeline declaration: %w", err)
 	}
 	return &Declaration{Kind: KindPipeline, Pipeline: &p}, nil
+}
+
+// checkLogsShape validates an optional logs block: a mapping whose keys are the
+// logs whitelist and whose values are booleans. An absent block is valid (the
+// engine default applies); any other shape names the offending key or value.
+func checkLogsShape(raw map[string]any) error {
+	v, ok := raw["logs"]
+	if !ok {
+		return nil
+	}
+	block, ok := v.(map[string]any)
+	if !ok {
+		return fmt.Errorf("declare: field %q must be a mapping of %s", "logs", logsFieldList)
+	}
+	if err := checkKeys(block, logsFields, logsFieldList); err != nil {
+		return err
+	}
+	for _, key := range []string{"split", "stamp"} {
+		bv, present := block[key]
+		if !present {
+			continue
+		}
+		if _, isBool := bv.(bool); !isBool {
+			return fmt.Errorf("declare: logs field %q must be a boolean", key)
+		}
+	}
+	return nil
 }
 
 // parseComposer validates and decodes a composer-shaped declaration. Only the

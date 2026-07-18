@@ -62,4 +62,4 @@ while read -r line; do
 done
 ```
 
-Python speakers: see `internal/conformance/turnscripts.go` (`PyTurnPrelude`) and the catalog samples (`iris catalog`).
+Python speakers: see the demo pipelines under `pipelines/healthy/` (`quake_feed/main.py`, `quake_report/main.py`) and the catalog samples (`iris catalog`).

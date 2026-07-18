@@ -141,7 +141,7 @@ sort: id
 // TestQForbiddenNamesEndpointMapping proves the integration half of the 403
 // contract: when the executor reports a Postgres grant refusal, /q answers 403
 // forbidden naming the endpoint and never the missing fields or the Postgres
-// error text. (The conformance tier proves the refusal originates in a real
+// error text. (Only a live engine shows the refusal originating in a real
 // Postgres.)
 func TestQForbiddenNamesEndpointMapping(t *testing.T) {
 	t.Run("q-caller-role-execution", func(t *testing.T) {

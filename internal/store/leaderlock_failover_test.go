@@ -17,8 +17,8 @@ import (
 // -- promotes the next standby. The other half of the invariant is the write
 // guard: meta writes are never issued over a session that has not (re-)acquired
 // the leader lock, so across a failover there is no second writer and no
-// overlapping run. The one real conformance leg (two daemon candidates, leader
-// killed) rides E13; everything here drives the fake (storetest.LockSet /
+// overlapping run. The real two-candidate leg (two daemons, leader killed) shows
+// only against a live engine; everything here drives the fake (storetest.LockSet /
 // storetest.FakeLock): standby blocks, release promotes.
 
 // promotionTimeout bounds every positive wait (a promotion that must happen);

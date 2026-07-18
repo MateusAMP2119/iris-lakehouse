@@ -1,0 +1,12 @@
+schema: demo
+table: quake_report
+columns:
+  - name: metric
+    type: text
+    primary_key: true
+  - name: value
+    type: text
+    nullable: false
+  - name: computed_at
+    type: timestamptz
+    default: now()
