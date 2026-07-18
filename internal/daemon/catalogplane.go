@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
+	"github.com/MateusAMP2119/iris-lakehouse/internal/buildinfo"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/catalog"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/store"
 )
@@ -67,26 +68,33 @@ type applyFunc func(ctx context.Context, req api.ControlRequest) (api.ControlRes
 type catalogOrchestrator struct {
 	workspace string
 	registry  store.RegistryReader
+	resolver  catalog.Resolver
 	apply     applyFunc
+	engine    string // engine version the requires gate compares against (buildinfo, injectable in tests)
 	logger    *slog.Logger
 }
 
-// newCatalogOrchestrator builds the leader's catalog orchestrator over its workspace, the registry reader, and the apply seam.
-func newCatalogOrchestrator(workspace string, registry store.RegistryReader, apply applyFunc, logger *slog.Logger) *catalogOrchestrator {
+// newCatalogOrchestrator builds the leader's catalog orchestrator over its workspace, the registry reader, the pack resolver, and the apply seam.
+func newCatalogOrchestrator(workspace string, registry store.RegistryReader, resolver catalog.Resolver, apply applyFunc, logger *slog.Logger) *catalogOrchestrator {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	return &catalogOrchestrator{workspace: workspace, registry: registry, apply: apply, logger: logger}
+	return &catalogOrchestrator{workspace: workspace, registry: registry, resolver: resolver, apply: apply, engine: buildinfo.Version, logger: logger}
 }
 
-// installPack resolves the pack, preflights, materializes, and (with req.Apply) runs the declare sequence in the derived order.
+// installPack resolves the pack, gates on requires, preflights, materializes, and (with req.Apply) runs the declare sequence in the derived order.
 func (o *catalogOrchestrator) installPack(ctx context.Context, req api.CatalogInstallRequest) (api.CatalogInstallResult, error) {
-	p, ok, err := catalog.EmbeddedPack(req.Pack)
+	p, ok, err := o.resolver.Resolve(ctx, req.Pack)
 	if err != nil {
 		return api.CatalogInstallResult{}, fmt.Errorf("catalog install: %w", err)
 	}
 	if !ok {
 		return api.CatalogInstallResult{}, fmt.Errorf("catalog install: no such pack %q (run iris catalog list)", req.Pack)
+	}
+	if satisfied, serr := catalog.Satisfies(o.engine, p.Requires); serr != nil {
+		return api.CatalogInstallResult{}, fmt.Errorf("catalog install: pack %q requires gate: %w", p.Name, serr)
+	} else if !satisfied {
+		return api.CatalogInstallResult{}, fmt.Errorf("catalog install: pack %q requires engine %s or newer; this engine is %s", p.Name, p.Requires, o.engine)
 	}
 	order, err := catalog.ApplyOrder(p)
 	if err != nil {

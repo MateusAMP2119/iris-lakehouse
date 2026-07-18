@@ -3,17 +3,19 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/config"
 )
 
-// sp and ip return pointers to a string and an int64, the way a configuration
-// Layer marks a field as explicitly set. A nil field is unset (it defers to the
-// next lower layer); a pointer to the zero value is an explicit zero that still
-// overrides.
-func sp(s string) *string { return &s }
-func ip(i int64) *int64   { return &i }
+// sp, ip, and lp return pointers to a string, an int64, and a string list, the
+// way a configuration Layer marks a field as explicitly set. A nil field is
+// unset (it defers to the next lower layer); a pointer to the zero value is an
+// explicit zero that still overrides.
+func sp(s string) *string       { return &s }
+func ip(i int64) *int64         { return &i }
+func lp(ss ...string) *[]string { return &ss }
 
 // TestConfigPrecedenceOrder proves the strict, per-field precedence: command
 // flags override IRIS_* env, which override iris.toml, which override built-in
@@ -75,6 +77,67 @@ func TestConfigPrecedenceOrder(t *testing.T) {
 				)
 				if got.Retain != tc.want {
 					t.Errorf("Retain = %d, want %d", got.Retain, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("catalogs resolve highest set layer, whole-list", func(t *testing.T) {
+		cases := []struct {
+			name                  string
+			def, file, env, flags *[]string
+			want                  []string
+		}{
+			{"all unset stays empty", nil, nil, nil, nil, nil},
+			{"file over defaults", nil, lp("f1", "f2"), nil, nil, []string{"f1", "f2"}},
+			{"env over file replaces whole list", nil, lp("f1", "f2"), lp("e1"), nil, []string{"e1"}},
+			{"flags over env, no merging", nil, lp("f1"), lp("e1", "e2"), lp("c1"), []string{"c1"}},
+			{"explicit empty env clears the file list", nil, lp("f1"), lp(), nil, nil},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				got := config.Resolve(
+					config.Layer{Catalogs: tc.def},
+					config.Layer{Catalogs: tc.file},
+					config.Layer{Catalogs: tc.env},
+					config.Layer{Catalogs: tc.flags},
+				)
+				if !reflect.DeepEqual(got.Catalogs, tc.want) {
+					t.Errorf("Catalogs = %#v, want %#v", got.Catalogs, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("catalogs precedence across the real sources: flag > env > file", func(t *testing.T) {
+		// The file layer comes from a parsed iris.toml, the env layer from
+		// IRIS_CATALOGS, the flags layer from an explicit list; peeling the top
+		// layer off hands the win to the next source down.
+		res, err := config.ParseTOML([]byte("catalogs = [\"https://file/catalog.json\"]\n"))
+		if err != nil {
+			t.Fatalf("ParseTOML: %v", err)
+		}
+		envMap := map[string]string{config.EnvCatalogs: "https://env/catalog.json"}
+		env, err := config.FromEnv(func(k string) string { return envMap[k] })
+		if err != nil {
+			t.Fatalf("FromEnv: %v", err)
+		}
+		flags := config.Layer{Catalogs: lp("https://flag/catalog.json")}
+
+		steps := []struct {
+			name       string
+			env, flags config.Layer
+			want       []string
+		}{
+			{"flags win over env and file", env, flags, []string{"https://flag/catalog.json"}},
+			{"env wins over file without flags", env, config.Layer{}, []string{"https://env/catalog.json"}},
+			{"file wins alone", config.Layer{}, config.Layer{}, []string{"https://file/catalog.json"}},
+		}
+		for _, tc := range steps {
+			t.Run(tc.name, func(t *testing.T) {
+				got := config.Resolve(config.Defaults(""), res.Layer, tc.env, tc.flags)
+				if !reflect.DeepEqual(got.Catalogs, tc.want) {
+					t.Errorf("Catalogs = %#v, want %#v", got.Catalogs, tc.want)
 				}
 			})
 		}
@@ -178,6 +241,41 @@ func TestDocumentedEnvVarsRecognized(t *testing.T) {
 		})
 	}
 
+	t.Run("IRIS_CATALOGS parses a comma-separated list", func(t *testing.T) {
+		cases := []struct {
+			name, val string
+			want      []string
+		}{
+			{"plain pair", "https://a/catalog.json,https://b/catalog.json", []string{"https://a/catalog.json", "https://b/catalog.json"}},
+			{"spaces trimmed, empties dropped", " https://a/catalog.json , ,https://b/catalog.json, ", []string{"https://a/catalog.json", "https://b/catalog.json"}},
+			{"single entry", "https://a/catalog.json", []string{"https://a/catalog.json"}},
+			{"only separators is an explicit empty list", ", ,", []string{}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				env := map[string]string{config.EnvCatalogs: tc.val}
+				layer, err := config.FromEnv(func(k string) string { return env[k] })
+				if err != nil {
+					t.Fatalf("FromEnv: %v", err)
+				}
+				got := config.Resolve(config.Defaults(""), config.Layer{}, layer, config.Layer{})
+				if !reflect.DeepEqual(got.Catalogs, tc.want) {
+					t.Errorf("Catalogs = %#v, want %#v", got.Catalogs, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("unset IRIS_CATALOGS contributes nothing", func(t *testing.T) {
+		layer, err := config.FromEnv(func(string) string { return "" })
+		if err != nil {
+			t.Fatalf("FromEnv: %v", err)
+		}
+		if layer.Catalogs != nil {
+			t.Errorf("unset IRIS_CATALOGS set Layer.Catalogs = %#v, want nil", *layer.Catalogs)
+		}
+	})
+
 	t.Run("unset variable contributes nothing", func(t *testing.T) {
 		layer, err := config.FromEnv(func(string) string { return "" })
 		if err != nil {
@@ -260,8 +358,11 @@ func TestZeroConfigDefaults(t *testing.T) {
 		ObjectsPath:          filepath.Join(home, "objects"),
 		Workspace:            filepath.Join(home, "workspace"),
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("zero-config resolution = %+v, want the documented defaults %+v", got, want)
+	}
+	if got.Catalogs != nil {
+		t.Errorf("zero-config Catalogs = %#v, want nil (no catalog indexes by default)", got.Catalogs)
 	}
 
 	// External Postgres is selected the moment an admin DSN appears, so managed is

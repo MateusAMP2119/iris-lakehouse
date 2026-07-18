@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
+	"github.com/MateusAMP2119/iris-lakehouse/internal/catalog"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/config"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/dispatch"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/exec"
@@ -213,7 +214,14 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	role := api.NewRoleState()
 	control := newControlPlane()
 	// The catalog plane serves POST /catalog/install once this daemon leads (#217).
+	// The resolver spans the embedded packs plus the iris.toml catalogs list (#220);
+	// the client names packs, never URLs, so all catalog egress is daemon-side.
 	catalogCtl := newCatalogPlane()
+	catalogRemotes := make([]catalog.Remote, 0, len(s.Catalogs))
+	for _, u := range s.Catalogs {
+		catalogRemotes = append(catalogRemotes, catalog.Remote{URL: u})
+	}
+	catalogResolver := catalog.Resolver{Catalogs: catalogRemotes}
 	// The pipeline plane serves iris pipeline list from the reader pool (any node) and,
 	// once this daemon leads, POST /pipeline/run through the single writer and exec seam.
 	pipelines := newPipelinePlane(client.PipelineLister(), logger)
@@ -321,7 +329,7 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 		api.WithDeadImpact(deadletters), api.WithReplay(deadletters), api.WithDrain(deadletters),
 		api.WithRuns(runs), api.WithRunTrace(runTrace), api.WithPipelineGate(pipelineGate),
 		api.WithRunLogs(NewRunLogsPlane(runLogs)), api.WithCatalog(catalogCtl),
-		api.WithCatalogList(NewCatalogReadPlane(client.RegistryReader(), logger)),
+		api.WithCatalogList(NewCatalogReadPlane(client.RegistryReader(), catalogResolver, logger)),
 	), WithServerLogger(logger), WithVerifier(verifier))
 	if err := srv.Start(ctx); err != nil {
 		return err
@@ -383,7 +391,7 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 		WithFreshSessions(freshLeaderSession(ctx, client, logger)),
 		WithEndpointPlane(endpointCtl, endpointRegistry, data, workspace),
 		WithPATPlane(patMint, endpointRegistry, workspace),
-		WithCatalogPlane(catalogCtl),
+		WithCatalogPlane(catalogCtl, catalogResolver),
 		// Leader advertisement: on winning the lock this candidate advertises its TCP
 		// listen address (empty when socket-only) into the leadership meta table, and
 		// while a standby it polls that table to name the live leader for retargeting

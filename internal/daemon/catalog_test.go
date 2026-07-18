@@ -1,7 +1,13 @@
 package daemon
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -16,7 +22,7 @@ import (
 // workspace, answer the derived apply order, and (with apply) run the declare sequence in order.
 func TestCatalogOrchestratorInstall(t *testing.T) {
 	t.Run("an unknown pack refuses", func(t *testing.T) {
-		o := newCatalogOrchestrator(t.TempDir(), nil, nil, nil)
+		o := newCatalogOrchestrator(t.TempDir(), nil, catalog.Resolver{}, nil, nil)
 		if _, err := o.installPack(context.Background(), api.CatalogInstallRequest{Pack: "nope"}); err == nil || !strings.Contains(err.Error(), "no such pack") {
 			t.Fatalf("installPack = %v, want the no-such-pack refusal", err)
 		}
@@ -24,7 +30,7 @@ func TestCatalogOrchestratorInstall(t *testing.T) {
 
 	t.Run("materialize answers files and order without applying", func(t *testing.T) {
 		ws := t.TempDir()
-		o := newCatalogOrchestrator(ws, nil, nil, nil)
+		o := newCatalogOrchestrator(ws, nil, catalog.Resolver{}, nil, nil)
 		res, err := o.installPack(context.Background(), api.CatalogInstallRequest{Pack: catalog.StarterPack})
 		if err != nil {
 			t.Fatalf("installPack: %v", err)
@@ -43,7 +49,7 @@ func TestCatalogOrchestratorInstall(t *testing.T) {
 			applied = append(applied, req.Path)
 			return api.ControlResult{Warnings: []string{"w:" + req.Path}}, nil
 		}
-		o := newCatalogOrchestrator(t.TempDir(), nil, fake, nil)
+		o := newCatalogOrchestrator(t.TempDir(), nil, catalog.Resolver{}, fake, nil)
 		res, err := o.installPack(context.Background(), api.CatalogInstallRequest{Pack: catalog.StarterPack, Apply: true})
 		if err != nil {
 			t.Fatalf("installPack: %v", err)
@@ -66,16 +72,60 @@ func TestCatalogOrchestratorInstall(t *testing.T) {
 			}
 			return api.ControlResult{}, nil
 		}
-		o := newCatalogOrchestrator(t.TempDir(), nil, fake, nil)
+		o := newCatalogOrchestrator(t.TempDir(), nil, catalog.Resolver{}, fake, nil)
 		_, err := o.installPack(context.Background(), api.CatalogInstallRequest{Pack: catalog.StarterPack, Apply: true})
 		if err == nil || !strings.Contains(err.Error(), "quake_report") || !errors.Is(err, fail) {
 			t.Fatalf("installPack = %v, want the failing target named", err)
 		}
 	})
 
+	t.Run("a pack requiring a newer engine refuses before any write", func(t *testing.T) {
+		var buf bytes.Buffer
+		gw := gzip.NewWriter(&buf)
+		tw := tar.NewWriter(gw)
+		body := []byte("name: solo\nrun: [sh, main.sh]\n")
+		if err := tw.WriteHeader(&tar.Header{Name: "pipelines/solo/solo/iris-declare.yaml", Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(body))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(body); err != nil {
+			t.Fatal(err)
+		}
+		script := []byte("exit 0\n")
+		if err := tw.WriteHeader(&tar.Header{Name: "pipelines/solo/solo/main.sh", Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(script))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(script); err != nil {
+			t.Fatal(err)
+		}
+		_ = tw.Close()
+		_ = gw.Close()
+		blob := buf.Bytes()
+		sum := sha256.Sum256(blob)
+		index, _ := json.Marshal(catalog.Index{Format: catalog.IndexFormat, Packs: []catalog.IndexEntry{{
+			Name: "future-pack", Path: "packs/future.tar.gz", SHA256: hex.EncodeToString(sum[:]), Requires: "v99.0.0",
+		}}})
+		fake := func(_ context.Context, url string) ([]byte, error) {
+			if strings.HasSuffix(url, "catalog.json") {
+				return index, nil
+			}
+			return blob, nil
+		}
+		ws := t.TempDir()
+		resolver := catalog.Resolver{Catalogs: []catalog.Remote{{URL: "https://cat.example/catalog.json", Fetch: fake}}}
+		o := newCatalogOrchestrator(ws, nil, resolver, nil, nil)
+		o.engine = "v0.5.6" // a release build: the dev bypass must not mask the gate
+		_, err := o.installPack(context.Background(), api.CatalogInstallRequest{Pack: "future-pack"})
+		if err == nil || !strings.Contains(err.Error(), "requires engine v99.0.0") {
+			t.Fatalf("installPack = %v, want the requires refusal", err)
+		}
+		if _, serr := os.Stat(filepath.Join(ws, "pipelines")); !os.IsNotExist(serr) {
+			t.Error("the requires refusal must land before any write")
+		}
+	})
+
 	t.Run("a reinstall refuses without force and lands with it", func(t *testing.T) {
 		ws := t.TempDir()
-		o := newCatalogOrchestrator(ws, nil, nil, nil)
+		o := newCatalogOrchestrator(ws, nil, catalog.Resolver{}, nil, nil)
 		if _, err := o.installPack(context.Background(), api.CatalogInstallRequest{Pack: catalog.StarterPack}); err != nil {
 			t.Fatalf("first install: %v", err)
 		}
