@@ -185,9 +185,8 @@ if [ -z "$on_path" ]; then
     if ! grep -qs '\.iris/bin' "$rc"; then
       printf '\n# iris\nexport PATH="$HOME/.iris/bin:$PATH"\n' >>"$rc"
     fi
-    on_path=1
+    appended="$rc"
     ok "Added ~/.iris/bin to PATH (~/${rc##*/})"
-    say "Restart your shell or run: source ${rc}"
   else
     printf "  ${YLW}!${RST} %s\n" "${dest} is not on your PATH; add: export PATH=\"${dest}:\$PATH\""
   fi
@@ -316,11 +315,17 @@ case "$choice" in
     ;;
 esac
 
-iris_cmd="$bin"
-if [ -n "$on_path" ]; then
-  iris_cmd="iris"
+# Fresh PATH append can't reach this shell; ready line must work as pasted
+if [ -n "${appended:-}" ]; then
+  printf "\n  ✨ Iris is ready! Run: source %s && iris --help\n" "$appended"
+  printf "  ${DIM}(new terminals just type: iris)${RST}\n\n"
+else
+  iris_cmd="$bin"
+  if [ -n "$on_path" ]; then
+    iris_cmd="iris"
+  fi
+  printf "\n  ✨ Iris is ready! Try: %s --help\n\n" "$iris_cmd"
 fi
-printf "\n  ✨ Iris is ready! Try: %s --help\n\n" "$iris_cmd"
 
 # Random quote via awk (POSIX sh has no $RANDOM); attribution right-aligned
 n=$(awk 'BEGIN{srand(); print int(rand()*5)+1}')
