@@ -262,12 +262,14 @@ case "$choice" in
     mkdir -p "${HOME}/.iris"
     ("$bin" engine install && "$bin" engine start -d) >"$elog" 2>&1 &
     epid=$!
+    # Single climb 0→90%, hold until done, close at 100% once
     if [ -t 1 ]; then
-      i=0
+      pct=0
       while kill -0 "$epid" 2>/dev/null; do
-        i=$(((i % 10) + 1))
-        bar="$(printf '%*s' "$i" '' | tr ' ' '█')$(printf '%*s' $((10 - i)) '' | tr ' ' '░')"
-        printf '\r\033[2K  Setting up engine... [%s]' "$bar"
+        [ "$pct" -lt 90 ] && pct=$((pct + 3))
+        cells=$((pct / 10))
+        bar="$(printf '%*s' "$cells" '' | tr ' ' '█')$(printf '%*s' $((10 - cells)) '' | tr ' ' '░')"
+        printf '\r\033[2K  Setting up engine... [%s] %d%%' "$bar" "$pct"
         sleep 0.2
       done
       printf '\r\033[2K  Setting up engine... [██████████] 100%%\n'

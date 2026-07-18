@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"math/rand/v2"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -334,19 +335,54 @@ func (a *app) farewellQuote(p painter) {
 	fmt.Fprintf(a.out, "%s%s\n", strings.Repeat(" ", pad), p.dim(attr))
 }
 
-// terminalConfirm prompts the step's question on stderr and reads y/N from stdin; no terminal returns errNotATerminal so the caller refuses instead of blocking.
+// terminalConfirm prompts the step's question on stderr and reads one y/N keypress from stdin (no Enter); no terminal returns errNotATerminal so the caller refuses instead of blocking.
 func (a *app) terminalConfirm(question string, _ bool) (bool, error) {
 	stat, err := os.Stdin.Stat()
 	if err != nil || stat.Mode()&os.ModeCharDevice == 0 {
 		return false, errNotATerminal
 	}
 	fmt.Fprintf(a.errOut, "  %s (y/N): ", question)
+	if ans, ok := readSingleKey(); ok {
+		yes := ans == 'y' || ans == 'Y'
+		shown := "n"
+		if yes {
+			shown = "y"
+		}
+		fmt.Fprintf(a.errOut, "%s\n", shown)
+		return yes, nil
+	}
+	// stty unavailable: fall back to a line read
 	line, rerr := bufio.NewReader(os.Stdin).ReadString('\n')
 	if rerr != nil && line == "" {
 		return false, nil // EOF with no answer is a decline, not an error.
 	}
 	ans := strings.ToLower(strings.TrimSpace(line))
 	return ans == "y" || ans == "yes", nil
+}
+
+// readSingleKey reads one raw keypress from stdin via stty; ok=false means raw mode could not be entered.
+func readSingleKey() (byte, bool) {
+	saved, err := sttyOutput("-g")
+	if err != nil {
+		return 0, false
+	}
+	if _, err := sttyOutput("-icanon", "-echo", "min", "1", "time", "0"); err != nil {
+		return 0, false
+	}
+	defer func() { _, _ = sttyOutput(saved) }()
+	buf := make([]byte, 1)
+	if n, err := os.Stdin.Read(buf); err != nil || n == 0 {
+		return 0, true // EOF counts as answered: decline
+	}
+	return buf[0], true
+}
+
+// sttyOutput runs stty against the process stdin and returns its trimmed stdout.
+func sttyOutput(args ...string) (string, error) {
+	cmd := exec.Command("stty", args...)
+	cmd.Stdin = os.Stdin
+	out, err := cmd.Output()
+	return strings.TrimSpace(string(out)), err
 }
 
 // removeShellPathEntries strips the installer's "# iris" PATH block from shell rc files, best-effort.
