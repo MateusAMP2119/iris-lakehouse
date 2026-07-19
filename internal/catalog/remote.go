@@ -25,6 +25,15 @@ const maxPackBytes = 64 << 20
 // maxPackFileBytes bounds one extracted pack file.
 const maxPackFileBytes = 8 << 20
 
+// maxPackTotalBytes bounds a pack's total decompressed size (gzip-bomb guard).
+const maxPackTotalBytes = 64 << 20
+
+// maxPackFiles bounds a pack's file count (entry-flood guard).
+const maxPackFiles = 512
+
+// indexFetchTimeout bounds one index fetch; the 5-minute HTTPFetch ceiling is for tarballs, and a listing must not hang behind a black-holed catalog.
+const indexFetchTimeout = 15 * time.Second
+
 // HTTPFetch is the production Fetcher: plain GET, timeout, 200-only, size-bounded.
 func HTTPFetch(ctx context.Context, rawURL string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
@@ -67,8 +76,10 @@ func (r Remote) fetch() Fetcher {
 	return HTTPFetch
 }
 
-// Index fetches and parses the catalog's index.
+// Index fetches and parses the catalog's index, under the short index deadline.
 func (r Remote) Index(ctx context.Context) (Index, error) {
+	ctx, cancel := context.WithTimeout(ctx, indexFetchTimeout)
+	defer cancel()
 	data, err := r.fetch()(ctx, r.URL)
 	if err != nil {
 		return Index{}, err
@@ -135,6 +146,7 @@ func extractPack(name string, blob []byte) ([]File, string, error) {
 	tr := tar.NewReader(gz)
 	var files []File
 	var readme string
+	total := 0
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -162,6 +174,12 @@ func extractPack(name string, blob []byte) ([]File, string, error) {
 		}
 		if len(data) > maxPackFileBytes {
 			return nil, "", fmt.Errorf("catalog: pack %q: file %s exceeds %d bytes", name, hdr.Name, maxPackFileBytes)
+		}
+		if total += len(data); total > maxPackTotalBytes {
+			return nil, "", fmt.Errorf("catalog: pack %q: decompressed size exceeds %d bytes", name, maxPackTotalBytes)
+		}
+		if len(files) >= maxPackFiles {
+			return nil, "", fmt.Errorf("catalog: pack %q: more than %d files", name, maxPackFiles)
 		}
 		if hdr.Name == ReadmeName {
 			readme = string(data)
@@ -206,7 +224,7 @@ func (r Resolver) List(ctx context.Context) ([]Listing, error) {
 	for _, c := range r.Catalogs {
 		idx, err := c.Index(ctx)
 		if err != nil {
-			errs = append(errs, err)
+			errs = append(errs, fmt.Errorf("catalog %s unreachable: %w", c.URL, err))
 			continue
 		}
 		for _, e := range idx.Packs {

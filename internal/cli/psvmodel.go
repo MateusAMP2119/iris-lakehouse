@@ -118,6 +118,7 @@ type psModel struct {
 
 	catalog    *psCatalog    // non-nil while the catalog overlay is open (#219)
 	catalogReq *psCatalogReq // overlay action parked for the loop, consumed via takeCatalogReq
+	catalogSeq int           // monotonic request correlation counter (stale outcomes drop)
 
 	// rings holds every heat strip's fine history: key "" is the engine,
 	// "l:<name>" a lane, "p:<name>" a pipeline. Seeded from the daemon's

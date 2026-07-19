@@ -11,157 +11,191 @@ import (
 // declFile is the declaration filename inside pack pipeline folders.
 const declFile = "iris-declare.yaml"
 
-// laneSet gathers one lane's composer and members while deriving the apply order.
-type laneSet struct {
-	name     string
-	composer string            // composer decl path, "" when the lane has none
-	order    []string          // composer's member order
-	members  map[string]string // pipeline name -> decl path
-	deps     map[string][]string
+// packMember is one parsed pack pipeline.
+type packMember struct {
+	name, path, lane string
+	deps             []string
 }
 
-// ApplyOrder derives the pack's declare sequence: per lane first member, composer, remaining members in composer order (the 2+ interlock dictates this); cross-lane depends_on edges order the lanes.
+// packLane gathers one lane's composer and roster.
+type packLane struct {
+	composer string   // composer decl path, "" when the lane has none
+	order    []string // composer's member order
+	members  []string // member names seen in the lane
+}
+
+// ApplyOrder derives the pack's declare sequence at pipeline granularity: members
+// topo-sorted by in-pack depends_on (composer order breaking ties), each lane's
+// composer spliced in right after its first member — the window the 2+ interlock
+// requires and the engine's own per-pipeline validation accepts.
 func ApplyOrder(p Pack) ([]string, error) {
-	lanes := map[string]*laneSet{}
-	pipeLane := map[string]string{}
+	members, lanes, err := indexPack(p)
+	if err != nil {
+		return nil, err
+	}
+	if len(members) == 0 {
+		return nil, fmt.Errorf("catalog: pack %q declares no pipelines", p.Name)
+	}
+	for name, l := range lanes {
+		if err := l.validate(name); err != nil {
+			return nil, fmt.Errorf("catalog: pack %q: %w", p.Name, err)
+		}
+	}
+	seq, err := topoMembers(members, lanes)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: pack %q: %w", p.Name, err)
+	}
+	var out []string
+	emitted := map[string]int{}
+	for _, m := range seq {
+		out = append(out, m.path)
+		emitted[m.lane]++
+		if l := lanes[m.lane]; l != nil && l.composer != "" && emitted[m.lane] == 1 {
+			out = append(out, l.composer)
+		}
+	}
+	return out, nil
+}
+
+// indexPack parses the pack's declarations into members and lanes, refusing duplicate pipeline names anywhere in the pack.
+func indexPack(p Pack) (map[string]*packMember, map[string]*packLane, error) {
+	members := map[string]*packMember{}
+	lanes := map[string]*packLane{}
 	for _, f := range p.Files {
 		if path.Base(f.Path) != declFile {
 			continue
 		}
 		decl, err := declare.ParseDeclaration(f.Data)
 		if err != nil {
-			return nil, fmt.Errorf("catalog: pack %q: parse %s: %w", p.Name, f.Path, err)
+			return nil, nil, fmt.Errorf("catalog: pack %q: parse %s: %w", p.Name, f.Path, err)
 		}
 		switch decl.Kind {
 		case declare.KindComposer:
-			ls := laneOf(lanes, decl.Composer.Lane)
-			if ls.composer != "" {
-				return nil, fmt.Errorf("catalog: pack %q: lane %q declares two composers", p.Name, ls.name)
+			l := laneOf(lanes, decl.Composer.Lane)
+			if l.composer != "" {
+				return nil, nil, fmt.Errorf("catalog: pack %q: lane %q declares two composers", p.Name, decl.Composer.Lane)
 			}
-			ls.composer = f.Path
-			ls.order = decl.Composer.Order
+			l.composer = f.Path
+			l.order = decl.Composer.Order
 		case declare.KindPipeline:
+			name := decl.Pipeline.Name
+			if prev, dup := members[name]; dup {
+				return nil, nil, fmt.Errorf("catalog: pack %q: pipeline %q declared twice (%s and %s); a pipeline belongs to exactly one lane", p.Name, name, prev.path, f.Path)
+			}
 			lane := decl.Pipeline.Lane
 			if lane == "" {
 				lane = path.Base(path.Dir(path.Dir(f.Path))) // containment: pipelines/<lane>/<pipeline>/
 			}
-			ls := laneOf(lanes, lane)
-			if _, dup := ls.members[decl.Pipeline.Name]; dup {
-				return nil, fmt.Errorf("catalog: pack %q: pipeline %q declared twice", p.Name, decl.Pipeline.Name)
-			}
-			ls.members[decl.Pipeline.Name] = f.Path
-			ls.deps[decl.Pipeline.Name] = decl.Pipeline.DependsOn
-			pipeLane[decl.Pipeline.Name] = lane
+			members[name] = &packMember{name: name, path: f.Path, lane: lane, deps: decl.Pipeline.DependsOn}
+			l := laneOf(lanes, lane)
+			l.members = append(l.members, name)
 		}
 	}
-	ordered, err := orderLanes(lanes, pipeLane)
-	if err != nil {
-		return nil, fmt.Errorf("catalog: pack %q: %w", p.Name, err)
-	}
-	var out []string
-	for _, ls := range ordered {
-		seq, err := ls.sequence()
-		if err != nil {
-			return nil, fmt.Errorf("catalog: pack %q: %w", p.Name, err)
-		}
-		out = append(out, seq...)
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("catalog: pack %q declares no pipelines", p.Name)
-	}
-	return out, nil
+	return members, lanes, nil
 }
 
-// laneOf returns the lane's set, creating it on first sight.
-func laneOf(lanes map[string]*laneSet, name string) *laneSet {
-	if ls, ok := lanes[name]; ok {
-		return ls
+// laneOf returns the lane's record, creating it on first sight.
+func laneOf(lanes map[string]*packLane, name string) *packLane {
+	if l, ok := lanes[name]; ok {
+		return l
 	}
-	ls := &laneSet{name: name, members: map[string]string{}, deps: map[string][]string{}}
-	lanes[name] = ls
-	return ls
+	l := &packLane{}
+	lanes[name] = l
+	return l
 }
 
-// sequence returns the lane's own apply order: first member, composer, remaining members.
-func (ls *laneSet) sequence() ([]string, error) {
-	if ls.composer == "" {
-		if len(ls.members) > 1 {
-			return nil, fmt.Errorf("lane %q has %d members but no composer (the 2+ interlock requires one)", ls.name, len(ls.members))
+// validate checks one lane's shape: the 2+ interlock, and a composer ordering exactly its members.
+func (l *packLane) validate(lane string) error {
+	if l.composer == "" {
+		if len(l.members) > 1 {
+			return fmt.Errorf("lane %q has %d members but no composer (the 2+ interlock requires one)", lane, len(l.members))
 		}
-		for _, p := range ls.members {
-			return []string{p}, nil
+		if len(l.members) == 0 {
+			return fmt.Errorf("lane %q carries no pipelines", lane)
 		}
-		return nil, fmt.Errorf("lane %q carries no pipelines", ls.name)
+		return nil
 	}
-	if len(ls.members) == 0 {
-		return nil, fmt.Errorf("lane %q declares a composer but no members", ls.name)
+	if len(l.members) == 0 {
+		return fmt.Errorf("lane %q declares a composer but no members", lane)
 	}
-	if len(ls.order) != len(ls.members) {
-		return nil, fmt.Errorf("lane %q composer orders %d member(s) but the pack carries %d", ls.name, len(ls.order), len(ls.members))
+	if len(l.order) != len(l.members) {
+		return fmt.Errorf("lane %q composer orders %d member(s) but the pack carries %d", lane, len(l.order), len(l.members))
 	}
-	seq := make([]string, 0, len(ls.members)+1)
-	for i, name := range ls.order {
-		p, ok := ls.members[name]
-		if !ok {
-			return nil, fmt.Errorf("lane %q composer orders %q, which the pack does not carry", ls.name, name)
+	have := map[string]bool{}
+	for _, m := range l.members {
+		have[m] = true
+	}
+	seen := map[string]bool{}
+	for _, name := range l.order {
+		if !have[name] {
+			return fmt.Errorf("lane %q composer orders %q, which the pack does not carry", lane, name)
 		}
-		seq = append(seq, p)
-		if i == 0 {
-			seq = append(seq, ls.composer)
+		if seen[name] {
+			return fmt.Errorf("lane %q composer orders %q twice", lane, name)
 		}
+		seen[name] = true
 	}
-	return seq, nil
+	return nil
 }
 
-// orderLanes topo-sorts lanes by their cross-lane depends_on edges, alphabetical when free.
-func orderLanes(lanes map[string]*laneSet, pipeLane map[string]string) ([]*laneSet, error) {
-	names := make([]string, 0, len(lanes))
-	for n := range lanes {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	upstream := map[string]map[string]bool{}
-	for _, ls := range lanes {
-		for _, deps := range ls.deps {
-			for _, dep := range deps {
-				from, ok := pipeLane[dep]
-				if !ok {
-					continue // cross-pack dependency: the apply-time gate adjudicates it
-				}
-				if from == ls.name {
-					continue
-				}
-				if upstream[ls.name] == nil {
-					upstream[ls.name] = map[string]bool{}
-				}
-				upstream[ls.name][from] = true
-			}
+// topoMembers orders the members by in-pack depends_on (Kahn), ready set sorted by lane, composer position, then name; a true pipeline cycle refuses.
+func topoMembers(members map[string]*packMember, lanes map[string]*packLane) ([]*packMember, error) {
+	orderPos := map[string]int{}
+	for lane, l := range lanes {
+		for i, name := range l.order {
+			orderPos[lane+"/"+name] = i
 		}
 	}
-	var out []*laneSet
-	done := map[string]bool{}
-	for len(out) < len(names) {
-		progressed := false
-		for _, n := range names {
-			if done[n] {
-				continue
+	indeg := map[string]int{}
+	downstream := map[string][]string{}
+	for name, m := range members {
+		indeg[name] += 0
+		for _, dep := range m.deps {
+			if _, inPack := members[dep]; !inPack {
+				continue // cross-pack dependency: the apply-time gate adjudicates it
 			}
-			ready := true
-			for dep := range upstream[n] {
-				if !done[dep] {
-					ready = false
-					break
-				}
-			}
-			if ready {
-				done[n] = true
-				out = append(out, lanes[n])
-				progressed = true
+			indeg[name]++
+			downstream[dep] = append(downstream[dep], name)
+		}
+	}
+	less := func(a, b string) bool {
+		ma, mb := members[a], members[b]
+		if ma.lane != mb.lane {
+			return ma.lane < mb.lane
+		}
+		pa, pb := orderPos[ma.lane+"/"+a], orderPos[mb.lane+"/"+b]
+		if pa != pb {
+			return pa < pb
+		}
+		return a < b
+	}
+	var ready []string
+	for name, d := range indeg {
+		if d == 0 {
+			ready = append(ready, name)
+		}
+	}
+	var out []*packMember
+	for len(ready) > 0 {
+		sort.Slice(ready, func(i, j int) bool { return less(ready[i], ready[j]) })
+		next := ready[0]
+		ready = ready[1:]
+		out = append(out, members[next])
+		for _, dn := range downstream[next] {
+			if indeg[dn]--; indeg[dn] == 0 {
+				ready = append(ready, dn)
 			}
 		}
-		if !progressed {
-			return nil, fmt.Errorf("depends_on cycle across lanes")
+	}
+	if len(out) != len(members) {
+		var stuck []string
+		for name, d := range indeg {
+			if d > 0 {
+				stuck = append(stuck, name)
+			}
 		}
+		sort.Strings(stuck)
+		return nil, fmt.Errorf("depends_on cycle among pipelines %v", stuck)
 	}
 	return out, nil
 }

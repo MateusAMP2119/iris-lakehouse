@@ -27,6 +27,7 @@ type psCatalogReq struct {
 	kind  psCatalogReqKind
 	pack  string
 	force bool
+	seq   int // correlation id; the outcome echoes it back
 }
 
 // psCatalogMsg is one action outcome the loop absorbs.
@@ -36,6 +37,7 @@ type psCatalogMsg struct {
 	warnings []string
 	res      *api.CatalogInstallResult
 	err      string // inline failure text; "" on success
+	seq      int    // echo of the request's correlation id; stale outcomes are dropped
 }
 
 // psCatalog is the open overlay's state.
@@ -47,12 +49,21 @@ type psCatalog struct {
 	offer   bool   // the last install refused on existing paths; f overwrites
 	busy    string // in-flight action label, "" when idle
 	banner  string // inline error or notice
+	pending int    // seq of the one in-flight request; only its outcome is absorbed
 }
 
 // openCatalog opens the overlay in its loading state and parks the list request.
 func (m *psModel) openCatalog() {
 	m.catalog = &psCatalog{loading: true}
-	m.catalogReq = &psCatalogReq{kind: psCatalogList}
+	m.parkCatalogReq(psCatalogReq{kind: psCatalogList})
+}
+
+// parkCatalogReq stamps the request with a fresh seq and marks it the overlay's one in-flight action.
+func (m *psModel) parkCatalogReq(req psCatalogReq) {
+	m.catalogSeq++
+	req.seq = m.catalogSeq
+	m.catalog.pending = req.seq
+	m.catalogReq = &req
 }
 
 // takeCatalogReq hands the loop the parked request, once.
@@ -98,12 +109,12 @@ func (m *psModel) updateCatalog(k psKey) {
 		case 'f', 'F':
 			if p := c.selected(); c.offer && p != nil {
 				c.offer, c.banner, c.busy = false, "", "overwriting "+p.Name+"…"
-				m.catalogReq = &psCatalogReq{kind: psCatalogInstall, pack: p.Name, force: true}
+				m.parkCatalogReq(psCatalogReq{kind: psCatalogInstall, pack: p.Name, force: true})
 			}
 		case 'a', 'A':
 			if p := c.selected(); p != nil {
 				c.armed, c.offer, c.banner, c.busy = false, false, "", "applying "+p.Name+"…"
-				m.catalogReq = &psCatalogReq{kind: psCatalogApply, pack: p.Name, force: true}
+				m.parkCatalogReq(psCatalogReq{kind: psCatalogApply, pack: p.Name, force: true})
 			}
 		}
 	}
@@ -137,13 +148,13 @@ func (m *psModel) catalogEnter() {
 		return
 	}
 	c.armed, c.busy = false, "installing "+p.Name+"…"
-	m.catalogReq = &psCatalogReq{kind: psCatalogInstall, pack: p.Name}
+	m.parkCatalogReq(psCatalogReq{kind: psCatalogInstall, pack: p.Name})
 }
 
-// absorbCatalog folds one action outcome into the overlay (which may have closed meanwhile).
+// absorbCatalog folds one action outcome into the overlay; an outcome for a closed or superseded request is dropped.
 func (m *psModel) absorbCatalog(cm psCatalogMsg) {
 	c := m.catalog
-	if c == nil {
+	if c == nil || cm.seq != c.pending {
 		return
 	}
 	c.busy = ""
@@ -151,6 +162,7 @@ func (m *psModel) absorbCatalog(cm psCatalogMsg) {
 	case psCatalogList:
 		c.loading = false
 		c.packs = cm.packs
+		c.armed, c.offer = false, false
 		c.banner = cm.err
 		if cm.err == "" && len(cm.warnings) > 0 {
 			c.banner = strings.Join(cm.warnings, " · ")

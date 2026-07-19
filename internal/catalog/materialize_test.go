@@ -56,17 +56,26 @@ func TestMaterializeUnsafePaths(t *testing.T) {
 	}
 }
 
-// TestPreflightRegistry proves the name-collision refusal and the force bypass.
+// TestPreflightRegistry proves the name-collision refusal and the same-pack-only force bypass.
 func TestPreflightRegistry(t *testing.T) {
 	p := testPack()
-	if err := PreflightRegistry(p, []string{"other"}, false); err != nil {
+	root := t.TempDir()
+	if err := PreflightRegistry(root, p, []string{"other"}, false); err != nil {
 		t.Errorf("no collision refused: %v", err)
 	}
-	if err := PreflightRegistry(p, []string{"a"}, false); err == nil || !strings.Contains(err.Error(), "already registered") {
+	if err := PreflightRegistry(root, p, []string{"a"}, false); err == nil || !strings.Contains(err.Error(), "already registered") {
 		t.Errorf("collision = %v, want the already-registered refusal", err)
 	}
-	if err := PreflightRegistry(p, []string{"a"}, true); err != nil {
-		t.Errorf("force reinstall refused: %v", err)
+	// Force against a bare workspace: the registered "a" is someone else's, refuse.
+	if err := PreflightRegistry(root, p, []string{"a"}, true); err == nil || !strings.Contains(err.Error(), "does not carry this pack's copy") {
+		t.Errorf("foreign force = %v, want the not-this-pack refusal", err)
+	}
+	// Force after the pack's own copy is on disk: the idempotent reinstall passes.
+	if _, err := Materialize(root, p, false); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if err := PreflightRegistry(root, p, []string{"a"}, true); err != nil {
+		t.Errorf("same-pack force reinstall refused: %v", err)
 	}
 }
 

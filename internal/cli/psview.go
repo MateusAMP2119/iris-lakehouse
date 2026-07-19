@@ -560,8 +560,10 @@ func (a *app) runPsLive(cmd *cobra.Command, c *psDaemonClient, first psSnapshot,
 		catalogMsgs: catalogMsgs,
 		runCatalog: func(req psCatalogReq) {
 			go func() {
+				msg := c.catalogAction(ctx, req)
+				msg.seq = req.seq
 				select {
-				case catalogMsgs <- c.catalogAction(ctx, req):
+				case catalogMsgs <- msg:
 				case <-ctx.Done():
 				}
 			}()

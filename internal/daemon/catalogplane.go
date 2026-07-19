@@ -106,7 +106,7 @@ func (o *catalogOrchestrator) installPack(ctx context.Context, req api.CatalogIn
 			return api.CatalogInstallResult{}, fmt.Errorf("catalog install: read registry: %w", err)
 		}
 	}
-	if err := catalog.PreflightRegistry(p, registered, req.Force); err != nil {
+	if err := catalog.PreflightRegistry(o.workspace, p, registered, req.Force); err != nil {
 		return api.CatalogInstallResult{}, err
 	}
 	if err := catalog.PreflightSchemas(o.workspace, p); err != nil {

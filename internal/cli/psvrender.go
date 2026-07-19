@@ -1009,12 +1009,16 @@ func renderCatalogOverlay(b *screenBuf, m *psModel) {
 
 	b.box(ox, oy, leftW, listH, ansiDim, ansiDim, "catalog")
 
-	// Pack list, selection inverted; installed and shadowed badges plus tags ride the row.
+	// Pack list, selection inverted; installed and shadowed badges plus tags ride
+	// the row. The list windows over the packs so a selection moved past the pane
+	// height stays visible (the search overlay's rule).
 	innerH := listH - 2
-	for i, p := range c.packs {
-		if i >= innerH {
-			break
-		}
+	top := 0
+	if innerH > 0 && c.sel >= innerH {
+		top = c.sel - innerH + 1
+	}
+	for i := top; i < len(c.packs) && i-top < innerH; i++ {
+		p := c.packs[i]
 		label := p.Name
 		if p.Installed {
 			label += " ●installed"
@@ -1025,10 +1029,14 @@ func renderCatalogOverlay(b *screenBuf, m *psModel) {
 		if len(p.Tags) > 0 {
 			label += "  " + strings.Join(p.Tags, ",")
 		}
-		b.text(ox+2, oy+1+i, "", clipCells(label, leftW-4))
+		row := oy + 1 + (i - top)
+		b.text(ox+2, row, "", clipCells(label, leftW-4))
 		if i == c.sel {
-			b.invertRange(oy+1+i, ox+1, ox+leftW-1)
+			b.invertRange(row, ox+1, ox+leftW-1)
 		}
+	}
+	if top+innerH < len(c.packs) {
+		b.text(ox+2, oy+listH-1, ansiDim, fmt.Sprintf("─ %d more ─", len(c.packs)-top-innerH))
 	}
 	if c.loading {
 		b.text(ox+2, oy+1, ansiDim, "loading…")

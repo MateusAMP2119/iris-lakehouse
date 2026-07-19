@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -63,8 +65,17 @@ func (a *app) catalogInstall(starter bool) runE {
 			api.CatalogInstallRequest{Pack: pack, Apply: apply, Force: force}, "catalog install", &res); err != nil {
 			return err
 		}
+		// Warnings render like declare apply's: top-level beside data under --json, stderr-prefixed otherwise.
+		warnings := res.Warnings
+		res.Warnings = nil
 		if jsonMode, _ := cmd.Flags().GetBool("json"); jsonMode {
-			return json.NewEncoder(a.out).Encode(dataEnvelope{Data: res})
+			return json.NewEncoder(a.out).Encode(struct {
+				Data     api.CatalogInstallResult `json:"data"`
+				Warnings []string                 `json:"warnings,omitempty"`
+			}{Data: res, Warnings: warnings})
+		}
+		for _, w := range warnings {
+			fmt.Fprintf(a.errOut, "iris: warning: %s\n", w)
 		}
 		fmt.Fprintf(a.out, "installed pack %s (%d files)\n", res.Pack, len(res.Files))
 		for _, f := range res.Files {
@@ -77,22 +88,25 @@ func (a *app) catalogInstall(starter bool) runE {
 			for _, p := range res.ApplyOrder {
 				fmt.Fprintf(a.out, "  %s\n", p)
 			}
-			fmt.Fprintf(a.out, "run `iris catalog install %s --apply --force` (or apply each in order) to declare them\n", res.Pack)
-		}
-		for _, w := range res.Warnings {
-			fmt.Fprintf(a.out, "warning: %s\n", w)
+			fmt.Fprintln(a.out, "declare them in that order with `iris declare apply <path>`")
 		}
 		return nil
 	}
 }
 
-// fetchCatalogListing reads GET /catalog; live=false means no engine answered (the caller falls back to embedded).
-func (a *app) fetchCatalogListing(cmd *cobra.Command) (payload catalogListPayload, live bool, err error) {
+// catalogListTimeout bounds the listing read so a wedged daemon degrades to the embedded fallback instead of hanging the verb.
+const catalogListTimeout = 10 * time.Second
+
+// fetchCatalogListing reads GET /catalog; live=false means no engine answered (the caller falls back to embedded), and a non-nil err is already a fault carrying the daemon's own code.
+func (a *app) fetchCatalogListing(cmd *cobra.Command, op string) (payload catalogListPayload, live bool, err error) {
 	settings := a.resolveTarget(cmd)
 	client, base, overTCP := a.daemonHTTPClient(settings)
-	req, rerr := http.NewRequestWithContext(cmd.Context(), http.MethodGet, base+"/catalog", nil)
+	ctx, cancel := context.WithTimeout(cmd.Context(), catalogListTimeout)
+	defer cancel()
+	req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, base+"/catalog", nil)
 	if rerr != nil {
-		return catalogListPayload{}, false, nil
+		// A malformed target is a usage failure, never a silent embedded fallback.
+		return catalogListPayload{}, true, &fault{code: exitOpFailed, codeStr: "request", message: fmt.Sprintf("iris catalog %s: build request: %v", op, rerr)}
 	}
 	if overTCP && settings.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+settings.Token)
@@ -107,17 +121,21 @@ func (a *app) fetchCatalogListing(cmd *cobra.Command) (payload catalogListPayloa
 			Error errBody `json:"error"`
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&env)
+		code := env.Error.Code
+		if code == "" {
+			code = "operation_failed"
+		}
 		msg := env.Error.Message
 		if msg == "" {
 			msg = fmt.Sprintf("daemon status %d", resp.StatusCode)
 		}
-		return catalogListPayload{}, true, fmt.Errorf("%s", msg)
+		return catalogListPayload{}, true, &fault{code: exitOpFailed, codeStr: code, message: fmt.Sprintf("iris catalog %s: %s", op, msg)}
 	}
 	var env struct {
 		Data api.CatalogListResult `json:"data"`
 	}
 	if derr := json.NewDecoder(resp.Body).Decode(&env); derr != nil {
-		return catalogListPayload{}, true, fmt.Errorf("decode /catalog response: %v", derr)
+		return catalogListPayload{}, true, &fault{code: exitOpFailed, codeStr: "decode", message: fmt.Sprintf("iris catalog %s: decode /catalog response: %v", op, derr)}
 	}
 	return catalogListPayload{Packs: env.Data.Packs, Warnings: env.Data.Warnings}, true, nil
 }
@@ -156,9 +174,9 @@ func localPackEntry(p catalog.Pack) api.CatalogPack {
 // catalogList handles `iris catalog list`: the daemon's multi-source listing, embedded fallback with no engine.
 func (a *app) catalogList() runE {
 	return func(cmd *cobra.Command, _ []string) error {
-		payload, live, err := a.fetchCatalogListing(cmd)
+		payload, live, err := a.fetchCatalogListing(cmd, "list")
 		if err != nil {
-			return catalogFault("list", err)
+			return err
 		}
 		if !live {
 			if payload, err = embeddedListing(); err != nil {
@@ -194,9 +212,9 @@ func (a *app) catalogList() runE {
 // catalogShow handles `iris catalog show <pack>`: the daemon's view of one pack, embedded fallback with no engine.
 func (a *app) catalogShow() runE {
 	return func(cmd *cobra.Command, args []string) error {
-		payload, live, err := a.fetchCatalogListing(cmd)
+		payload, live, err := a.fetchCatalogListing(cmd, "show")
 		if err != nil {
-			return catalogFault("show", err)
+			return err
 		}
 		var entry *api.CatalogPack
 		if live {
@@ -238,6 +256,12 @@ func (a *app) catalogShow() runE {
 			fmt.Fprintln(a.out, "files:")
 			for _, f := range entry.Files {
 				fmt.Fprintf(a.out, "  %s\n", f)
+			}
+		}
+		if len(entry.ApplyOrder) > 0 {
+			fmt.Fprintln(a.out, "apply order:")
+			for _, s := range entry.ApplyOrder {
+				fmt.Fprintf(a.out, "  %s\n", s)
 			}
 		}
 		if entry.Readme != "" {
