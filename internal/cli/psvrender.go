@@ -484,6 +484,8 @@ func renderPsFrame(m *psModel, w, h int, colorless bool) *screenBuf {
 
 	if m.search != nil {
 		renderSearchOverlay(b, m)
+	} else if m.catalog != nil {
+		renderCatalogOverlay(b, m)
 	}
 	return b
 }
@@ -552,6 +554,15 @@ func (r *psRing) cpuSamples() []float64 {
 // slot -- the footer is the one row every width tier keeps.
 func renderPsFooter(b *screenBuf, m *psModel) {
 	y := b.h - 1
+	// The open ':' prompt takes the whole footer row (#218): input, cursor, inline error.
+	if m.command != nil {
+		b.text(1, y, ansiCyan, ":")
+		b.text(2, y, "", string(m.command.input)+"▏")
+		if m.command.err != "" {
+			b.text(4+len([]rune(string(m.command.input))), y, ansiYellow, "· "+m.command.err)
+		}
+		return
+	}
 	hints, hintSGR := psFooterHints(m), ansiDim
 	advisory := m.note
 	if advisory == "" {
@@ -587,9 +598,9 @@ func psFooterHints(m *psModel) string {
 	switch m.pane {
 	case psPaneLanes:
 		if m.selPipeline == "" {
-			return "tab panes · ↑↓ move · ⏎ unfold · / search · " + histHint + " · q quit"
+			return "tab panes · ↑↓ move · ⏎ unfold · / search · : cmd · " + histHint + " · q quit"
 		}
-		return "tab panes · ↑↓ move · ⏎ open runs · ← lane · / search · " + histHint + " · q quit"
+		return "tab panes · ↑↓ move · ⏎ open runs · ← lane · / search · : cmd · " + histHint + " · q quit"
 	case psPaneTable:
 		if m.selPipeline == "" {
 			return "tab panes · ↑↓ move · ⏎ open runs · / search · q quit"
@@ -966,5 +977,133 @@ func logLineStyle(line string) string {
 		return ansiDim
 	default:
 		return ""
+	}
+}
+
+// clipCells bounds s to w cells for a box-interior line.
+func clipCells(s string, w int) string {
+	r := []rune(s)
+	if w < 0 {
+		return ""
+	}
+	if len(r) > w {
+		return string(r[:w])
+	}
+	return s
+}
+
+// renderCatalogOverlay splices the catalog picker over the dimmed frame (#219):
+// pack list left with installed badges and tags, live preview right (README,
+// pipeline tree, requires, sha), banner and key hints on the bottom band.
+func renderCatalogOverlay(b *screenBuf, m *psModel) {
+	b.dimAll()
+	c := m.catalog
+
+	ow := b.w * 9 / 10
+	oh := b.h * 8 / 10
+	ox := (b.w - ow) / 2
+	oy := (b.h - oh) / 2
+	leftW := ow * 2 / 5
+	footH := 3
+	listH := oh - footH
+
+	b.box(ox, oy, leftW, listH, ansiDim, ansiDim, "catalog")
+
+	// Pack list, selection inverted; installed and shadowed badges plus tags ride
+	// the row. The list windows over the packs so a selection moved past the pane
+	// height stays visible (the search overlay's rule).
+	innerH := listH - 2
+	top := 0
+	if innerH > 0 && c.sel >= innerH {
+		top = c.sel - innerH + 1
+	}
+	for i := top; i < len(c.packs) && i-top < innerH; i++ {
+		p := c.packs[i]
+		label := p.Name
+		if p.Installed {
+			label += " ●installed"
+		}
+		if p.Shadowed {
+			label += " (shadowed)"
+		}
+		if len(p.Tags) > 0 {
+			label += "  " + strings.Join(p.Tags, ",")
+		}
+		row := oy + 1 + (i - top)
+		b.text(ox+2, row, "", clipCells(label, leftW-4))
+		if i == c.sel {
+			b.invertRange(row, ox+1, ox+leftW-1)
+		}
+	}
+	if top+innerH < len(c.packs) {
+		b.text(ox+2, oy+listH-1, ansiDim, fmt.Sprintf("─ %d more ─", len(c.packs)-top-innerH))
+	}
+	if c.loading {
+		b.text(ox+2, oy+1, ansiDim, "loading…")
+	} else if len(c.packs) == 0 {
+		b.text(ox+2, oy+1, ansiDim, "no packs")
+	}
+
+	// Preview pane follows the selection.
+	px := ox + leftW + 1
+	pw := ow - leftW - 1
+	title := "preview"
+	if p := c.selected(); p != nil {
+		title = "preview · " + p.Name
+	}
+	b.box(px, oy, pw, listH, ansiDim, ansiDim, title)
+	if p := c.selected(); p != nil {
+		tx, ty, tw := px+2, oy+1, pw-4
+		line := func(sgr, s string) {
+			if ty < oy+listH-1 {
+				b.text(tx, ty, sgr, clipCells(s, tw))
+				ty++
+			}
+		}
+		line(ansiCyan, p.Name+"  ["+p.Source+"]")
+		if p.Description != "" {
+			line("", p.Description)
+		}
+		if p.Requires != "" {
+			line(ansiDim, "requires "+p.Requires)
+		}
+		if p.SHA256 != "" {
+			line(ansiDim, "sha256 "+shortDigest(p.SHA256))
+		}
+		if len(p.Pipelines) > 0 {
+			line("", "pipelines: "+strings.Join(p.Pipelines, ", "))
+		}
+		if len(p.ApplyOrder) > 0 {
+			line(ansiDim, "apply order:")
+			for _, step := range p.ApplyOrder {
+				line(ansiDim, "  "+step)
+			}
+		}
+		if p.Readme != "" {
+			line("", "")
+			for _, rl := range strings.Split(p.Readme, "\n") {
+				line(ansiDim, rl)
+			}
+		}
+	}
+
+	// Bottom band: banner (yellow) above the key hints.
+	b.box(ox, oy+listH, ow, footH, ansiDim, ansiDim, "")
+	hint := "⏎ install · a install+apply · esc close"
+	switch {
+	case c.busy != "":
+		hint = c.busy
+	case c.offer:
+		hint = "f overwrites existing paths · esc close"
+	case c.armed:
+		if p := c.selected(); p != nil {
+			hint = "install " + p.Name + "? ⏎ confirms · any move disarms"
+		}
+	}
+	if c.banner != "" {
+		b.text(ox+2, oy+listH+1, ansiYellow, clipCells(c.banner, ow-4))
+		b.text(ox+2, oy+listH+footH-1, ansiDim, clipCells(hint, ow-4))
+	} else {
+		b.text(ox+2, oy+listH+1, ansiDim, clipCells(hint, ow-4))
 	}
 }

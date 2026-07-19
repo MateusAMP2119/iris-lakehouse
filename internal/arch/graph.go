@@ -65,6 +65,8 @@ var productRanks = map[string]int{
 	"store":     2,
 	"pg":        2,
 	"exec":      2,
+	"catalog":   2, // pack resolution over declare (#217); daemon and cli consume it
+
 	"dispatch":  3,
 	"archive":   3,
 	"api":       4,
