@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
+	"github.com/MateusAMP2119/iris-lakehouse/internal/catalog"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/dispatch"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/exec"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/store"
@@ -80,6 +81,10 @@ type Candidate struct {
 	registry   store.RegistryReader
 	appliedHds store.AppliedHeadReader
 	data       dataPlane
+	// catalogs is the pack-install plane (#217), riding the control orchestrator's apply
+	// seam; catalogResolver spans the embedded set plus the configured remote catalogs (#220).
+	catalogs        *catalogPlane
+	catalogResolver catalog.Resolver
 
 	// Manual-run wiring, installed on winning leadership and cleared on demotion so
 	// the api mux's POST /pipeline/run reaches the single meta writer and the exec
@@ -87,11 +92,19 @@ type Candidate struct {
 	pipelines    *pipelinePlane
 	manualReader store.ManualReader
 	runner       exec.Runner
-	// runConn builds each manual run's IRIS_DB_URL: the pipeline's own
-	// least-privilege login role over the data database, the run id riding it
-	// (the lane loop receives the same builder through its build closure). Nil
-	// leaves a manual run without a data connection.
-	runConn *runConnBuilder
+	// turnDB is the data-database turn seam (#206): the declared-read delta feed
+	// and the atomic turn commit an immediate manual run drives. Nil composes the
+	// shape tests (no feed; a producing turn dead-letters).
+	turnDB turnData
+	// roleCreds reads a pipeline role's persisted credential for the control
+	// orchestrator's provisioning path. Nil skips credential-backed provisioning.
+	roleCreds store.RoleCredentialReader
+	// pluginsRoot is the installed-plugins root (#215); empty refuses plugin-declaring runs.
+	pluginsRoot string
+
+	// services is the service-instance supervisor (#215 stage 3); nil refuses
+	// service bindings (shape-test compositions).
+	services *pluginServices
 
 	// journalHM supplies the data journal high id for pin stamping (floor/ceiling)
 	// and seal decisions after runs reach terminal.
@@ -256,6 +269,14 @@ func WithControlPlane(cp *controlPlane, workspace string, reg store.RegistryRead
 	}
 }
 
+// WithCatalogPlane wires the leader-side catalog plane (#217): its orchestrator installs with the control plane's, so pack installs ride the same workspace, registry reader, and apply path. resolver spans the embedded set plus the configured remote catalogs (#220). A nil cp leaves installs unwired.
+func WithCatalogPlane(cp *catalogPlane, resolver catalog.Resolver) CandidateOption {
+	return func(c *Candidate) {
+		c.catalogs = cp
+		c.catalogResolver = resolver
+	}
+}
+
 // WithDeadletterPlane wires the leader-side dead-letter plane: on winning leadership
 // the candidate installs the replay/drain executor over the single dispatcher (the sole
 // meta writer) into dp before reporting the leader role, and clears it on demotion so a
@@ -274,10 +295,10 @@ func WithDeadletterPlane(dp *deadletterPlane) CandidateOption {
 // tree (pipeline folders resolve against it); manual is the plain-MVCC manual-run reader;
 // objects is this candidate's own object store (built-run argv resolves from the leader's
 // own objects_path); runner starts subprocesses. journal provides the data journal high id
-// for terminal window stamping. dbURL is the base scoped data-database connection a manual
-// run's IRIS_DB_URL is derived from (the same DSN the lane loop injects). A nil pp leaves
-// the candidate without a manual-run plane (the shape tests use).
-func WithPipelinePlane(pp *pipelinePlane, workspace string, reg store.RegistryReader, manual store.ManualReader, objects *store.ObjectStore, runner exec.Runner, journal dispatch.JournalHighWatermark, runConn *runConnBuilder) CandidateOption {
+// for terminal window stamping. turnDB is the data-database turn seam a manual run's
+// protocol turn drives (#206). A nil pp leaves the candidate without a manual-run plane
+// (the shape tests use).
+func WithPipelinePlane(pp *pipelinePlane, workspace string, reg store.RegistryReader, manual store.ManualReader, objects *store.ObjectStore, runner exec.Runner, journal dispatch.JournalHighWatermark, turnDB turnData, roleCreds store.RoleCredentialReader) CandidateOption {
 	return func(c *Candidate) {
 		c.pipelines = pp
 		c.workspace = workspace
@@ -286,8 +307,22 @@ func WithPipelinePlane(pp *pipelinePlane, workspace string, reg store.RegistryRe
 		c.objects = objects
 		c.runner = runner
 		c.journalHM = journal
-		c.runConn = runConn
+		c.turnDB = turnDB
+		c.roleCreds = roleCreds
 	}
+}
+
+// WithPluginsRoot wires the installed-plugins root (~/.iris/plugins) the leader
+// resolves declared plugin bindings against (#215); empty refuses plugin-declaring runs.
+func WithPluginsRoot(root string) CandidateOption {
+	return func(c *Candidate) { c.pluginsRoot = root }
+}
+
+// WithPluginServices wires the service-instance supervisor (#215 stage 3): the
+// daemon-scoped registry lane and resident instances live in between turns.
+// Absent, service bindings are refused (shape-test compositions).
+func WithPluginServices(services *pluginServices) CandidateOption {
+	return func(c *Candidate) { c.services = services }
 }
 
 // WithSealer wires the opportunistic post-terminal seal step: the
@@ -692,10 +727,7 @@ func (c *Candidate) lead(ctx context.Context) (demoted bool, err error) {
 			destroyOpts = append(destroyOpts, dispatch.WithObjectDeleter(destroyObjectDeleter{objects: c.objects}))
 		}
 		reg, _ := c.inflight.(*inflightRuns)
-		var roleCreds store.RoleCredentialReader
-		if c.runConn != nil {
-			roleCreds = c.runConn.creds
-		}
+		roleCreds := c.roleCreds
 		orch := newControlOrchestrator(
 			c.workspace,
 			dispatch.NewApplier(c.registry, d),
@@ -711,6 +743,13 @@ func (c *Candidate) lead(ctx context.Context) (demoted bool, err error) {
 		)
 		c.control.install(orch)
 		defer c.control.clear()
+
+		// The catalog orchestrator rides the control orchestrator's apply path, so a
+		// pack install's declare sequence is the ordinary leader-side apply.
+		if c.catalogs != nil {
+			c.catalogs.install(newCatalogOrchestrator(c.workspace, c.registry, c.catalogResolver, orch.apply, c.logger))
+			defer c.catalogs.clear()
+		}
 	}
 
 	// Install the leader-side manual-run orchestrator over the single dispatcher, the
@@ -728,7 +767,7 @@ func (c *Candidate) lead(ctx context.Context) (demoted bool, err error) {
 		// store (the *pg.Client that also serves as the journal high-watermark), the
 		// meta seal read seam, the single dispatcher (checkpoint insert + archive
 		// flip), and the object store. Nil seams (the shape tests) leave sealing off.
-		mo := newManualOrchestrator(c.workspace, d, c.registry, c.manualReader, c.objects, c.runner, c.journalHM, c.runConn, reg, c.buildSealer(d), c.runLogs, c.logger)
+		mo := newManualOrchestrator(c.workspace, c.pluginsRoot, c.services, d, c.registry, c.manualReader, c.objects, c.runner, c.journalHM, c.turnDB, reg, c.buildSealer(d), c.runLogs, c.logger)
 		c.pipelines.install(mo)
 		defer c.pipelines.clear()
 	}

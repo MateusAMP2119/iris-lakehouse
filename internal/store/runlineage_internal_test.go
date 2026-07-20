@@ -11,7 +11,7 @@ import (
 // Postgres): the whole-history read orders newest first and maps each row's consumed
 // upstream array and nullable replayed_from, and the single-run read reports absence
 // as (_, false, nil) rather than an error. The production array/NULL scanning against
-// a real Postgres is exercised at conformance tier.
+// a real Postgres runs only inside a live engine.
 
 // lineageScriptRows is a poolRows fake over a fixed result set for the run-lineage
 // reader's scan shape: id (int64), pipeline and state (string), the nullable

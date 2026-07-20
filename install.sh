@@ -13,10 +13,9 @@
 # Knobs:
 #   first argument       release tag to install ("snapshot" → rolling development build)
 #   IRIS_VERSION=<tag>   same as the argument; the argument wins if both are set
-#   IRIS_NO_SETUP=1      install only; never hand off to the setup tour
-#   IRIS_FORCE=1         legacy alias of IRIS_NO_SETUP
 #   IRIS_BASE_URL=<url>  fetch the asset + checksums from here (local testing)
-#   IRIS_DEST=<dir>      install into this directory (local testing)
+#   IRIS_DEST=<dir>      install into this directory (default ~/.iris/bin)
+#   IRIS_ENGINE_SETUP=<local|remote|skip>  answer the engine-setup menu without a prompt
 #   NO_COLOR             plain output
 set -eu
 
@@ -36,31 +35,68 @@ if [ -n "${IRIS_BASE_URL:-}" ]; then
   requested="${IRIS_VERSION:-latest} (from ${BASE})"
 fi
 
-# Ceremony colors: only on a terminal and never when NO_COLOR is set.
+# Colors only on terminal, never under NO_COLOR; G1..G6 = ocean gradient rows
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
-  DIM='\033[2m'; GRN='\033[1;32m'; CYN='\033[1;36m'; RST='\033[0m'
+  DIM='\033[2m' GRN='\033[1;32m' CYN='\033[1;36m' YLW='\033[1;33m' RST='\033[0m'
+  G1='\033[38;2;102;126;234m' G2='\033[38;2;105;115;219m' G3='\033[38;2;108;106;205m'
+  G4='\033[38;2;112;95;191m' G5='\033[38;2;115;86;177m' G6='\033[38;2;118;75;162m'
 else
-  DIM=''; GRN=''; CYN=''; RST=''
+  DIM='' GRN='' CYN='' YLW='' RST=''
+  G1='' G2='' G3='' G4='' G5='' G6=''
 fi
 
-say() { printf "${DIM}·${RST} %s\n" "$1"; }
-ok() { printf "${GRN}✓${RST} %s\n" "$1"; }
-section() { printf "\n${CYN}%s${RST}\n" "$1"; }
-kv() { printf "  ${DIM}%-10s${RST} %s\n" "$1" "$2"; }
+say() { printf "  %s\n" "$1"; }
+ok() { printf "  ${GRN}✓${RST} %s\n" "$1"; }
+section() { printf "\n  ${CYN}%s${RST}\n" "$1"; }
+kv() { printf "  • %-15s: %s\n" "$1" "$2"; }
 
-# Rainbow banner: Iris is the goddess of the rainbow. Colors only on a terminal
-# and never when NO_COLOR is set.
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
-  printf '\033[1;31m  ██╗██████╗ ██╗███████╗     ██████╗██╗     ██╗\033[0m\n'
-  printf '\033[1;33m  ██║██╔══██╗██║██╔════╝    ██╔════╝██║     ██║\033[0m\n'
-  printf '\033[1;32m  ██║██████╔╝██║███████╗    ██║     ██║     ██║\033[0m\n'
-  printf '\033[1;36m  ██║██╔══██╗██║╚════██║    ██║     ██║     ██║\033[0m\n'
-  printf '\033[1;34m  ██║██║  ██║██║███████║    ╚██████╗███████╗██║\033[0m\n'
-  printf '\033[1;35m  ╚═╝╚═╝  ╚═╝╚═╝╚══════╝     ╚═════╝╚══════╝╚═╝\033[0m\n'
-  printf '\033[2m  lakehouse engine · provenance first\033[0m\n\n'
-else
-  printf '  Iris CLI: lakehouse engine, provenance first\n\n'
+# can_prompt: real tty exists; stdin is curl pipe so prompts use /dev/tty
+can_prompt() {
+  (: </dev/tty >/dev/tty) 2>/dev/null
+}
+
+# Banner: pre-rendered oh-my-logo art (no Node dep); ≥128 cols wide, ≥92 stacked, else plain
+banner_wide() {
+  printf "${G1}%s${RST}\n" '  ██╗  ██████╗   ██╗  ███████╗       ██╗        █████╗   ██╗  ██╗  ███████╗  ██╗  ██╗   ██████╗   ██╗   ██╗  ███████╗  ███████╗'
+  printf "${G2}%s${RST}\n" '  ██║  ██╔══██╗  ██║  ██╔════╝       ██║       ██╔══██╗  ██║ ██╔╝  ██╔════╝  ██║  ██║  ██╔═══██╗  ██║   ██║  ██╔════╝  ██╔════╝'
+  printf "${G3}%s${RST}\n" '  ██║  ██████╔╝  ██║  ███████╗       ██║       ███████║  █████╔╝   █████╗    ███████║  ██║   ██║  ██║   ██║  ███████╗  █████╗'
+  printf "${G4}%s${RST}\n" '  ██║  ██╔══██╗  ██║  ╚════██║       ██║       ██╔══██║  ██╔═██╗   ██╔══╝    ██╔══██║  ██║   ██║  ██║   ██║  ╚════██║  ██╔══╝'
+  printf "${G5}%s${RST}\n" '  ██║  ██║  ██║  ██║  ███████║       ███████╗  ██║  ██║  ██║  ██╗  ███████╗  ██║  ██║  ╚██████╔╝  ╚██████╔╝  ███████║  ███████╗'
+  printf "${G6}%s${RST}\n" '  ╚═╝  ╚═╝  ╚═╝  ╚═╝  ╚══════╝       ╚══════╝  ╚═╝  ╚═╝  ╚═╝  ╚═╝  ╚══════╝  ╚═╝  ╚═╝   ╚═════╝    ╚═════╝   ╚══════╝  ╚══════╝'
+}
+banner_stacked() {
+  printf "${G1}%s${RST}\n" '  ██╗  ██████╗   ██╗  ███████╗'
+  printf "${G2}%s${RST}\n" '  ██║  ██╔══██╗  ██║  ██╔════╝'
+  printf "${G3}%s${RST}\n" '  ██║  ██████╔╝  ██║  ███████╗'
+  printf "${G4}%s${RST}\n" '  ██║  ██╔══██╗  ██║  ╚════██║'
+  printf "${G5}%s${RST}\n" '  ██║  ██║  ██║  ██║  ███████║'
+  printf "${G6}%s${RST}\n" '  ╚═╝  ╚═╝  ╚═╝  ╚═╝  ╚══════╝'
+  printf '\n'
+  printf "${G1}%s${RST}\n" '  ██╗        █████╗   ██╗  ██╗  ███████╗  ██╗  ██╗   ██████╗   ██╗   ██╗  ███████╗  ███████╗'
+  printf "${G2}%s${RST}\n" '  ██║       ██╔══██╗  ██║ ██╔╝  ██╔════╝  ██║  ██║  ██╔═══██╗  ██║   ██║  ██╔════╝  ██╔════╝'
+  printf "${G3}%s${RST}\n" '  ██║       ███████║  █████╔╝   █████╗    ███████║  ██║   ██║  ██║   ██║  ███████╗  █████╗'
+  printf "${G4}%s${RST}\n" '  ██║       ██╔══██║  ██╔═██╗   ██╔══╝    ██╔══██║  ██║   ██║  ██║   ██║  ╚════██║  ██╔══╝'
+  printf "${G5}%s${RST}\n" '  ███████╗  ██║  ██║  ██║  ██╗  ███████╗  ██║  ██║  ╚██████╔╝  ╚██████╔╝  ███████║  ███████╗'
+  printf "${G6}%s${RST}\n" '  ╚══════╝  ╚═╝  ╚═╝  ╚═╝  ╚═╝  ╚══════╝  ╚═╝  ╚═╝   ╚═════╝    ╚═════╝   ╚══════╝  ╚══════╝'
+}
+
+# Width via stty on /dev/tty: tput inside $() sees pipe, lies 80
+cols=${COLUMNS:-80}
+if [ -t 1 ]; then
+  sz=$(stty size </dev/tty 2>/dev/null || true)
+  case "$sz" in
+    *' '*) cols=${sz#* } ;;
+  esac
 fi
+printf '\n'
+if [ "$cols" -ge 128 ]; then
+  banner_wide
+elif [ "$cols" -ge 92 ]; then
+  banner_stacked
+else
+  printf "${G1}  IRIS LAKEHOUSE${RST}\n"
+fi
+printf '\n'
 
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
 arch=$(uname -m)
@@ -79,29 +115,33 @@ case "$os" in
     exit 1
     ;;
 esac
-ok "Detected: ${os} (${arch})"
+printf "  🔍 Detected platform: %s/%s\n" "$os" "$arch"
 
-# The install plan: what will happen, before anything does. An iris already on
-# PATH turns the run into an announced upgrade.
+# Plan first, actions after; existing iris on PATH = announced upgrade
 installed=""
 if command -v iris >/dev/null 2>&1; then
   installed=$(iris --version 2>/dev/null || true)
 fi
-section "Install plan"
-kv "OS" "${os} / ${arch}"
-kv "Method" "prebuilt static binary — no runtime dependencies"
+dest="${IRIS_DEST:-${HOME}/.iris/bin}"
+printf "  📋 Install plan\n"
+kv "OS/Arch" "${os} / ${arch}"
+kv "Method" "Prebuilt static binary"
 kv "Version" "${requested}"
 if [ -n "$installed" ]; then
-  kv "Installed" "${installed} → upgrading in place"
+  kv "Installed" "${installed} → upgrading"
 fi
-kv "Dest" "${IRIS_DEST:-/usr/local/bin (falls back to ~/.local/bin)}"
+if [ -n "${IRIS_DEST:-}" ]; then
+  kv "Destination" "${dest}"
+else
+  kv "Destination" "~/.iris"
+fi
 
 asset="iris_${os}_${arch}.tar.gz"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 section "[1/3] Downloading"
-say "Fetching ${asset}"
+say "⬇  Fetching ${asset}"
 curl -fsSL "${BASE}/${asset}" -o "${tmp}/${asset}"
 curl -fsSL "${BASE}/checksums.txt" -o "${tmp}/checksums.txt"
 
@@ -113,99 +153,219 @@ curl -fsSL "${BASE}/checksums.txt" -o "${tmp}/checksums.txt"
     grep " ${asset}\$" checksums.txt | shasum -a 256 -c - >/dev/null
   fi
 )
-ok "Checksum verified"
-
-tar -xzf "${tmp}/${asset}" -C "$tmp"
+printf "  🔄 Verifying checksum... ${GRN}✓${RST} Verified\n"
 
 section "[2/3] Installing"
-# Prefer /usr/local/bin; fall back to ~/.local/bin when not writable and sudo is unavailable.
-dest="/usr/local/bin"
-if [ -n "${IRIS_DEST:-}" ]; then
-  dest="${IRIS_DEST}"
-  mkdir -p "$dest"
-fi
+say "📦 Extracting & placing binary..."
+tar -xzf "${tmp}/${asset}" -C "$tmp"
+mkdir -p "$dest"
 if [ -w "$dest" ]; then
   mv "${tmp}/iris" "${dest}/iris"
 elif command -v sudo >/dev/null 2>&1; then
   say "Installing to ${dest} (sudo required)"
   sudo mv "${tmp}/iris" "${dest}/iris"
 else
-  dest="${HOME}/.local/bin"
-  mkdir -p "$dest"
-  mv "${tmp}/iris" "${dest}/iris"
-  case ":${PATH}:" in
-    *":${dest}:"*) ;;
-    *) say "NOTE: add ${dest} to your PATH." ;;
-  esac
+  echo "iris: cannot write to ${dest}: no permission and no sudo." >&2
+  exit 1
 fi
-ok "Installed $("${dest}/iris" --version 2>/dev/null || echo iris) → ${dest}/iris"
-
-# One line of personality, then back to work. awk carries the randomness:
-# POSIX sh has no $RANDOM.
-if [ -n "$installed" ]; then
-  line=$(awk 'BEGIN{srand(); print int(rand()*3)+1}')
-  case "$line" in
-    1) msg="Upgraded. Same rainbow, fewer sharp edges." ;;
-    2) msg="Molted clean. The provenance journal remembers everything anyway." ;;
-    *) msg="New binary, same memory: every row still answers for itself." ;;
-  esac
-else
-  line=$(awk 'BEGIN{srand(); print int(rand()*4)+1}')
-  case "$line" in
-    1) msg="Settled in. Your rows will never write anonymously again." ;;
-    2) msg="The goddess has landed. Point her at your data." ;;
-    3) msg="Installed. Somewhere, a mystery CSV just lost its alibi." ;;
-    *) msg="One binary, zero dependencies. The rest is ceremony." ;;
-  esac
-fi
-printf "${DIM}%s${RST}\n" "$msg"
-
-section "[3/3] Starting setup"
-
-# Version gate: probe the installed binary itself before any handoff. A binary
-# that answers `quickstart --from-installer --json` gets the full continuation
-# handoff; one that only answers plain `quickstart --json` gets the flagless
-# handoff (an E15-era tour); anything older gets no handoff and no quickstart
-# next-step line -- an old binary is never offered a verb it lacks.
-handoff="none"
-if "${dest}/iris" quickstart --from-installer --json >/dev/null 2>&1; then
-  handoff="continuation"
-elif "${dest}/iris" quickstart --json >/dev/null 2>&1; then
-  handoff="plain"
-fi
-
-# The handoff: no shell question — the tour's own heads-up is the consent, and
-# declining it there is the same clean exit. Hand off only with a controlling
-# terminal (probed by opening /dev/tty, the uninstaller's rule) and neither
-# opt-out set; otherwise print the plain next-steps lines.
-can_prompt() {
-  [ -z "${IRIS_FORCE:-}" ] && [ -z "${IRIS_NO_SETUP:-}" ] && (: </dev/tty >/dev/tty) 2>/dev/null
-}
-
-if [ "$handoff" != "none" ] && can_prompt; then
-  say "Handing off to iris — the tour takes it from here (decline there to stop)"
-  echo ""
-  # The absolute path runs the tour even when dest is not on PATH yet, and the
-  # re-tied stdin satisfies its terminal gate -- stdout is never re-tied. exec
-  # replaces this shell, so the EXIT trap will not fire: clean up first.
-  rm -rf "$tmp"
-  trap - EXIT
-  if [ "$handoff" = "continuation" ]; then
-    exec "${dest}/iris" quickstart --from-installer </dev/tty
-  fi
-  exec "${dest}/iris" quickstart </dev/tty
-fi
-
-# Plain next steps: bare `iris` once dest is on PATH, the absolute path until
-# then. The quickstart line rides the version gate: it is offered only when a
-# probe passed.
-iris_cmd="${dest}/iris"
+bin="${dest}/iris"
+ok "Installed $("$bin" --version 2>/dev/null || echo iris) → ${bin}"
+on_path=""
 case ":${PATH}:" in
-  *":${dest}:"*) iris_cmd="iris" ;;
+  *":${dest}:"*) on_path=1 ;;
 esac
-if [ "$handoff" != "none" ]; then
-  echo "Next: ${iris_cmd} quickstart   # 3-minute guided tour"
-  echo "  or: ${iris_cmd} engine install && ${iris_cmd} engine start -d"
-else
-  echo "Next: ${iris_cmd} engine install && ${iris_cmd} engine start -d"
+# Same-shell availability: link from /usr/local/bin (already on PATH) so iris works without a new shell
+if [ -z "$on_path" ] && [ -z "${IRIS_DEST:-}" ] && [ -d /usr/local/bin ]; then
+  case ":${PATH}:" in
+    *:/usr/local/bin:*)
+      if [ -w /usr/local/bin ]; then
+        ln -sf "$bin" /usr/local/bin/iris && on_path=1
+      elif command -v sudo >/dev/null 2>&1 && can_prompt; then
+        say "Linking /usr/local/bin/iris (sudo may ask for your password)"
+        sudo ln -sf "$bin" /usr/local/bin/iris </dev/tty && on_path=1 || true
+      fi
+      [ -n "$on_path" ] && ok "Linked /usr/local/bin/iris → ~/.iris/bin/iris"
+      ;;
+  esac
 fi
+# Still not reachable: wire the rc once (marked block, idempotent)
+if [ -z "$on_path" ]; then
+  rc=""
+  case "${SHELL:-}" in
+    */zsh) rc="${HOME}/.zshrc" ;;
+    */bash) rc="${HOME}/.bashrc" ;;
+  esac
+  if [ -n "$rc" ] && [ -z "${IRIS_DEST:-}" ]; then
+    if ! grep -qs '\.iris/bin' "$rc"; then
+      printf '\n# iris\nexport PATH="$HOME/.iris/bin:$PATH"\n' >>"$rc"
+    fi
+    appended="$rc"
+    ok "Added ~/.iris/bin to PATH (~/${rc##*/})"
+  else
+    printf "  ${YLW}!${RST} %s\n" "${dest} is not on your PATH; add: export PATH=\"${dest}:\$PATH\""
+  fi
+fi
+if [ -n "$installed" ]; then
+  prev=$(command -v iris 2>/dev/null || true)
+  if [ -n "$prev" ] && [ "$prev" != "$bin" ]; then
+    printf "  ${YLW}!${RST} %s\n" "another iris remains at ${prev}; remove it or keep ${dest} first in PATH"
+  fi
+fi
+
+section "[3/3] Engine Setup"
+case "$requested" in
+  snapshot*)
+    printf "  ${YLW}⚠️  Active Development Notice${RST}\n"
+    say "This is a snapshot build. Features may change rapidly and some"
+    say "functionality is still experimental."
+    printf '\n'
+    ;;
+esac
+
+# Menu reads /dev/tty; IRIS_ENGINE_SETUP answers headless; no tty = skip
+choice=""
+case "${IRIS_ENGINE_SETUP:-}" in
+  local) choice=1 ;;
+  remote) choice=2 ;;
+  skip) choice=3 ;;
+esac
+if [ -z "$choice" ]; then
+  if can_prompt; then
+    say "How would you like to run the Iris Engine?"
+    printf '\n'
+    printf "  ${CYN}1)${RST} Local mode     (starts embedded engine in background)\n"
+    printf "  ${CYN}2)${RST} Remote mode    (connect to an existing remote Iris instance)\n"
+    printf "  ${CYN}3)${RST} Skip for now   (configure later with 'iris engine install' or 'iris engine connect')\n"
+    printf '\n'
+    # One keypress, no Enter: raw-ish tty read via dd; Enter alone = default 1
+    while [ -z "$choice" ]; do
+      printf "  Enter choice [1]: " >/dev/tty
+      old=$(stty -g </dev/tty 2>/dev/null || true)
+      if [ -n "$old" ]; then
+        stty -icanon -echo min 1 time 0 </dev/tty 2>/dev/null || true
+        ans=$(dd if=/dev/tty bs=1 count=1 2>/dev/null || true)
+        stty "$old" </dev/tty 2>/dev/null || true
+      else
+        IFS= read -r ans </dev/tty || ans=""
+      fi
+      case "$ans" in
+        '') choice=1 ;;
+        1 | 2 | 3) choice="$ans" ;;
+        *)
+          printf '\n' >/dev/tty
+          printf "  %s\n" "Press 1, 2, or 3." >/dev/tty
+          continue
+          ;;
+      esac
+      printf '%s\n' "$choice" >/dev/tty
+    done
+    printf '\n'
+  else
+    choice=3
+    say "No terminal to ask on; skipping engine setup."
+  fi
+fi
+
+case "$choice" in
+  1)
+    say "• Selected: Local mode"
+    say "🚀 Starting Iris Engine..."
+    # Logs go to a file; a marching bar covers the wait (tty only)
+    elog="${HOME}/.iris/setup.log"
+    mkdir -p "${HOME}/.iris"
+    ("$bin" engine install && "$bin" engine start -d) >"$elog" 2>&1 &
+    epid=$!
+    # Single climb 0→90%, hold until done, close at 100% once
+    if [ -t 1 ]; then
+      pct=0
+      while kill -0 "$epid" 2>/dev/null; do
+        [ "$pct" -lt 90 ] && pct=$((pct + 3))
+        cells=$((pct / 10))
+        bar="$(printf '%*s' "$cells" '' | tr ' ' '█')$(printf '%*s' $((10 - cells)) '' | tr ' ' '░')"
+        printf '\r\033[2K  Setting up engine... [%s] %d%%' "$bar" "$pct"
+        sleep 0.2
+      done
+      printf '\r\033[2K  Setting up engine... [██████████] 100%%\n'
+    fi
+    if wait "$epid"; then
+      pid=$(cat "${HOME}/.iris/iris.pid" 2>/dev/null || true)
+      if [ -n "$pid" ]; then
+        ok "Engine started successfully (PID ${pid})"
+      else
+        ok "Engine started successfully"
+      fi
+    else
+      echo "iris: engine setup failed; full log: ${elog}" >&2
+      tail -20 "$elog" >&2
+      exit 1
+    fi
+    ;;
+  2)
+    say "• Selected: Remote mode"
+    printf "  Enter remote Iris endpoint (host:port): " >/dev/tty
+    IFS= read -r endpoint </dev/tty || endpoint=""
+    if [ -z "$endpoint" ]; then
+      say "• No endpoint given. Run 'iris engine connect <host>' when ready."
+    else
+      printf "  Enter PAT token (optional, hidden): " >/dev/tty
+      stty -echo </dev/tty 2>/dev/null || true
+      IFS= read -r token </dev/tty || token=""
+      stty echo </dev/tty 2>/dev/null || true
+      printf '\n' >/dev/tty
+      say "🔌 Testing connection..."
+      if [ -n "$token" ]; then
+        "$bin" engine connect "$endpoint" --token "$token"
+      else
+        "$bin" engine connect "$endpoint"
+      fi
+      ok "Connected to remote engine"
+      say "• Endpoint saved to ~/.iris/iris.toml"
+    fi
+    ;;
+  3)
+    say "• Selected: Skip for now"
+    say "• Engine not configured. Run 'iris engine install && iris engine start -d' (local)"
+    say "  or 'iris engine connect <host>' (remote) when ready."
+    ;;
+esac
+
+# Fresh PATH append can't reach this shell; ready line must work as pasted
+if [ -n "${appended:-}" ]; then
+  printf "\n  ✨ Iris is ready! Run: source %s && iris --help\n" "$appended"
+  printf "  ${DIM}(new terminals just type: iris)${RST}\n\n"
+else
+  iris_cmd="$bin"
+  if [ -n "$on_path" ]; then
+    iris_cmd="iris"
+  fi
+  printf "\n  ✨ Iris is ready! Try: %s --help\n\n" "$iris_cmd"
+fi
+
+# Random quote via awk (POSIX sh has no $RANDOM); attribution right-aligned
+n=$(awk 'BEGIN{srand(); print int(rand()*5)+1}')
+case "$n" in
+  1)
+    quote='"He who has a why to live can bear almost any how."'
+    author="— Friedrich Nietzsche"
+    ;;
+  2)
+    quote='"No man ever steps in the same river twice."'
+    author="— Heraclitus"
+    ;;
+  3)
+    quote='"Well begun is half done."'
+    author="— Aristotle"
+    ;;
+  4)
+    quote='"The impediment to action advances action."'
+    author="— Marcus Aurelius"
+    ;;
+  *)
+    quote='"Luck is what happens when preparation meets opportunity."'
+    author="— Seneca"
+    ;;
+esac
+pad=$((3 + ${#quote} - ${#author}))
+if [ "$pad" -lt 3 ]; then pad=3; fi
+printf "   %s\n" "$quote"
+printf "%*s${DIM}%s${RST}\n" "$pad" "" "$author"

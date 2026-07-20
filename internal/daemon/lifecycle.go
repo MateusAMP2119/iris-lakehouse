@@ -9,14 +9,17 @@ import (
 	"net"
 	"os"
 	osexec "os/exec"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
+	"github.com/MateusAMP2119/iris-lakehouse/internal/catalog"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/config"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/dispatch"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/exec"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/pg"
+	"github.com/MateusAMP2119/iris-lakehouse/internal/plugin"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/store"
 )
 
@@ -80,16 +83,27 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 		return ErrManagedNotInstalled
 	}
 
-	// Workspace tree is a per-host prerequisite for every candidate (S15): resolve
-	// early from CWD (the tree the daemon was started in) so a host lacking the
-	// pipelines/dev sources/env_files refuses before bringing up Postgres or listeners.
-	workspace, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("daemon: resolve workspace: %w", err)
+	// Workspace resolves from settings, never the daemon's cwd (#203); ensured early so an impossible candidate refuses before Postgres or listeners.
+	workspace := s.Workspace
+	if workspace == "" {
+		return fmt.Errorf("daemon: no workspace resolved; the engine home settings must supply one")
 	}
-	if err := requireWorkspaceTree(workspace); err != nil {
+	if err := ensureWorkspaceTree(workspace); err != nil {
 		return err
 	}
+
+	// Installed-plugins root under the engine home (#215): declared plugin
+	// bindings resolve against it at run start. The service supervisor holds
+	// lane and resident service instances between turns (#215 stage 3); its
+	// spawn context is the daemon lifetime, so shutdown kills every instance
+	// group, and endAll reaps them deterministically on the way out.
+	home, err := config.Home(os.Getenv)
+	if err != nil {
+		return err
+	}
+	pluginsRoot := filepath.Join(home, plugin.DirName)
+	pluginServicesReg := newPluginServices(ctx, exec.NewOSRunner(), logger)
+	defer pluginServicesReg.endAll()
 
 	// Bring up Postgres and resolve the admin DSN (managed subprocess or external),
 	// then connect the meta client: ensure the meta database exists and open the
@@ -125,18 +139,13 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	}
 	defer data.Close()
 
-	// The lane and manual runs' scoped data connection targets the engine-owned data
-	// database (where the declared tables and capture trigger live). Each run
-	// authenticates as its pipeline's own least-privilege login role (credential
-	// read from meta; the admin-derived DSN only donates host/port/database and
-	// stands in as the fallback for a pipeline whose role is not yet provisioned).
-	laneDataDSN, err := pg.DataDSN(adminDSN.Source().ConnString())
-	if err != nil {
-		return fmt.Errorf("daemon: derive lane run data DSN: %w", err)
-	}
-	runConn, err := newRunConnBuilder(laneDataDSN, client.RoleCredentialReader(), logger)
-	if err != nil {
-		return fmt.Errorf("daemon: build run connection builder: %w", err)
+	// Under the turn protocol (#206) a pipeline process receives no database
+	// credentials: the engine's own data client (data, above) feeds declared-read
+	// input and performs declared-write output with each run's exact attribution,
+	// so no per-run scoped connection is derived here anymore. Turn-position
+	// bookkeeping self-heals in case this home predates the table.
+	if err := pg.EnsureTurnPositions(ctx, data); err != nil {
+		return fmt.Errorf("daemon: ensure turn positions: %w", err)
 	}
 
 	// The leader's workspace tree (already verified as a prerequisite above): declarations
@@ -204,6 +213,15 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// orchestrator.
 	role := api.NewRoleState()
 	control := newControlPlane()
+	// The catalog plane serves POST /catalog/install once this daemon leads (#217).
+	// The resolver spans the embedded packs plus the iris.toml catalogs list (#220);
+	// the client names packs, never URLs, so all catalog egress is daemon-side.
+	catalogCtl := newCatalogPlane()
+	catalogRemotes := make([]catalog.Remote, 0, len(s.Catalogs))
+	for _, u := range s.Catalogs {
+		catalogRemotes = append(catalogRemotes, catalog.Remote{URL: u})
+	}
+	catalogResolver := catalog.Resolver{Catalogs: catalogRemotes}
 	// The pipeline plane serves iris pipeline list from the reader pool (any node) and,
 	// once this daemon leads, POST /pipeline/run through the single writer and exec seam.
 	pipelines := newPipelinePlane(client.PipelineLister(), logger)
@@ -236,14 +254,38 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// running lane run's process group through the shared in-flight registry and
 	// dead-letters it as stopped through the single writer. The pass counter is the
 	// leader-held per-lane loop count, reset each leadership term.
-	lanes := newLanePlane(logger, inflight)
+	// The resident-session registry: the lane loop keeps each pipeline's live
+	// worker here, and the pipeline-level stop kills through it (a loop turn in
+	// flight has no run row to cancel by id).
+	residents := newResidentRuns()
+	lanes := newLanePlane(logger, inflight, residents, client.ManualReader())
 	passCounter := dispatch.NewPassCounter()
 
 	// The ps plane serves GET /ps (and `iris ps`) on any node: the run snapshot
-	// over the reader pool composed with the live leadership role and the
-	// host-load probe, so the readout reports what the engine is running and what
-	// it costs the host -- the daemon's own tree plus the managed Postgres's.
-	psp := NewPsPlane(role, client.Reader(), ManagedPostmasterPID(s), logger)
+	// over the reader pool composed with the live leadership role and the load
+	// collector's newest sample, so the readout reports what the engine is
+	// running and what it costs the host -- the daemon's own tree plus the
+	// managed Postgres's. The collector samples for the daemon's whole life,
+	// clients attached or not, so its in-memory history (?history=1) is what
+	// lets a fresh `iris ps` open with hours of load context instead of a blank
+	// graph. The collector's coarse buckets also persist into the engine-owned
+	// load-history table (best-effort: a data database that cannot host it
+	// keeps the collector memory-only), and seed the rings back at start, so
+	// an engine restart -- an update, a crash, a reboot -- no longer truncates
+	// the readout's window. The resident turn counters (#206): quiet turns
+	// write no rows, so this in-memory tally is the ps readout's only trace of
+	// a quiet loop.
+	var loadStore loadPersister
+	if err := pg.EnsureLoadHistory(ctx, data); err != nil {
+		logger.Warn("iris daemon: ensure load history; the ps history stays memory-only", "err", err)
+	} else {
+		loadStore = data
+	}
+	loads := newLoadHistory(client.Reader(), ManagedPostmasterPID(s), loadStore, logger)
+	go loads.run(ctx)
+	turnTally := newTurnCounters()
+	runLogs := NewRunLogWriter(s)
+	psp := NewPsPlane(role, client.Reader(), loads, turnTally, runLogs, logger)
 
 	// The dead-letter plane serves GET /dead_letters/{run}/impact (the blast readout
 	// `iris deadletter show` renders) on any node from the reader pool, and POST
@@ -270,7 +312,8 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// its run-id-keyed file (runs.log_ref), the post-pass pruner deletes the file
 	// with the run row, and the run-logs plane serves it back (GET /runs/{id}/logs,
 	// a read on any role -- the log lives on the node that executed the run).
-	runLogs := NewRunLogWriter(s)
+	// runLogs itself is built beside the ps plane above, which stats the same
+	// files for the per-run log metadata.
 	runTrace := newRunTracePlane(client.Reader(), logger)
 	pipelineGate := newPipelineGatePlane(client.ShowReader(), logger)
 
@@ -285,7 +328,8 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 		api.WithInspect(inspect), api.WithPipelineShow(pipelineShow),
 		api.WithDeadImpact(deadletters), api.WithReplay(deadletters), api.WithDrain(deadletters),
 		api.WithRuns(runs), api.WithRunTrace(runTrace), api.WithPipelineGate(pipelineGate),
-		api.WithRunLogs(NewRunLogsPlane(runLogs)),
+		api.WithRunLogs(NewRunLogsPlane(runLogs)), api.WithCatalog(catalogCtl),
+		api.WithCatalogList(NewCatalogReadPlane(client.RegistryReader(), catalogResolver, logger)),
 	), WithServerLogger(logger), WithVerifier(verifier))
 	if err := srv.Start(ctx); err != nil {
 		return err
@@ -319,21 +363,24 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// the resolved retain, each pruned run's log dying with its row). The run's data
 	// connection targets the engine-owned data database, retargeted from the admin DSN.
 	laneBuild := func(submit dispatch.Submitter, events *dispatch.Events) *dispatch.Loop {
-		return newLaneLoop(submit, inflight, workspace, client.RegistryReader(), client.ManualReader(),
+		turnTally.reset() // a new leadership term starts a fresh turn account
+		return newLaneLoop(submit, inflight, residents, workspace, pluginsRoot, pluginServicesReg, client.RegistryReader(), client.ManualReader(),
 			client.QueuedManualReader(), events,
-			exec.NewOSRunner(), data, objects, runConn, passCounter,
+			exec.NewOSRunner(), data, data, objects, turnTally, passCounter,
 			client.RetentionReader(), s.Retain, runLogs, logger)
 	}
 
 	cand := NewCandidate(client.Lock(), role, client.WriteConn(), logger,
 		WithReconciliation(client.Reader(), dispatch.RealGroupKiller(), dispatch.SingleHostMatcher()),
 		WithControlPlane(control, workspace, client.RegistryReader(), client.AppliedHeadReader(), data),
-		WithPipelinePlane(pipelines, workspace, client.RegistryReader(), client.ManualReader(), objects, exec.NewOSRunner(), data, runConn),
+		WithPipelinePlane(pipelines, workspace, client.RegistryReader(), client.ManualReader(), objects, exec.NewOSRunner(), data, data, client.RoleCredentialReader()),
 		WithSealer(s.JournalPartitionRows, data, client.SealReader()),
 		WithBuildPlane(builds, workspace, client.ManualReader(), objects, exec.NewOSRunner()),
 		WithPromotePlane(promos, submitShim{}, client.PromoteStateReader(), &liveJournalPromoter{reader: client.Reader(), db: data}),
 		WithWipePlane(wipes, client.Reader(), data),
 		WithLaneLoop(laneBuild),
+		WithPluginsRoot(pluginsRoot),
+		WithPluginServices(pluginServicesReg),
 		WithLanePlane(lanes),
 		WithTeardownSeams(client.RetentionReader()),
 		WithGrantDrift(client.DataPATGrantsReader()),
@@ -344,6 +391,7 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 		WithFreshSessions(freshLeaderSession(ctx, client, logger)),
 		WithEndpointPlane(endpointCtl, endpointRegistry, data, workspace),
 		WithPATPlane(patMint, endpointRegistry, workspace),
+		WithCatalogPlane(catalogCtl, catalogResolver),
 		// Leader advertisement: on winning the lock this candidate advertises its TCP
 		// listen address (empty when socket-only) into the leadership meta table, and
 		// while a standby it polls that table to name the live leader for retargeting

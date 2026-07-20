@@ -91,6 +91,12 @@ func requiredScope(path string) pat.Scope {
 		return pat.ScopeData
 	case "apply", "destroy":
 		return pat.ScopeControl
+	case "catalog":
+		// The pack listing is an engine-state read; install is a control mutation.
+		if path == "/catalog" {
+			return pat.ScopeRead
+		}
+		return pat.ScopeControl
 	case "pipeline":
 		// The control-plane pipeline verbs mutate (control); the listing is an
 		// engine-state read.

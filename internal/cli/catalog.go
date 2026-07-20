@@ -1,255 +1,272 @@
 package cli
 
 import (
-	"bytes"
-	"embed"
-	"errors"
+	"context"
+	"encoding/json"
 	"fmt"
-	"io"
-	"io/fs"
-	"os"
-	"path/filepath"
+	"net/http"
 	"strings"
+	"time"
 
-	"github.com/goccy/go-yaml"
+	"github.com/spf13/cobra"
+
+	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
+	"github.com/MateusAMP2119/iris-lakehouse/internal/catalog"
 )
 
-// catalogDataDir is the embed root of the pipeline catalog. Beneath it live
-// the ordered catalog.yaml index and one folder per entry: an entry.yaml
-// (metadata) beside a workspace/ subtree mirroring exactly what materializes
-// into the workspace (the quickstart pipeline catalog).
-const catalogDataDir = "catalogdata"
-
-// catalogData embeds the pipeline catalog: curated starter pipelines shipped
-// inside the binary (go:embed, no network), golden-pinned. Every entry must
-// parse through the real declare loaders -- an invalid entry is a test
-// failure, never a runtime surprise.
-//
-//go:embed catalogdata
-var catalogData embed.FS
-
-// catalogShowcase names the table and primary key the tour's provenance
-// finale queries for one catalog entry.
-type catalogShowcase struct {
-	Table string `yaml:"table" json:"table"`
-	PK    string `yaml:"pk" json:"pk"`
+// catalogListPayload is the --json document of `iris catalog list`.
+type catalogListPayload struct {
+	Packs    []api.CatalogPack `json:"packs"`
+	Warnings []string          `json:"warnings,omitempty"`
 }
 
-// catalogEntry is one pipeline-catalog entry's metadata, parsed from its
-// entry.yaml: the id matching its folder, the display name and one-line pitch
-// the shop paints, the description a pick renders, the run note the tour's
-// run step explains itself with, and the provenance showcase the act closes
-// on.
-type catalogEntry struct {
-	ID          string          `yaml:"id"`
-	Name        string          `yaml:"name"`
-	Pitch       string          `yaml:"pitch"`
-	Description string          `yaml:"description"`
-	RunNote     string          `yaml:"run_note"`
-	Showcase    catalogShowcase `yaml:"showcase"`
+// catalogCmd builds `iris catalog`: pack browsing plus the leader-mediated install (#217).
+func (a *app) catalogCmd() *cobra.Command {
+	initCmd := &cobra.Command{
+		Use: "init", Short: "Install the embedded starter pack (" + catalog.StarterPack + ") into the engine's workspace",
+		Args: cobra.NoArgs, RunE: a.catalogInstall(true),
+	}
+	install := &cobra.Command{
+		Use: "install <pack>", Short: "Materialize a pack into the engine's workspace through the leader",
+		Args: cobra.ExactArgs(1), RunE: a.catalogInstall(false),
+	}
+	for _, c := range []*cobra.Command{initCmd, install} {
+		c.Flags().Bool("apply", false, "run the declare sequence in the derived order after materializing")
+		c.Flags().Bool("force", false, "overwrite existing workspace paths instead of refusing")
+	}
+	list := &cobra.Command{
+		Use: "list", Short: "List the packs available to install (embedded plus configured catalogs)",
+		Args: cobra.NoArgs, RunE: a.catalogList(),
+	}
+	show := &cobra.Command{
+		Use: "show <pack>", Short: "Show a pack: README, pipelines, files, apply order, and source",
+		Args: cobra.ExactArgs(1), RunE: a.catalogShow(),
+	}
+	return a.group("catalog", "Browse and install pipeline packs",
+		daemonTouching(initCmd), daemonTouching(list), daemonTouching(show), daemonTouching(install))
 }
 
-// pipelineCatalog is the loaded catalog: the entries in catalog.yaml's order,
-// entry 1 the default pick.
-type pipelineCatalog struct {
-	Entries []catalogEntry
+// catalogFault maps a catalog operation failure to operation-failed (exit 4).
+func catalogFault(op string, err error) error {
+	return &fault{code: exitOpFailed, codeStr: "catalog_" + op + "_failed", message: fmt.Sprintf("iris catalog %s: %v", op, err)}
 }
 
-// catalogIndex is the catalog.yaml document: the ordered entry-folder list.
-type catalogIndex struct {
-	Entries []string `yaml:"entries"`
+// catalogInstall handles `iris catalog install <pack>` and, with starter, `iris catalog init`.
+func (a *app) catalogInstall(starter bool) runE {
+	return func(cmd *cobra.Command, args []string) error {
+		pack := catalog.StarterPack
+		if !starter {
+			pack = args[0]
+		}
+		apply, _ := cmd.Flags().GetBool("apply")
+		force, _ := cmd.Flags().GetBool("force")
+		var res api.CatalogInstallResult
+		if err := a.postDaemonJSON(cmd, "/catalog/install",
+			api.CatalogInstallRequest{Pack: pack, Apply: apply, Force: force}, "catalog install", &res); err != nil {
+			return err
+		}
+		// Warnings render like declare apply's: top-level beside data under --json, stderr-prefixed otherwise.
+		warnings := res.Warnings
+		res.Warnings = nil
+		if jsonMode, _ := cmd.Flags().GetBool("json"); jsonMode {
+			return json.NewEncoder(a.out).Encode(struct {
+				Data     api.CatalogInstallResult `json:"data"`
+				Warnings []string                 `json:"warnings,omitempty"`
+			}{Data: res, Warnings: warnings})
+		}
+		for _, w := range warnings {
+			fmt.Fprintf(a.errOut, "iris: warning: %s\n", w)
+		}
+		fmt.Fprintf(a.out, "installed pack %s (%d files)\n", res.Pack, len(res.Files))
+		for _, f := range res.Files {
+			fmt.Fprintf(a.out, "  %s\n", f)
+		}
+		if res.Applied {
+			fmt.Fprintf(a.out, "applied %d declaration(s)\n", len(res.ApplyOrder))
+		} else {
+			fmt.Fprintln(a.out, "apply order:")
+			for _, p := range res.ApplyOrder {
+				fmt.Fprintf(a.out, "  %s\n", p)
+			}
+			fmt.Fprintln(a.out, "declare them in that order with `iris declare apply <path>`")
+		}
+		return nil
+	}
 }
 
-// loadCatalog parses the embedded catalog fresh per call (no mutable package
-// state): the ordered catalog.yaml index, then each listed entry's entry.yaml.
-// It verifies the registry's own shape -- the index lists exactly the entry
-// folders, ids are unique and match their folder -- so a malformed embed
-// surfaces as a clear error, never a skewed shop.
-func loadCatalog() (*pipelineCatalog, error) {
-	raw, err := catalogData.ReadFile(catalogDataDir + "/catalog.yaml")
+// catalogListTimeout bounds the listing read so a wedged daemon degrades to the embedded fallback instead of hanging the verb.
+const catalogListTimeout = 10 * time.Second
+
+// fetchCatalogListing reads GET /catalog; live=false means no engine answered (the caller falls back to embedded), and a non-nil err is already a fault carrying the daemon's own code.
+func (a *app) fetchCatalogListing(cmd *cobra.Command, op string) (payload catalogListPayload, live bool, err error) {
+	settings := a.resolveTarget(cmd)
+	client, base, overTCP := a.daemonHTTPClient(settings)
+	ctx, cancel := context.WithTimeout(cmd.Context(), catalogListTimeout)
+	defer cancel()
+	req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, base+"/catalog", nil)
+	if rerr != nil {
+		// A malformed target is a usage failure, never a silent embedded fallback.
+		return catalogListPayload{}, true, &fault{code: exitOpFailed, codeStr: "request", message: fmt.Sprintf("iris catalog %s: build request: %v", op, rerr)}
+	}
+	if overTCP && settings.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+settings.Token)
+	}
+	resp, derr := client.Do(req)
+	if derr != nil {
+		return catalogListPayload{}, false, nil
+	}
+	defer drainClose(resp)
+	if resp.StatusCode != http.StatusOK {
+		var env struct {
+			Error errBody `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&env)
+		code := env.Error.Code
+		if code == "" {
+			code = "operation_failed"
+		}
+		msg := env.Error.Message
+		if msg == "" {
+			msg = fmt.Sprintf("daemon status %d", resp.StatusCode)
+		}
+		return catalogListPayload{}, true, &fault{code: exitOpFailed, codeStr: code, message: fmt.Sprintf("iris catalog %s: %s", op, msg)}
+	}
+	var env struct {
+		Data api.CatalogListResult `json:"data"`
+	}
+	if derr := json.NewDecoder(resp.Body).Decode(&env); derr != nil {
+		return catalogListPayload{}, true, &fault{code: exitOpFailed, codeStr: "decode", message: fmt.Sprintf("iris catalog %s: decode /catalog response: %v", op, derr)}
+	}
+	return catalogListPayload{Packs: env.Data.Packs, Warnings: env.Data.Warnings}, true, nil
+}
+
+// embeddedListing renders the embedded packs as listing entries: the zero-network fallback.
+func embeddedListing() (catalogListPayload, error) {
+	packs, err := catalog.Embedded()
 	if err != nil {
-		return nil, fmt.Errorf("catalog: read embedded index: %w", err)
+		return catalogListPayload{}, err
 	}
-	var idx catalogIndex
-	if err := yaml.Unmarshal(raw, &idx); err != nil {
-		return nil, fmt.Errorf("catalog: parse catalog.yaml: %w", err)
+	out := catalogListPayload{Warnings: []string{"engine unreachable · embedded packs only"}}
+	for _, p := range packs {
+		out.Packs = append(out.Packs, localPackEntry(p))
 	}
-	if len(idx.Entries) == 0 {
-		return nil, errors.New("catalog: catalog.yaml lists no entries")
-	}
-
-	listed := map[string]bool{}
-	cat := &pipelineCatalog{}
-	for _, id := range idx.Entries {
-		if listed[id] {
-			return nil, fmt.Errorf("catalog: catalog.yaml lists %s twice", id)
-		}
-		listed[id] = true
-		raw, err := catalogData.ReadFile(catalogDataDir + "/" + id + "/entry.yaml")
-		if err != nil {
-			return nil, fmt.Errorf("catalog: read entry %s: %w", id, err)
-		}
-		var e catalogEntry
-		if err := yaml.Unmarshal(raw, &e); err != nil {
-			return nil, fmt.Errorf("catalog: parse %s/entry.yaml: %w", id, err)
-		}
-		if e.ID != id {
-			return nil, fmt.Errorf("catalog: entry.yaml id %q does not match its folder %q", e.ID, id)
-		}
-		cat.Entries = append(cat.Entries, e)
-	}
-
-	// The index must list exactly the entry folders: an unlisted folder is as
-	// wrong as a listed ghost.
-	dirs, err := fs.ReadDir(catalogData, catalogDataDir)
-	if err != nil {
-		return nil, fmt.Errorf("catalog: read embedded catalog root: %w", err)
-	}
-	for _, d := range dirs {
-		if d.IsDir() && !listed[d.Name()] {
-			return nil, fmt.Errorf("catalog: entry folder %s is not listed in catalog.yaml", d.Name())
-		}
-	}
-	return cat, nil
+	return out, nil
 }
 
-// defaultEntry returns the catalog's default pick: entry 1.
-func (c *pipelineCatalog) defaultEntry() catalogEntry {
-	return c.Entries[0]
+// localPackEntry renders one embedded pack with its full preview material.
+func localPackEntry(p catalog.Pack) api.CatalogPack {
+	entry := api.CatalogPack{
+		Name: p.Name, Description: p.Description, Tags: p.Tags,
+		Requires: p.Requires, SHA256: p.SHA256, Source: p.Source, Readme: p.README,
+	}
+	for _, f := range p.Files {
+		entry.Files = append(entry.Files, f.Path)
+	}
+	if names, err := catalog.PipelineNames(p); err == nil {
+		entry.Pipelines = names
+	}
+	if order, err := catalog.ApplyOrder(p); err == nil {
+		entry.ApplyOrder = order
+	}
+	return entry
 }
 
-// entryByID resolves one catalog entry by id; an unknown id is an error
-// naming the available ids.
-func (c *pipelineCatalog) entryByID(id string) (catalogEntry, error) {
-	for _, e := range c.Entries {
-		if e.ID == id {
-			return e, nil
-		}
-	}
-	ids := make([]string, len(c.Entries))
-	for i, e := range c.Entries {
-		ids[i] = e.ID
-	}
-	return catalogEntry{}, fmt.Errorf("catalog: unknown pipeline %q; available: %s", id, strings.Join(ids, ", "))
-}
-
-// catalogEntryByID loads the catalog fresh and resolves one entry by id; an
-// unknown id is an error naming the available ids.
-func catalogEntryByID(id string) (catalogEntry, error) {
-	cat, err := loadCatalog()
-	if err != nil {
-		return catalogEntry{}, err
-	}
-	return cat.entryByID(id)
-}
-
-// materializeCatalogEntry writes one embedded catalog entry's workspace
-// subtree into the workspace rooted at root, write-if-absent: a missing file
-// is created (0644, parent directories 0755), a present byte-identical file
-// is left alone, and a present-but-different file is kept with a warning line
-// on warn -- the catalog never clobbers an operator's file. Creation is
-// race-safe (temp file plus link, so a concurrent writer's file survives
-// intact). It returns the workspace-relative paths it wrote, in walk order.
-func materializeCatalogEntry(id, root string, warn io.Writer) ([]string, error) {
-	if _, err := catalogEntryByID(id); err != nil {
-		return nil, err
-	}
-	walkRoot := catalogDataDir + "/" + id + "/workspace"
-	var written []string
-	err := fs.WalkDir(catalogData, walkRoot, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if d.IsDir() {
-			return nil
-		}
-		rel := strings.TrimPrefix(path, walkRoot+"/")
-		want, err := catalogData.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("catalog: read embedded entry file %s: %w", path, err)
-		}
-		wrote, err := writeSampleFile(filepath.Join(root, filepath.FromSlash(rel)), rel, want, warn)
+// catalogList handles `iris catalog list`: the daemon's multi-source listing, embedded fallback with no engine.
+func (a *app) catalogList() runE {
+	return func(cmd *cobra.Command, _ []string) error {
+		payload, live, err := a.fetchCatalogListing(cmd, "list")
 		if err != nil {
 			return err
 		}
-		if wrote {
-			written = append(written, rel)
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return written, nil
-}
-
-// writeSampleFile creates one sample file at target with content want, unless a
-// file is already there: an identical file is silently kept, a different one is
-// kept with a warning naming its workspace-relative path. The create is
-// create-once: the content lands in a same-directory temp file first and is
-// linked into place, so a target that appears concurrently is never truncated
-// or half-written. It reports whether it wrote the file.
-func writeSampleFile(target, rel string, want []byte, warn io.Writer) (bool, error) {
-	got, err := os.ReadFile(target) //nolint:gosec // G304: target is the workspace-relative path of an embedded sample file, not user input.
-	switch {
-	case err == nil:
-		return false, keepExisting(got, want, rel, warn)
-	case !errors.Is(err, fs.ErrNotExist):
-		return false, fmt.Errorf("quickstart: probe sample file %s: %w", target, err)
-	}
-
-	dir := filepath.Dir(target)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return false, fmt.Errorf("quickstart: create sample directory %s: %w", dir, err)
-	}
-	tmp, err := os.CreateTemp(dir, ".iris-quickstart-*")
-	if err != nil {
-		return false, fmt.Errorf("quickstart: stage sample file %s: %w", rel, err)
-	}
-	tmpName := tmp.Name()
-	_, werr := tmp.Write(want)
-	if cerr := tmp.Close(); werr == nil {
-		werr = cerr
-	}
-	if werr == nil {
-		// CreateTemp opens 0600; the sample is workspace source, so world-readable.
-		werr = os.Chmod(tmpName, 0o644)
-	}
-	if werr != nil {
-		return false, errors.Join(
-			fmt.Errorf("quickstart: stage sample file %s: %w", rel, werr),
-			os.Remove(tmpName),
-		)
-	}
-
-	if err := os.Link(tmpName, target); err != nil {
-		rmErr := os.Remove(tmpName)
-		if errors.Is(err, fs.ErrExist) {
-			// Lost a create race: another writer owns the file now; never clobber it.
-			existing, rerr := os.ReadFile(target) //nolint:gosec // G304: same workspace sample path as above.
-			if rerr != nil {
-				return false, errors.Join(fmt.Errorf("quickstart: re-read sample file %s: %w", target, rerr), rmErr)
+		if !live {
+			if payload, err = embeddedListing(); err != nil {
+				return catalogFault("list", err)
 			}
-			return false, errors.Join(keepExisting(existing, want, rel, warn), rmErr)
 		}
-		return false, errors.Join(fmt.Errorf("quickstart: place sample file %s: %w", target, err), rmErr)
-	}
-	if err := os.Remove(tmpName); err != nil {
-		return true, fmt.Errorf("quickstart: remove staging file %s: %w", tmpName, err)
-	}
-	return true, nil
-}
-
-// keepExisting resolves a present sample target: byte-identical content is the
-// idempotent re-run (silent), different content is the operator's file, kept
-// with one warning line on warn.
-func keepExisting(got, want []byte, rel string, warn io.Writer) error {
-	if bytes.Equal(got, want) {
+		if jsonMode, _ := cmd.Flags().GetBool("json"); jsonMode {
+			return json.NewEncoder(a.out).Encode(dataEnvelope{Data: payload})
+		}
+		for _, e := range payload.Packs {
+			line := fmt.Sprintf("%s  [%s]", e.Name, e.Source)
+			if e.Installed {
+				line += "  ●installed"
+			}
+			if e.Shadowed {
+				line += "  (shadowed)"
+			}
+			if len(e.Tags) > 0 {
+				line += "  " + strings.Join(e.Tags, ",")
+			}
+			fmt.Fprintln(a.out, line)
+			if e.Description != "" {
+				fmt.Fprintf(a.out, "  %s\n", e.Description)
+			}
+		}
+		for _, w := range payload.Warnings {
+			fmt.Fprintf(a.out, "warning: %s\n", w)
+		}
 		return nil
 	}
-	_, err := fmt.Fprintf(warn, "iris: warning: %s exists and differs from the embedded quickstart sample; keeping your file\n", rel)
-	if err != nil {
-		return fmt.Errorf("quickstart: report kept sample file %s: %w", rel, err)
+}
+
+// catalogShow handles `iris catalog show <pack>`: the daemon's view of one pack, embedded fallback with no engine.
+func (a *app) catalogShow() runE {
+	return func(cmd *cobra.Command, args []string) error {
+		payload, live, err := a.fetchCatalogListing(cmd, "show")
+		if err != nil {
+			return err
+		}
+		var entry *api.CatalogPack
+		if live {
+			for i := range payload.Packs {
+				if payload.Packs[i].Name == args[0] && !payload.Packs[i].Shadowed {
+					entry = &payload.Packs[i]
+					break
+				}
+			}
+		} else if p, ok, lerr := catalog.EmbeddedPack(args[0]); lerr != nil {
+			return catalogFault("show", lerr)
+		} else if ok {
+			e := localPackEntry(p)
+			entry = &e
+		}
+		if entry == nil {
+			return catalogFault("show", fmt.Errorf("no such pack %q (run iris catalog list)", args[0]))
+		}
+		if jsonMode, _ := cmd.Flags().GetBool("json"); jsonMode {
+			return json.NewEncoder(a.out).Encode(dataEnvelope{Data: entry})
+		}
+		fmt.Fprintf(a.out, "%s  [%s]\n", entry.Name, entry.Source)
+		if entry.Description != "" {
+			fmt.Fprintf(a.out, "%s\n", entry.Description)
+		}
+		if len(entry.Tags) > 0 {
+			fmt.Fprintf(a.out, "tags: %s\n", strings.Join(entry.Tags, ","))
+		}
+		if entry.Requires != "" {
+			fmt.Fprintf(a.out, "requires: %s\n", entry.Requires)
+		}
+		if entry.SHA256 != "" {
+			fmt.Fprintf(a.out, "sha256: %s\n", entry.SHA256)
+		}
+		if len(entry.Pipelines) > 0 {
+			fmt.Fprintf(a.out, "pipelines: %s\n", strings.Join(entry.Pipelines, ", "))
+		}
+		if len(entry.Files) > 0 {
+			fmt.Fprintln(a.out, "files:")
+			for _, f := range entry.Files {
+				fmt.Fprintf(a.out, "  %s\n", f)
+			}
+		}
+		if len(entry.ApplyOrder) > 0 {
+			fmt.Fprintln(a.out, "apply order:")
+			for _, s := range entry.ApplyOrder {
+				fmt.Fprintf(a.out, "  %s\n", s)
+			}
+		}
+		if entry.Readme != "" {
+			fmt.Fprintf(a.out, "\n%s", entry.Readme)
+		}
+		return nil
 	}
-	return nil
 }

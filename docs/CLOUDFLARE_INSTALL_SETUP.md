@@ -5,7 +5,6 @@ This makes these commands work:
 ```sh
 curl -fsSL https://install.iris-lakehouse.bymarreco.com | bash            # stable
 curl -fsSL https://install.iris-lakehouse.bymarreco.com/snapshot | bash   # rolling development build
-curl -fsSL https://install.iris-lakehouse.bymarreco.com/uninstall.sh | bash
 ```
 
 ## Current accurate steps (as of the latest Cloudflare UI)
@@ -41,26 +40,25 @@ Delete everything and paste this exact code:
 // Makes these work:
 //   curl -fsSL https://install.iris-lakehouse.bymarreco.com | bash            (stable)
 //   curl -fsSL https://install.iris-lakehouse.bymarreco.com/snapshot | bash   (development build)
-//   curl -fsSL https://install.iris-lakehouse.bymarreco.com/uninstall.sh | bash
 
 export default {
   async fetch(request) {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    // Always fetch the real script from the repo
+    // Stable channel: script from repo HEAD
     const base = 'https://raw.githubusercontent.com/MateusAMP2119/iris-lakehouse/HEAD';
+    // Snapshot channel: script from the snapshot release assets, so it always matches the snapshot binary
+    const snap = 'https://github.com/MateusAMP2119/iris-lakehouse/releases/download/snapshot';
 
     if (path === '/' || path === '/install.sh') {
       const target = `${base}/install.sh`;
       return Response.redirect(target, 302);
     }
 
-    // Snapshot channel: same installer, version pinned to the rolling
-    // "snapshot" prerelease. Served inline (not a redirect) so the pin
-    // line can be prepended to the script body.
+    // Served inline (not a redirect) so the version pin line can be prepended
     if (path === '/snapshot') {
-      const res = await fetch(`${base}/install.sh`);
+      const res = await fetch(`${snap}/install.sh`);
       if (!res.ok) {
         return new Response('Upstream fetch of install.sh failed', { status: 502 });
       }
@@ -71,12 +69,7 @@ export default {
       });
     }
 
-    if (path === '/uninstall.sh') {
-      const target = `${base}/uninstall.sh`;
-      return Response.redirect(target, 302);
-    }
-
-    return new Response('Not found. Supported paths: /, /install.sh, /snapshot, /uninstall.sh', {
+    return new Response('Not found. Supported paths: /, /install.sh, /snapshot', {
       status: 404,
       headers: { 'content-type': 'text/plain' }
     });
@@ -107,7 +100,7 @@ You can even run the full installer against the workers.dev URL for testing:
 curl -fsSL https://iris-install.mateus-costa464.workers.dev | bash
 ```
 
-(Use `IRIS_NO_SETUP=1` if you just want to test the download part.)
+(Use `IRIS_DEST=<dir>` to install into a throwaway directory while testing.)
 
 ### 4. Attach your real domain
 
@@ -147,8 +140,6 @@ if (path === '/' || path === '/install.sh') {
   });
 }
 ```
-
-Same for uninstall.sh.
 
 ---
 

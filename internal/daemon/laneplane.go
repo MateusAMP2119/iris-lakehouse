@@ -10,51 +10,61 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/dispatch"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/exec"
+	"github.com/MateusAMP2119/iris-lakehouse/internal/pg"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/store"
 )
 
 // This file is the daemon's leader-side perpetual lane-loop plane: the composition
-// root that turns the persisted lane walk into runs. It builds the four production
-// seams the dispatch.Loop composes -- the walk read (lanes + registered pipelines
-// through BuildWalk), the depends_on pass gate (the same gate the manual path
-// uses), the fresh cause=loop run-start (mint, exec run-scoped for capture
-// attribution, record terminal), and the post-pass bookkeeping (failure propagation
-// along depends_on) -- and wires the whole loop over the single dispatcher on
-// winning leadership.
+// root that turns the persisted lane walk into turns (#206). It builds the seams
+// the dispatch.Loop composes -- the walk read (lanes + registered pipelines through
+// BuildWalk), the depends_on pass gate (the same gate the manual path uses), the
+// fresh cause=loop turn (the resident session's protocol drive), and the post-pass
+// bookkeeping (failure propagation along depends_on, retention pruning) -- and
+// wires the whole loop over the single dispatcher on winning leadership.
 //
-// Run execution here mirrors the manual plane's mint/exec/record shape, with two
-// additions the lane loop needs that the manual path did not: the run's data
-// connection carries the run id as the per-session iris.run_id GUC (pg.InjectRunID)
-// so the capture trigger attributes every write to it, and every started run is
-// tracked in an in-flight table so an operator `iris run cancel` and a self-demotion
-// kill can reach its process group.
+// Under the turn protocol a fresh loop turn mints its run record only when it has
+// something to record: a producing turn mints running, commits its rows and feed
+// position in one data transaction, and completes the run with the turn's stamps;
+// a failed turn mints its run directly dead-lettered (the worklist is the
+// product); a quiet turn writes nothing at all -- no run row, no watermark bump --
+// so the lane parks until the next cause lands. The pipeline process receives no
+// database credentials: the engine feeds declared-read input over stdin and
+// performs declared-write output itself with exact run attribution.
+
+// runCancelDetail is the dead-letter text an operator cancel writes; the lane gate parks on exactly it (#192: a manual stop is not resurrected), while other stopped details (crash reconciliation) never park.
+const runCancelDetail = "run cancelled by iris run cancel"
 
 // lanePlane is the daemon's leader-gated run-cancel handler over the lane loop's runs.
 // It reaches a running lane run's process group through the SHARED in-flight registry
 // (the same one the manual orchestrator tracks into and the self-demotion kill acts
-// through, so one registry serves both paths), and dead-letters it through the single
-// writer. The submitter is installed on winning leadership and cleared on demotion, so
-// a cancel racing a lost lock faults rather than dead-lettering off the single-writer
-// path.
+// through, so one registry serves both paths) and the resident-session registry (a
+// loop turn in flight has no run row to cancel by id; the pipeline-level stop kills
+// its worker there), and dead-letters through the single writer. The submitter is
+// installed on winning leadership and cleared on demotion, so a cancel racing a lost
+// lock faults rather than dead-lettering off the single-writer path.
 type lanePlane struct {
-	logger   *slog.Logger
-	inflight *inflightRuns // shared registry: lane runs are tracked here, cancel reaches them here
+	logger    *slog.Logger
+	inflight  *inflightRuns      // shared registry: pre-minted runs are tracked here, cancel reaches them here
+	residents *residentRuns      // shared resident-session registry: the pipeline stop kills a live worker here
+	latest    store.ManualReader // latest-run resolution for the pipeline-level stop
 
 	mu     sync.Mutex
 	submit dispatch.Submitter // installed on leadership, nil otherwise
 }
 
-// newLanePlane returns a lane plane over the shared in-flight registry. The cancel
-// mutation faults until a leader installs the single-writer submitter.
-func newLanePlane(logger *slog.Logger, inflight *inflightRuns) *lanePlane {
+// newLanePlane returns a lane plane over the shared in-flight and resident
+// registries and the latest-run reader; cancel mutations fault until a leader
+// installs the single-writer submitter.
+func newLanePlane(logger *slog.Logger, inflight *inflightRuns, residents *residentRuns, latest store.ManualReader) *lanePlane {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	return &lanePlane{logger: logger, inflight: inflight}
+	return &lanePlane{logger: logger, inflight: inflight, residents: residents, latest: latest}
 }
 
 // install wires the single-writer submitter (on winning leadership), so a cancel
@@ -73,11 +83,13 @@ func (p *lanePlane) clear() {
 	p.submit = nil
 }
 
-// CancelRun kills a running lane run's process group and dead-letters it as
-// stopped, touching nothing else (only an operator cancel frees a hung run). It is
+// CancelRun kills a running run's process group and dead-letters it as stopped,
+// touching nothing else (only an operator cancel frees a hung run). It is
 // leader-only: with no submitter installed it reports the run is not cancellable
-// here, and a run not tracked in the shared registry (already terminal or never
-// started here) reports not in flight, so the CLI maps each to the right exit.
+// here, and a run not tracked in the shared registry (already terminal, never
+// started here, or a loop turn -- which has no run row while in flight; use the
+// pipeline-level stop) reports not in flight, so the CLI maps each to the right
+// exit.
 func (p *lanePlane) CancelRun(ctx context.Context, runID string) error {
 	p.mu.Lock()
 	submit := p.submit
@@ -87,8 +99,7 @@ func (p *lanePlane) CancelRun(ctx context.Context, runID string) error {
 	}
 	// Kill the whole process group first, through the shared registry: the subprocess
 	// (and every descendant that inherited the group) is gone or going before the run
-	// is parked terminal. The run's own StartFresh goroutine observes the kill when Wait
-	// returns and untracks it. A run absent from the registry is not in flight.
+	// is parked terminal. A run absent from the registry is not in flight.
 	if !p.inflight.kill(runID) {
 		return fmt.Errorf("cancel run %s: %w", runID, dispatch.ErrRunNotInFlight)
 	}
@@ -96,30 +107,97 @@ func (p *lanePlane) CancelRun(ctx context.Context, runID string) error {
 	// guarded on the running state, so it is a no-op if the run has already reached a
 	// terminal state, and only this run is touched.
 	if err := submit.Submit(ctx, func(w *store.Writer) error {
-		return w.DeadLetterRun(ctx, runID, store.ReasonStopped, "run cancelled by iris run cancel")
+		return w.DeadLetterRun(ctx, runID, store.ReasonStopped, runCancelDetail)
 	}); err != nil {
 		return fmt.Errorf("cancel run %s: dead-letter: %w", runID, err)
 	}
 	return nil
 }
 
-// newLaneLoop builds the perpetual lane loop over the single dispatcher (submit), the
-// meta read seams, the process runner, and the data-database DSN a run's scoped
-// connection is derived from. It composes the walk read, the depends_on pass gate, the
-// fresh cause=loop run-start, and the failure-propagation post-pass, and installs the
-// pass-count hook. The returned loop is driven for the duration of a leadership term.
+// CancelPipeline parks a pipeline's loop: inside one single-writer submission it
+// resolves the pipeline's latest run and dead-letters it as stopped (running or
+// queued alike); a pipeline whose latest run is terminal -- or which has NO runs
+// at all, the quiet-loop normal under the turn protocol -- gets a park row minted
+// directly dead-lettered (a never-executed stopped run the lane gate reads), so
+// stop always parks. The live resident worker, if any, is killed after the park
+// is durable, marked cancelled so the turn driver mints nothing for the kill. An
+// already-parked pipeline succeeds idempotently.
+func (p *lanePlane) CancelPipeline(ctx context.Context, pipeline string) (string, error) {
+	p.mu.Lock()
+	submit := p.submit
+	p.mu.Unlock()
+	if submit == nil {
+		return "", dispatch.ErrRunNotInFlight
+	}
+	var runID string
+	var wasRunning, minted bool
+	err := submit.Submit(ctx, func(w *store.Writer) error {
+		info, found, err := p.latest.LatestRun(ctx, pipeline)
+		if err != nil {
+			return fmt.Errorf("stop pipeline %q: read latest run: %w", pipeline, err)
+		}
+		if found {
+			runID = fmt.Sprintf("%d", info.ID)
+		}
+		switch {
+		case found && info.State == store.RunRunning:
+			wasRunning = true
+			return w.DeadLetterRun(ctx, runID, store.ReasonStopped, runCancelDetail)
+		case found && info.State == store.RunQueued:
+			return w.DeadLetterQueuedRun(ctx, runID, store.ReasonStopped, runCancelDetail)
+		case found && info.State == store.RunDeadLettered && info.DeadLetterReason == store.ReasonStopped && info.DeadLetterDetail == runCancelDetail:
+			return nil // already parked: idempotent success
+		default:
+			// Terminal latest, or no runs at all (a quiet loop records nothing):
+			// mint the park row directly dead-lettered, the never-executed stopped
+			// run the lane gate refuses to resurrect.
+			minted = true
+			rec := store.TurnRunRecord{Pipeline: pipeline, Cause: store.CauseManual}
+			return w.DeadLetterTurnRun(ctx, rec, store.ReasonStopped, runCancelDetail)
+		}
+	})
+	if err != nil {
+		return "", err
+	}
+	if minted {
+		if info, found, rerr := p.latest.LatestRun(ctx, pipeline); rerr == nil && found {
+			runID = fmt.Sprintf("%d", info.ID)
+		}
+	}
+	// Kill after the park is durable: the worker dies knowing its terminal record
+	// is already written. The cancelled mark keeps the turn driver from minting a
+	// failed dead letter for the kill; a pre-minted run's own guarded transition
+	// no-ops against the park.
+	if p.residents != nil {
+		p.residents.cancel(pipeline)
+	}
+	if wasRunning {
+		p.inflight.kill(runID)
+	}
+	return runID, nil
+}
+
+// newLaneLoop builds the perpetual lane loop over the single dispatcher (submit),
+// the meta read seams, the process runner, and the data-database turn seam. It
+// composes the walk read, the depends_on pass gate, the fresh cause=loop turn
+// drive, and the failure-propagation post-pass, and installs the pass-count hook.
+// The returned loop is driven for the duration of a leadership term.
 func newLaneLoop(
 	submit dispatch.Submitter,
 	inflight *inflightRuns,
+	residents *residentRuns,
 	workspace string,
+	pluginsRoot string,
+	services *pluginServices,
 	registry store.RegistryReader,
 	manual store.ManualReader,
 	queued store.QueuedManualReader,
 	events *dispatch.Events,
 	runner exec.Runner,
 	journal dispatch.JournalHighWatermark,
+	data turnData,
 	objects *store.ObjectStore,
-	runConn *runConnBuilder,
+	counters *turnCounters,
 	passCounter *dispatch.PassCounter,
 	retention store.RetentionReader,
 	retain int64,
@@ -129,6 +207,9 @@ func newLaneLoop(
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+	if residents == nil {
+		residents = newResidentRuns()
+	}
 	walk := laneWalkReader{registry: registry, manual: manual}
 	gate := lanePassGate{
 		gate:   dispatch.NewGate(consumedReader{manual: manual}),
@@ -136,17 +217,22 @@ func newLaneLoop(
 		latest: manual,
 	}
 	runnerSeam := &laneExec{
-		workspace: workspace,
-		submit:    submit,
-		inflight:  inflight,
-		manual:    manual,
-		queued:    queued,
-		runner:    runner,
-		journal:   journal,
-		objects:   objects,
-		runConn:   runConn,
-		runLogs:   runLogs,
-		logger:    logger,
+		workspace:   workspace,
+		pluginsRoot: pluginsRoot,
+		services:    services,
+		submit:      submit,
+		inflight:    inflight,
+		manual:      manual,
+		queued:      queued,
+		runner:      runner,
+		journal:     journal,
+		data:        data,
+		access:      newAccessCache(),
+		objects:     objects,
+		counters:    counters,
+		runLogs:     runLogs,
+		residents:   residents,
+		logger:      logger,
 	}
 	var deleteLog RunLogPruneFunc
 	if runLogs != nil {
@@ -205,17 +291,18 @@ func (r laneWalkReader) Walk(ctx context.Context) ([]dispatch.Lane, error) {
 // exactly like the manual path: it reads the pipeline's edges (each joined to its
 // upstream's latest run) and evaluates them over the run_inputs consumed check.
 //
-// An edge-less pipeline re-runs indefinitely by design -- the perpetual for-loop
-// -- with exactly one brake, the engine's own no-retry law: "a failed run is
-// never retried; re-execution is only ever an explicit replay". A pipeline whose
-// latest run carries an OUTSTANDING failed dead-letter starts no fresh loop run
-// (re-running a known-broken script back to back is a crash-loop, not
+// An edge-less pipeline gets a turn every pass by design -- the perpetual
+// for-loop -- with exactly one brake, the engine's own no-retry law: "a failed
+// run is never retried; re-execution is only ever an explicit replay". A pipeline
+// whose latest run carries an OUTSTANDING failed dead-letter starts no fresh loop
+// turn (re-running a known-broken script back to back is a crash-loop, not
 // freshness); replay, drain, and a manual run are the surfaces that release the
 // brake -- each removes or supersedes the worklist row the brake reads. A
-// stopped run (operator cancel, wipe --force, crash reconciliation) never parks:
-// the operator ended one run, not the pipeline, and always-alive resumes. A
-// latest run still queued or running skips this turn (it is already in flight --
-// the queued-manual pickup runs ahead of this gate at the same turn).
+// stopped run from crash reconciliation or wipe --force never parks (always-alive
+// resumes), but an operator stop is a manual stop (#192) and parks until a manual
+// run, replay, or drain supersedes it. A latest run still queued or running skips
+// this turn (it is already in flight -- the queued-manual pickup runs ahead of
+// this gate at the same turn).
 type lanePassGate struct {
 	gate   *dispatch.Gate
 	edges  edgeReader
@@ -242,75 +329,322 @@ func (g lanePassGate) Eligible(ctx context.Context, pipeline string) (dispatch.D
 			// a manual run releases the brake. A stopped run or a drained
 			// failure carries no outstanding failed reason and falls through.
 			return dispatch.Decision{}, nil
+		case found && info.State == store.RunDeadLettered && info.DeadLetterReason == store.ReasonStopped && info.DeadLetterDetail == runCancelDetail:
+			// Operator cancel is a manual stop (#192): the loop does not resurrect the pipeline until a manual run, replay, or drain supersedes the stop; a crash-reconciliation stop carries a different detail and falls through (always-alive resumes).
+			return dispatch.Decision{}, nil
 		}
 		return dispatch.Decision{Run: true}, nil
 	}
 	return g.gate.Evaluate(ctx, pipeline, edges)
 }
 
-// laneExec mints, runs, and records the terminal state of a fresh cause=loop run,
-// and starts enqueued lane-member manual runs at their lane boundary. It fills a
-// fresh run record's declaration checksum, mints the queued run through the single
-// writer, execs the subprocess in the pipeline folder with the run-scoped data
-// connection (so the capture trigger attributes its writes), tracks it in-flight for
-// cancellation, awaits its terminal exit, and records the terminal transition through
-// the single writer; a queued manual run skips the mint (the manual path minted it,
-// gate applied and consumption recorded) and rides the same execution body.
+// laneExec drives fresh cause=loop turns and starts enqueued lane-member manual
+// runs at their lane boundary. A fresh turn reuses the pipeline's live resident
+// session (spawning one otherwise), feeds the declared-read delta, collects the
+// output against the declared writes, and records only what happened: a
+// producing turn mints running, commits data atomically, and completes with the
+// turn's stamps; a failed turn mints directly dead-lettered; a quiet turn
+// records nothing. A queued manual run rides the same protocol drive against its
+// pre-minted row.
 type laneExec struct {
-	workspace string
-	submit    dispatch.Submitter
-	inflight  *inflightRuns
-	manual    store.ManualReader
-	queued    store.QueuedManualReader // enqueued lane-member manual runs; nil skips pickup (shape tests)
-	runner    exec.Runner
-	journal   dispatch.JournalHighWatermark
-	objects   *store.ObjectStore
-	runConn   *runConnBuilder // per-run scoped data connection; nil leaves IRIS_DB_URL empty (shape tests)
-	runLogs   *RunLogWriter   // per-run output capture; nil discards (shape tests)
-	logger    *slog.Logger
+	workspace   string
+	pluginsRoot string          // installed-plugins root (~/.iris/plugins); "" refuses plugin-declaring turns
+	services    *pluginServices // service-instance supervisor (#215 stage 3); nil refuses service bindings
+	submit      dispatch.Submitter
+	inflight    *inflightRuns
+	manual      store.ManualReader
+	queued      store.QueuedManualReader // enqueued lane-member manual runs; nil skips pickup (shape tests)
+	runner      exec.Runner
+	journal     dispatch.JournalHighWatermark
+	data        turnData     // data-database turn seam; nil composes shape tests (no feed, producing turns fault)
+	access      *accessCache // per-pipeline declared-access cache keyed by declaration checksum
+	objects     *store.ObjectStore
+	counters    *turnCounters // resident turn tallies for the ps readout; nil skips
+	runLogs     *RunLogWriter // per-run output capture; nil discards (shape tests)
+	residents   *residentRuns // live resident sessions, one per pipeline
+	logger      *slog.Logger
 }
 
-// StartFresh mints and runs rec (cause=loop), blocking until it is terminal. A run
-// that executes and then dead-letters is not an error -- it returns (RunDeadLettered,
-// nil) and the lane proceeds; an error means the run could not be carried out at all
-// (ctx cancellation or a start/record fault) and stops the lane's pass.
+// StartFresh runs one fresh cause=loop turn for rec's pipeline, blocking until
+// the turn ends. A quiet turn (done, no output, no feed consumed) returns
+// RunQuiet and writes nothing anywhere; a producing turn returns RunSucceeded
+// once its data transaction and run record are durable; a failed turn returns
+// (RunDeadLettered, nil) and always records. An error means the turn could not
+// be carried out at all (ctx cancellation or a start/record fault) and stops the
+// lane's pass.
 func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatch.RunOutcome, error) {
 	target, found, err := m.manual.PipelineRunTarget(ctx, rec.Pipeline)
 	if err != nil {
-		return dispatch.RunSucceeded, fmt.Errorf("lane run %q: read run target: %w", rec.Pipeline, err)
+		return dispatch.RunSucceeded, fmt.Errorf("lane turn %q: read run target: %w", rec.Pipeline, err)
 	}
 	if !found {
-		return dispatch.RunSucceeded, fmt.Errorf("lane run %q: pipeline is not registered", rec.Pipeline)
+		return dispatch.RunSucceeded, fmt.Errorf("lane turn %q: pipeline is not registered", rec.Pipeline)
 	}
-	sum, err := declarationChecksum(m.workspace, target.Folder)
+	raw, sum, err := declarationSource(m.workspace, target.Folder)
 	if err != nil {
-		return dispatch.RunSucceeded, fmt.Errorf("lane run %q: %w", rec.Pipeline, err)
+		return dispatch.RunSucceeded, fmt.Errorf("lane turn %q: %w", rec.Pipeline, err)
 	}
-	rec.DeclarationChecksum = sum
 
-	// Mint the queued cause=loop run through the single writer, then read back its
-	// meta-assigned id (the highest run for the pipeline: one goroutine per lane
-	// serializes mints within a lane, and lanes never share a pipeline).
-	if err := m.submit.Submit(ctx, func(w *store.Writer) error { return w.CreateRun(ctx, rec) }); err != nil {
-		return dispatch.RunSucceeded, fmt.Errorf("lane run %q: mint: %w", rec.Pipeline, err)
-	}
-	info, ok, err := m.manual.LatestRun(ctx, rec.Pipeline)
+	ses, err := m.ensureSession(ctx, rec.Pipeline, target, rec.ArtifactHash)
 	if err != nil {
-		return dispatch.RunSucceeded, fmt.Errorf("lane run %q: read minted run: %w", rec.Pipeline, err)
+		return dispatch.RunSucceeded, fmt.Errorf("lane turn %q: start: %w", rec.Pipeline, err)
+	}
+	acc, err := m.access.resolve(rec.Pipeline, sum, raw)
+	if err != nil {
+		return dispatch.RunSucceeded, fmt.Errorf("lane turn %q: %w", rec.Pipeline, err)
+	}
+	var feed pg.TurnFeed
+	if m.data != nil && len(acc.reads) > 0 {
+		if feed, err = m.data.ReadTurnFeed(ctx, rec.Pipeline, acc.reads); err != nil {
+			return dispatch.RunSucceeded, fmt.Errorf("lane turn %q: %w", rec.Pipeline, err)
+		}
+	}
+
+	// Per-turn stderr capture: buffered in memory and flushed into the run-id-keyed
+	// log only if the turn records (a quiet turn's log dies with the turn). A
+	// declared transcript buffers the turn's frame traffic the same way.
+	buf := &turnLogBuffer{}
+	var tr *turnTranscript
+	if target.LogSplit {
+		tr = &turnTranscript{}
+	}
+	ses.drainFrames()
+	ses.out.Set(buf)
+	defer ses.out.Set(nil)
+
+	trec := store.TurnRunRecord{
+		Pipeline:               rec.Pipeline,
+		Cause:                  store.CauseLoop,
+		DeclarationChecksum:    sum,
+		ArtifactHash:           rec.ArtifactHash,
+		Handle:                 ses.handle.PGID(),
+		ConsumedUpstreamRunIDs: rec.ConsumedUpstreamRunIDs,
+	}
+
+	// Declared plugins pin at turn start; a resolution failure refuses the turn
+	// (dead-lettered, always recorded) before any frame is sent (#215). Any
+	// run-lifetime service instance the resolution spawned ends with the turn.
+	rp, perr := resolveTurnPlugins(m.pluginsRoot, acc.plugins, m.runner, buf, m.services,
+		serviceScope{Pipeline: rec.Pipeline, Lane: target.Lane, SpillDir: payloadsDir(m.workspace)})
+	if perr != nil {
+		return m.deadLetterFreshTurn(ctx, trec, target, buf, tr, "plugin resolution failed: "+perr.Error())
+	}
+	defer rp.end()
+	if rp != nil {
+		trec.Plugins = rp.pins
+	}
+
+	res := driveTurn(ctx, ses, ses.nextTurn(), feed.Rows, acc.writes, rp, tr)
+	trec.Calls = res.calls
+	switch res.kind {
+	case turnShutdown:
+		// Term over: end the session outright (the runner's ctx watcher kills the
+		// group too); nothing was recorded, nothing needs reconciling.
+		m.residents.drop(rec.Pipeline)
+		ses.end()
+		return dispatch.RunSucceeded, ctx.Err()
+
+	case turnDone:
+		if len(res.rows) == 0 && len(res.calls) == 0 && !feed.Advanced {
+			m.counters.bump(rec.Pipeline, false)
+			return dispatch.RunQuiet, nil // the quiet turn: two JSON lines, zero writes
+		}
+		if len(res.rows) == 0 && len(res.calls) == 0 {
+			// Input consumed, nothing produced: persist only the feed position (one
+			// small data transaction, no run row -- nothing happened worth a record).
+			if _, err := m.data.CommitTurn(ctx, pg.TurnCommit{Pipeline: rec.Pipeline, Position: feed.Position, AdvancePosition: true}); err != nil {
+				return dispatch.RunSucceeded, fmt.Errorf("lane turn %q: advance feed position: %w", rec.Pipeline, err)
+			}
+			m.counters.bump(rec.Pipeline, false)
+			return dispatch.RunQuiet, nil
+		}
+		if len(res.rows) == 0 {
+			// Calls-only turn (#215): zero declared writes, but external effects
+			// happened -- they must land in the ledger, so the run records. Mint
+			// running (pins and calls ride the mint), advance the consumed feed
+			// position if any, complete with no snapshot stamps.
+			m.counters.bump(rec.Pipeline, true)
+			if err := m.submit.Submit(ctx, func(w *store.Writer) error { return w.CreateTurnRun(ctx, trec) }); err != nil {
+				return dispatch.RunSucceeded, fmt.Errorf("lane turn %q: mint calls-only: %w", rec.Pipeline, err)
+			}
+			id, err := m.mintedRunID(ctx, rec.Pipeline)
+			if err != nil {
+				return dispatch.RunSucceeded, err
+			}
+			runID := strconv.FormatInt(id, 10)
+			ref := m.flushTurnLog(runID, rec.Pipeline, target, buf, tr, "succeeded")
+			if feed.Advanced {
+				if _, cerr := m.data.CommitTurn(ctx, pg.TurnCommit{Pipeline: rec.Pipeline, Position: feed.Position, AdvancePosition: true}); cerr != nil {
+					detail := fmt.Sprintf("turn commit failed: %v", cerr)
+					if derr := m.submit.Submit(ctx, func(w *store.Writer) error {
+						return w.DeadLetterRun(ctx, runID, store.ReasonFailed, detail)
+					}); derr != nil {
+						return dispatch.RunSucceeded, fmt.Errorf("lane turn %s: dead-letter: %w", runID, derr)
+					}
+					return dispatch.RunDeadLettered, nil
+				}
+			}
+			if err := m.submit.Submit(ctx, func(w *store.Writer) error {
+				return w.CompleteTurnRun(ctx, runID, "", 0, 0, ref)
+			}); err != nil {
+				return dispatch.RunSucceeded, fmt.Errorf("lane turn %s: record succeeded: %w", runID, err)
+			}
+			return dispatch.RunSucceeded, nil
+		}
+		if m.data == nil {
+			return dispatch.RunSucceeded, fmt.Errorf("lane turn %q: produced %d rows with no data seam wired", rec.Pipeline, len(res.rows))
+		}
+		// Producing turn: mint running, commit data atomically, complete with the
+		// turn's stamps. A crash between mint and complete leaves a running run
+		// for the next leader's reconciliation -- never data without a record.
+		m.counters.bump(rec.Pipeline, true)
+		if err := m.submit.Submit(ctx, func(w *store.Writer) error { return w.CreateTurnRun(ctx, trec) }); err != nil {
+			return dispatch.RunSucceeded, fmt.Errorf("lane turn %q: mint: %w", rec.Pipeline, err)
+		}
+		id, err := m.mintedRunID(ctx, rec.Pipeline)
+		if err != nil {
+			return dispatch.RunSucceeded, err
+		}
+		runID := strconv.FormatInt(id, 10)
+		ref := m.flushTurnLog(runID, rec.Pipeline, target, buf, tr, "succeeded")
+		stamps, cerr := m.data.CommitTurn(ctx, pg.TurnCommit{
+			Pipeline:        rec.Pipeline,
+			RunID:           id,
+			Writes:          turnWrites(res.rows),
+			Position:        feed.Position,
+			AdvancePosition: feed.Advanced,
+		})
+		if cerr != nil {
+			// The data transaction rolled back whole: rows, stamps, and position
+			// alike. The minted run dead-letters with the refusal (always records).
+			detail := fmt.Sprintf("turn commit failed: %v", cerr)
+			if derr := m.submit.Submit(ctx, func(w *store.Writer) error {
+				return w.DeadLetterRun(ctx, runID, store.ReasonFailed, detail)
+			}); derr != nil {
+				return dispatch.RunSucceeded, fmt.Errorf("lane turn %s: dead-letter: %w", runID, derr)
+			}
+			return dispatch.RunDeadLettered, nil
+		}
+		if err := m.submit.Submit(ctx, func(w *store.Writer) error {
+			return w.CompleteTurnRun(ctx, runID, stamps.SnapshotLSN, stamps.JournalFloor, stamps.JournalCeiling, ref)
+		}); err != nil {
+			return dispatch.RunSucceeded, fmt.Errorf("lane turn %s: record succeeded: %w", runID, err)
+		}
+		return dispatch.RunSucceeded, nil
+
+	case turnErrored:
+		return m.deadLetterFreshTurn(ctx, trec, target, buf, tr, "pipeline error: "+errorTurnDetail(res.end))
+
+	case turnViolated:
+		// The worker's protocol state is untrusted after a violation: record, then
+		// recycle the session so the next turn starts clean.
+		out, err := m.deadLetterFreshTurn(ctx, trec, target, buf, tr, res.violation.Error())
+		m.residents.drop(rec.Pipeline)
+		ses.end()
+		return out, err
+
+	case turnDied:
+		m.residents.drop(rec.Pipeline)
+		if ses.wasCancelled() {
+			// Operator stop: the park row is already durable (the cancel plane
+			// writes before it kills); minting a failed dead letter here would
+			// bury the park under a retryable failure.
+			return dispatch.RunDeadLettered, nil
+		}
+		return m.deadLetterFreshTurn(ctx, trec, target, buf, tr, "worker died mid-turn: "+deathTurnDetail(res.status, ses.out.Tail()))
+	}
+	return dispatch.RunSucceeded, fmt.Errorf("lane turn %q: unknown turn ending", rec.Pipeline)
+}
+
+// deadLetterFreshTurn mints a failed fresh turn's run directly dead-lettered
+// (reason failed, the detail carrying the pipeline's error, the violation with
+// its offending line quoted, or the death disposition) and flushes the turn's
+// buffered log against the minted id. A failed turn always records.
+func (m *laneExec) deadLetterFreshTurn(ctx context.Context, trec store.TurnRunRecord, target store.PipelineRunTarget, buf *turnLogBuffer, tr *turnTranscript, detail string) (dispatch.RunOutcome, error) {
+	m.counters.bump(trec.Pipeline, true)
+	if err := m.submit.Submit(ctx, func(w *store.Writer) error {
+		return w.DeadLetterTurnRun(ctx, trec, store.ReasonFailed, detail)
+	}); err != nil {
+		return dispatch.RunSucceeded, fmt.Errorf("lane turn %q: dead-letter: %w", trec.Pipeline, err)
+	}
+	id, err := m.mintedRunID(ctx, trec.Pipeline)
+	if err != nil {
+		return dispatch.RunSucceeded, err
+	}
+	runID := strconv.FormatInt(id, 10)
+	if ref := m.flushTurnLog(runID, trec.Pipeline, target, buf, tr, "dead_lettered"); ref != "" {
+		if err := m.submit.Submit(ctx, func(w *store.Writer) error { return w.StampRunLogRef(ctx, runID, ref) }); err != nil {
+			m.logger.Warn("lane turn: could not stamp log ref", "run", runID, "err", err)
+		}
+	}
+	return dispatch.RunDeadLettered, nil
+}
+
+// mintedRunID reads back the run id the pipeline's latest mint was assigned (one
+// goroutine per lane serializes a pipeline's mints, and lanes never share a
+// pipeline, so the latest run is the one just minted).
+func (m *laneExec) mintedRunID(ctx context.Context, pipeline string) (int64, error) {
+	info, ok, err := m.manual.LatestRun(ctx, pipeline)
+	if err != nil {
+		return 0, fmt.Errorf("lane turn %q: read minted run: %w", pipeline, err)
 	}
 	if !ok {
-		return dispatch.RunSucceeded, fmt.Errorf("lane run %q: minted run vanished", rec.Pipeline)
+		return 0, fmt.Errorf("lane turn %q: minted run vanished", pipeline)
 	}
-	return m.runToTerminal(ctx, rec.Pipeline, target, info.ID, rec.ArtifactHash)
+	return info.ID, nil
+}
+
+// flushTurnLog writes a recorded turn's buffered capture into the run-id-keyed
+// log under the pipeline's declared recording contract and returns the log
+// reference ("" when capture is off or the open failed). A declared transcript
+// flushes as a frames section ahead of the log section -- the two buffers are
+// separate, so within-turn chronology holds inside each section, not across.
+func (m *laneExec) flushTurnLog(runID, pipeline string, target store.PipelineRunTarget, buf *turnLogBuffer, tr *turnTranscript, outcome string) string {
+	sink, ref := openRunLog(m.runLogs, runID, pipeline, target.LogSplit, target.LogStamp, m.logger)
+	if sink == nil {
+		return ""
+	}
+	tr.flushTo(sink)
+	buf.flushTo(sink)
+	sink.SetOutcome(outcome)
+	closeRunLog(sink)
+	return ref
+}
+
+// ensureSession returns the pipeline's live resident session, recycling a stale
+// one (declared argv, artifact, or folder changed; or the process died between
+// turns) and spawning a fresh one when needed. The child environment is the
+// inherited daemon environment only: no database credentials of any kind (#206).
+func (m *laneExec) ensureSession(ctx context.Context, pipeline string, target store.PipelineRunTarget, artifactHash *string) (*residentSession, error) {
+	argv := dispatch.ResolveRunArgv(target.Argv, artifactHash, m.objects)
+	dir := filepath.Join(m.workspace, target.Folder)
+	key := residentKey(dir, argv)
+
+	ses := m.residents.get(pipeline)
+	if ses != nil && (ses.dead() || ses.key != key) {
+		ses.end()
+		m.residents.drop(pipeline)
+		ses = nil
+	}
+	if ses == nil {
+		var err error
+		ses, err = spawnResident(ctx, m.runner, key, dir, argv, os.Environ())
+		if err != nil {
+			return nil, err
+		}
+		m.residents.put(pipeline, ses)
+	}
+	return ses, nil
 }
 
 // StartQueued starts and awaits pipeline's enqueued cause=manual runs, oldest
 // first, at the member's turn in a lane pass -- the pickup the manual path's
 // RunQueue promised. Each queued run was minted by the manual orchestrator with
-// its gate applied and consumption recorded, so the pickup only executes. A run
-// whose pipeline unregistered since enqueue is deleted as a phantom (it can never
-// start); a run that executes and dead-letters is not an error, the next queued
-// run (and the lane) proceeds.
+// its gate applied and consumption recorded, so the pickup only executes -- as
+// one protocol turn against the pre-minted row. A run whose pipeline
+// unregistered since enqueue is deleted as a phantom (it can never start); a run
+// that executes and dead-letters is not an error, the next queued run (and the
+// lane) proceeds.
 func (m *laneExec) StartQueued(ctx context.Context, pipeline string) error {
 	if m.queued == nil {
 		return nil
@@ -340,65 +674,63 @@ func (m *laneExec) StartQueued(ctx context.Context, pipeline string) error {
 	return nil
 }
 
-// runToTerminal executes an already-minted queued run to its terminal state: it opens
-// the per-run output capture, execs the subprocess in the pipeline folder with the
-// run-scoped data connection, records running, tracks it in-flight for cancel and
-// self-demotion kill, awaits the exit, and records the terminal transition and
-// journal ceiling through the single writer. It is the shared execution body of
-// StartFresh (which mints first) and StartQueued (whose run the manual path
-// minted).
+// runToTerminal executes an already-minted queued run as one protocol turn: it
+// reuses the pipeline's live resident session (spawning one otherwise), records
+// running, drives the turn, commits any produced rows atomically, and records
+// the terminal transition through the single writer. Shared by the queued-manual
+// pickup; the fresh loop path mints at commit instead (StartFresh).
 func (m *laneExec) runToTerminal(ctx context.Context, pipeline string, target store.PipelineRunTarget, id int64, artifactHash *string) (dispatch.RunOutcome, error) {
 	runID := strconv.FormatInt(id, 10)
 
-	// Open the per-run output capture: the run's stdout and stderr stream into
-	// the run-id-keyed log under .iris/logs, and its path is recorded as
-	// runs.log_ref. Capture is best-effort -- a failed open runs the pipeline
-	// uncaptured (warned) rather than blocking dispatch.
-	sink, logRef := openRunLog(m.runLogs, runID, m.logger)
-
-	argv := dispatch.ResolveRunArgv(target.Argv, artifactHash, m.objects)
-	h, err := m.runner.Start(ctx, exec.Spec{
-		Dir:    filepath.Join(m.workspace, target.Folder),
-		Argv:   argv,
-		Env:    m.childEnv(ctx, pipeline, id),
-		Stdout: sink,
-		Stderr: sink,
-	})
+	ses, err := m.ensureSession(ctx, pipeline, target, artifactHash)
 	if err != nil {
-		closeRunLog(sink)
 		// Nothing started: remove the queued run so meta carries no phantom.
 		if derr := m.submit.Submit(ctx, func(w *store.Writer) error { return w.DeleteQueuedRun(ctx, runID) }); derr != nil {
 			m.logger.Warn("lane run: could not delete queued run after start failure", "run", runID, "err", derr)
 		}
 		return dispatch.RunSucceeded, fmt.Errorf("lane run %q: start: %w", pipeline, err)
 	}
-	defer closeRunLog(sink)
+	raw, sum, err := declarationSource(m.workspace, target.Folder)
+	if err != nil {
+		return dispatch.RunSucceeded, fmt.Errorf("lane run %q: %w", pipeline, err)
+	}
+	acc, err := m.access.resolve(pipeline, sum, raw)
+	if err != nil {
+		return dispatch.RunSucceeded, fmt.Errorf("lane run %q: %w", pipeline, err)
+	}
+	var feed pg.TurnFeed
+	if m.data != nil && len(acc.reads) > 0 {
+		if feed, err = m.data.ReadTurnFeed(ctx, pipeline, acc.reads); err != nil {
+			return dispatch.RunSucceeded, fmt.Errorf("lane run %q: %w", pipeline, err)
+		}
+	}
 
-	// Record the started run running with its process-group handle and log
-	// reference. If that write fails, the subprocess is already running but
-	// unrecorded -- kill its group and drain before returning, so no orphaned,
-	// untracked process escapes.
-	if err := m.submit.Submit(ctx, func(w *store.Writer) error { return w.MarkRunRunning(ctx, runID, h.PGID(), logRef) }); err != nil {
-		_ = h.Kill()
-		_, _ = h.Wait()
+	// Pre-minted run: the id exists, so the log opens up front and stderr streams
+	// into it live for the duration of the turn, framed per the declared contract.
+	sink, logRef := openRunLog(m.runLogs, runID, pipeline, target.LogSplit, target.LogStamp, m.logger)
+	ses.drainFrames()
+	ses.out.Set(sink)
+	defer func() {
+		ses.out.Set(nil)
+		closeRunLog(sink)
+	}()
+
+	// Record running with the session's group handle; on a record failure end the
+	// session so no unrecorded process escapes.
+	if err := m.submit.Submit(ctx, func(w *store.Writer) error { return w.MarkRunRunning(ctx, runID, ses.handle.PGID(), logRef) }); err != nil {
+		ses.end()
+		m.residents.drop(pipeline)
 		return dispatch.RunSucceeded, fmt.Errorf("lane run %s: record running: %w", runID, err)
 	}
 
-	// Track in the shared in-flight registry so a cancel or self-demotion kill can reach
-	// the group; drop it once the run is reaped below.
-	m.inflight.track(runID, h)
+	// Track in the shared in-flight registry so a cancel or self-demotion kill
+	// reaches the group; untracked once terminal.
+	m.inflight.track(runID, ses.handle)
 	defer m.inflight.untrack(runID)
 
-	status, waitErr := h.Wait()
-	if waitErr != nil {
-		m.logger.Warn("lane run: output capture bound reached", "run", runID, "err", waitErr)
-	}
-
-	if status.Signaled || status.Code != 0 {
-		// The run failed (or was cancelled). DeadLetterRun is guarded on the running
-		// state, so if a cancel already dead-lettered it as stopped this is a no-op and
-		// the stopped reason stands. The lane proceeds -- composer order never gates.
-		detail := fmt.Sprintf("lane run dead-lettered: %s", exitDetail(status))
+	deadLetter := func(detail string) (dispatch.RunOutcome, error) {
+		sink.SetOutcome("dead_lettered")
+		// Guarded on the running state, so a cancel's stopped reason stands.
 		if derr := m.submit.Submit(ctx, func(w *store.Writer) error {
 			return w.DeadLetterRun(ctx, runID, store.ReasonFailed, detail)
 		}); derr != nil {
@@ -410,6 +742,65 @@ func (m *laneExec) runToTerminal(ctx context.Context, pipeline string, target st
 		return dispatch.RunDeadLettered, nil
 	}
 
+	// Declared plugins pin at run start; a resolution failure refuses the run (#215).
+	rp, perr := resolveTurnPlugins(m.pluginsRoot, acc.plugins, m.runner, sink, m.services,
+		serviceScope{Pipeline: pipeline, Lane: target.Lane, SpillDir: payloadsDir(m.workspace)})
+	if perr != nil {
+		m.counters.bump(pipeline, true)
+		return deadLetter("plugin resolution failed: " + perr.Error())
+	}
+	defer rp.end()
+
+	res := driveTurn(ctx, ses, ses.nextTurn(), feed.Rows, acc.writes, rp, sink)
+	if res.kind != turnShutdown {
+		m.counters.bump(pipeline, true) // a pre-minted run's row always records
+		if rp != nil {
+			prec := store.TurnRunRecord{Plugins: rp.pins, Calls: res.calls}
+			if lerr := m.submit.Submit(ctx, func(w *store.Writer) error { return w.RecordRunPlugins(ctx, runID, prec) }); lerr != nil {
+				m.logger.Warn("lane run: could not record plugin ledger", "run", runID, "err", lerr)
+			}
+		}
+	}
+	// The declared stamp's close line carries the run's ending (the deferred
+	// close writes it); a dead-letter on any later path overwrites it below.
+	if res.kind == turnShutdown {
+		sink.SetOutcome("shutdown")
+	}
+	switch res.kind {
+	case turnShutdown:
+		// Term over: end the session outright; the row is the next leader's to reconcile.
+		m.residents.drop(pipeline)
+		ses.end()
+		return dispatch.RunSucceeded, ctx.Err()
+	case turnErrored:
+		return deadLetter("pipeline error: " + errorTurnDetail(res.end))
+	case turnViolated:
+		out, err := deadLetter(res.violation.Error())
+		m.residents.drop(pipeline)
+		ses.end()
+		return out, err
+	case turnDied:
+		m.residents.drop(pipeline)
+		return deadLetter("worker died mid-turn: " + deathTurnDetail(res.status, ses.out.Tail()))
+	}
+
+	// Done: commit any produced rows (and the consumed feed position) atomically,
+	// attributed to the pre-minted run, then record the terminal transition.
+	if len(res.rows) > 0 || feed.Advanced {
+		if m.data == nil {
+			return deadLetter(fmt.Sprintf("turn produced %d rows with no data seam wired", len(res.rows)))
+		}
+		if _, cerr := m.data.CommitTurn(ctx, pg.TurnCommit{
+			Pipeline:        pipeline,
+			RunID:           id,
+			Writes:          turnWrites(res.rows),
+			Position:        feed.Position,
+			AdvancePosition: feed.Advanced,
+		}); cerr != nil {
+			return deadLetter(fmt.Sprintf("turn commit failed: %v", cerr))
+		}
+	}
+	sink.SetOutcome("succeeded")
 	if serr := m.submit.Submit(ctx, func(w *store.Writer) error { return w.MarkRunSucceeded(ctx, runID) }); serr != nil {
 		return dispatch.RunSucceeded, fmt.Errorf("lane run %s: record succeeded: %w", runID, serr)
 	}
@@ -419,14 +810,10 @@ func (m *laneExec) runToTerminal(ctx context.Context, pipeline string, target st
 	return dispatch.RunSucceeded, nil
 }
 
-// childEnv builds a lane run's environment: the inherited daemon environment plus
-// the run-scoped data connection under IRIS_DB_URL -- the pipeline's own
-// least-privilege login role, carrying the run id as the per-session iris.run_id
-// GUC so the capture trigger attributes every write to this run. A run with no
-// data connection wired still receives the variable, empty, so a run resolves
-// its connection from one place.
-func (m *laneExec) childEnv(ctx context.Context, pipeline string, runID int64) []string {
-	return append(os.Environ(), dispatch.DBConnEnvVar+"="+m.runConn.dsnFor(ctx, pipeline, runID))
+// residentKey fingerprints what a resident process was spawned as (folder,
+// argv); a changed key recycles the session at the next turn.
+func residentKey(dir string, argv []string) string {
+	return dir + "\x00" + strings.Join(argv, "\x00")
 }
 
 // pruneEveryRuns is the count-based prune cadence: a lane's retention prune runs
@@ -444,9 +831,9 @@ const pruneEveryRuns = 16
 // the immediate failed_upstream and the poisoned upstream run(s) for lineage) and
 // count-based retention pruning (each lane pipeline's runs beyond the newest
 // `retain` are archived into run_summaries and deleted, sparing runs held by
-// outstanding dead letters). A pass that started nothing runs no retention work
-// at all -- the run set it prunes cannot have grown -- so an empty pass costs the
-// post-pass zero reads and zero writes; started runs accumulate per lane and the
+// outstanding dead letters). A pass that recorded nothing runs no retention work
+// at all -- the run set it prunes cannot have grown -- so a quiet pass costs the
+// post-pass zero reads and zero writes; recorded runs accumulate per lane and the
 // prune runs on the pruneEveryRuns cadence.
 type lanePostPass struct {
 	workspace string
@@ -472,7 +859,7 @@ func (p *lanePostPass) AfterPass(ctx context.Context, report dispatch.PassReport
 		return err
 	}
 	if len(report.Started) == 0 {
-		// Nothing started: the lane's run set did not grow, so there is nothing
+		// Nothing recorded: the lane's run set did not grow, so there is nothing
 		// new to prune. Zero retention reads, zero writes.
 		return nil
 	}
@@ -583,15 +970,24 @@ func (p *lanePostPass) pruneRetention(ctx context.Context, report dispatch.PassR
 	return nil
 }
 
+// declarationSource reads the pipeline's declaration file and returns its raw
+// bytes plus their SHA-256 hex digest -- the value stamped as a run's
+// declaration_checksum, and the key under which the turn driver caches the
+// declaration's resolved access (the two always move together).
+func declarationSource(workspace, folder string) ([]byte, string, error) {
+	path := filepath.Join(workspace, folder, "iris-declare.yaml")
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: the declaration is an engine-registered pipeline folder under the leader's own workspace.
+	if err != nil {
+		return nil, "", fmt.Errorf("read declaration for checksum (%s): %w", path, err)
+	}
+	sum := sha256.Sum256(raw)
+	return raw, hex.EncodeToString(sum[:]), nil
+}
+
 // declarationChecksum reads the pipeline's declaration file and returns its SHA-256 hex
 // digest, the value stamped as a run's declaration_checksum (recorded on every run,
 // including a never-executed propagated one).
 func declarationChecksum(workspace, folder string) (string, error) {
-	path := filepath.Join(workspace, folder, "iris-declare.yaml")
-	raw, err := os.ReadFile(path) //nolint:gosec // G304: the declaration is an engine-registered pipeline folder under the leader's own workspace.
-	if err != nil {
-		return "", fmt.Errorf("read declaration for checksum (%s): %w", path, err)
-	}
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:]), nil
+	_, sum, err := declarationSource(workspace, folder)
+	return sum, err
 }

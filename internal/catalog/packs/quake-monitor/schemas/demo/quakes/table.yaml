@@ -1,0 +1,26 @@
+schema: demo
+table: quakes
+columns:
+  - name: id
+    type: text
+    primary_key: true
+  - name: occurred_at
+    type: timestamptz
+    nullable: false
+  - name: latitude
+    type: double
+  - name: longitude
+    type: double
+  - name: depth_km
+    type: double
+  - name: magnitude
+    type: double
+  - name: place
+    type: text
+  - name: event_type
+    type: text
+  - name: status
+    type: text
+  - name: fetched_at
+    type: timestamptz
+    default: now()

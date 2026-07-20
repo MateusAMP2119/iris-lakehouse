@@ -60,14 +60,27 @@ type DeadImpactHandler interface {
 	Impact(ctx context.Context, runID string) (any, error)
 }
 
-// RunLogsHandler serves GET /runs/{id}/logs: the run's captured stdout/stderr,
+// LogsOptions selects a view of a run's captured output. The zero value is the
+// naturalized default: a framed capture rendered interleaved with its protocol
+// frames and stamps marked, a legacy raw capture byte-for-byte.
+type LogsOptions struct {
+	// Stream filters a framed capture to one stream: "log" (the pipeline's
+	// stderr lines) or "frames" (the protocol transcript). Empty keeps all.
+	Stream string
+	// Format selects the wire rendering: "tagged" streams the framed file
+	// verbatim (the TUI parses the tags itself). Empty naturalizes.
+	Format string
+}
+
+// RunLogsHandler serves GET /runs/{id}/logs: the run's captured output,
 // streamed as plain text (a log is raw process output, never an envelope). The
 // daemon implements it over the per-run log files under its own workspace; the
 // mux depends only on this interface.
 type RunLogsHandler interface {
-	// Logs opens the run's captured output for streaming. The mux closes the
-	// returned reader. A run with no captured output is an error naming why.
-	Logs(ctx context.Context, id string) (io.ReadCloser, error)
+	// Logs opens the run's captured output for streaming under the given view.
+	// The mux closes the returned reader. A run with no captured output is an
+	// error naming why.
+	Logs(ctx context.Context, id string, opts LogsOptions) (io.ReadCloser, error)
 }
 
 // The default (unwired) read-route faults. A route reaching its no* handler means
@@ -114,7 +127,7 @@ func (noDeadImpact) Impact(context.Context, string) (any, error) { return nil, E
 // noRunLogs is the default RunLogsHandler before one is wired.
 type noRunLogs struct{}
 
-func (noRunLogs) Logs(context.Context, string) (io.ReadCloser, error) {
+func (noRunLogs) Logs(context.Context, string, LogsOptions) (io.ReadCloser, error) {
 	return nil, ErrRunLogsUnavailable
 }
 
@@ -243,8 +256,10 @@ func (m *mux) serveRunTrace(w http.ResponseWriter, r *http.Request, id string) {
 	WriteData(w, http.StatusOK, res)
 }
 
-// serveRunLogs handles GET /runs/{id}/logs: the run's captured stdout/stderr,
-// streamed as plain text -- raw process output, never a JSON envelope. An
+// serveRunLogs handles GET /runs/{id}/logs: the run's captured output,
+// streamed as plain text -- raw process output, never a JSON envelope. The
+// optional ?stream=log|frames filters a framed capture; ?format=tagged streams
+// the framed file verbatim (mutually exclusive with a stream filter). An
 // unwired reader is a 500 internal fault; a run with no captured output is an
 // operation failure naming why.
 func (m *mux) serveRunLogs(w http.ResponseWriter, r *http.Request, id string) {
@@ -252,10 +267,26 @@ func (m *mux) serveRunLogs(w http.ResponseWriter, r *http.Request, id string) {
 		WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET "+r.URL.Path+" only")
 		return
 	}
-	if !noParams(w, r) {
+	opts := LogsOptions{Stream: r.URL.Query().Get("stream"), Format: r.URL.Query().Get("format")}
+	for k := range r.URL.Query() {
+		if k != "stream" && k != "format" {
+			WriteError(w, http.StatusBadRequest, CodeBadRequest, "unknown parameter "+k+"; run logs accepts stream and format")
+			return
+		}
+	}
+	if opts.Stream != "" && opts.Stream != "log" && opts.Stream != "frames" {
+		WriteError(w, http.StatusBadRequest, CodeBadRequest, `stream must be "log" or "frames"`)
 		return
 	}
-	rc, err := m.runLogs.Logs(r.Context(), id)
+	if opts.Format != "" && opts.Format != "tagged" {
+		WriteError(w, http.StatusBadRequest, CodeBadRequest, `format must be "tagged"`)
+		return
+	}
+	if opts.Format == "tagged" && opts.Stream != "" {
+		WriteError(w, http.StatusBadRequest, CodeBadRequest, "format=tagged streams the whole framed capture; it excludes a stream filter")
+		return
+	}
+	rc, err := m.runLogs.Logs(r.Context(), id, opts)
 	if err != nil {
 		if errors.Is(err, ErrRunLogsUnavailable) {
 			WriteError(w, http.StatusInternalServerError, string(CodeInternal), err.Error())

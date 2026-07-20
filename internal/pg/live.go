@@ -23,9 +23,8 @@ import (
 // The client serves two provisioning needs: it Execs the CREATE / ALTER / trigger DDL
 // the provisioner emits, and it reads the live-Postgres
 // view the provisioner diffs the declared world against so a re-apply is a no-op. It
-// is exercised against a real Postgres at conformance tier (the one tier with a live
-// database), the single place the live-view reads and the generated DDL meet a real
-// catalog.
+// meets a real Postgres catalog only inside a live engine; the suite drives it
+// through fakes.
 
 // LiveViewReader reads the data database's current physical state as provisioning
 // needs it. *Client is the production implementation; a fake satisfies it in tests
@@ -256,8 +255,9 @@ func (c *Client) Query(ctx context.Context, sql string, args ...any) (interface 
 	return c.pool.Query(ctx, sql, args...)
 }
 
-// CompactJournalRange nulls released pre-images and folds dups (conformance helper).
-// Performed in one transaction so compaction is atomic (multi-statement state change).
+// CompactJournalRange nulls released pre-images and folds dups (the seal
+// compaction step). Performed in one transaction so compaction is atomic
+// (multi-statement state change).
 func (c *Client) CompactJournalRange(ctx context.Context, from, to int64) error {
 	if from <= 0 {
 		from = 0

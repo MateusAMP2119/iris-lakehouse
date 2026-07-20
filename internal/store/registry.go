@@ -58,6 +58,24 @@ type PipelineRow struct {
 	// DataMode is the data mode written when the row is first inserted; a re-apply
 	// preserves the existing value (promote owns it).
 	DataMode DataMode
+	// LogSplit is the declared stdout/stderr split of the pipeline's run-log
+	// recording contract (pipeline_logs.split); false when the block is omitted.
+	LogSplit bool
+	// LogStamp is the declared metadata stamp of the pipeline's run-log
+	// recording contract (pipeline_logs.stamp); false when the block is omitted.
+	LogStamp bool
+	// Plugins are the declared plugin bindings (pipeline_plugins rows), rewritten wholesale on apply.
+	Plugins []PipelinePluginRow
+}
+
+// PipelinePluginRow is one declared plugin binding (a pipeline_plugins row).
+type PipelinePluginRow struct {
+	// Alias is the binding's alias, the call-verb prefix.
+	Alias string
+	// Ref is the bound "name@version" reference.
+	Ref string
+	// Lifetime is the declared lifetime (run, lane, resident).
+	Lifetime string
 }
 
 // DependencyEdge is one persisted depends_on edge: From (the dependent) depends on
@@ -125,6 +143,19 @@ const (
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (name) DO UPDATE SET folder = EXCLUDED.folder, run = EXCLUDED.run`
 
+	// pipelineLogsUpsertSQL records the pipeline's declared run-log recording
+	// contract; a re-apply rewrites it wholesale (an omitted block re-applies the
+	// engine default, false/false).
+	pipelineLogsUpsertSQL = `INSERT INTO pipeline_logs (pipeline, split, stamp)
+VALUES ($1, $2, $3)
+ON CONFLICT (pipeline) DO UPDATE SET split = EXCLUDED.split, stamp = EXCLUDED.stamp`
+
+	// deletePipelinePluginsSQL clears a pipeline's plugin bindings for the wholesale re-apply rewrite.
+	deletePipelinePluginsSQL = `DELETE FROM pipeline_plugins WHERE pipeline = $1`
+
+	// insertPipelinePluginSQL writes one declared plugin binding.
+	insertPipelinePluginSQL = `INSERT INTO pipeline_plugins (pipeline, alias, ref, lifetime) VALUES ($1, $2, $3, $4)`
+
 	// deleteDependenciesSQL clears a pipeline's outgoing depends_on edges so a
 	// re-apply replaces them wholesale rather than accumulating stale rows.
 	deleteDependenciesSQL = `DELETE FROM dependencies WHERE from_pipeline = $1`
@@ -162,8 +193,13 @@ func (w *Writer) RegisterPipeline(ctx context.Context, row PipelineRow, dependsO
 	}
 	stmts := []Statement{
 		{SQL: pipelineUpsertSQL, Args: []any{row.Name, row.Folder, string(runJSON), string(row.Artifact), string(row.DataMode)}},
-		{SQL: deleteDependenciesSQL, Args: []any{row.Name}},
+		{SQL: pipelineLogsUpsertSQL, Args: []any{row.Name, row.LogSplit, row.LogStamp}},
+		{SQL: deletePipelinePluginsSQL, Args: []any{row.Name}},
 	}
+	for _, p := range row.Plugins {
+		stmts = append(stmts, Statement{SQL: insertPipelinePluginSQL, Args: []any{row.Name, p.Alias, p.Ref, p.Lifetime}})
+	}
+	stmts = append(stmts, Statement{SQL: deleteDependenciesSQL, Args: []any{row.Name}})
 	for _, dep := range dedupeKeepOrder(dependsOn) {
 		stmts = append(stmts, Statement{SQL: insertDependencySQL, Args: []any{row.Name, dep}})
 	}

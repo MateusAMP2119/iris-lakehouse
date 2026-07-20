@@ -99,9 +99,10 @@ func (a *app) newRootCommand() *cobra.Command {
 		a.deadletterCmd(),
 		a.endpointCmd(),
 		a.patCmd(),
+		a.pluginCmd(),
+		a.catalogCmd(),
 		a.updateCmd(),
 		a.uninstallCmd(),
-		a.quickstartCmd(),
 	)
 	return root
 }
@@ -208,6 +209,10 @@ func (a *app) pipelineCmd() *cobra.Command {
 		Use: "run <name>", Short: "Trigger a manual one-off run",
 		Args: cobra.ExactArgs(1), RunE: a.pipelineRun(),
 	}
+	stop := &cobra.Command{
+		Use: "stop <name>", Short: "Park the pipeline's loop (a later manual run, replay, or drain resumes it)",
+		Args: cobra.ExactArgs(1), RunE: a.pipelineStop(),
+	}
 	list := &cobra.Command{
 		Use: "list", Short: "List pipelines with a queued or running run",
 		Args: cobra.NoArgs, RunE: a.pipelineList(),
@@ -219,7 +224,7 @@ func (a *app) pipelineCmd() *cobra.Command {
 	}
 
 	return a.group("pipeline", "Operate on a single pipeline",
-		daemonTouching(build), daemonTouching(promote), daemonTouching(run), daemonTouching(list), daemonTouching(show))
+		daemonTouching(build), daemonTouching(promote), daemonTouching(run), daemonTouching(stop), daemonTouching(list), daemonTouching(show))
 }
 
 // runCmd builds `iris run`: execution-record reads and cancel.
@@ -244,6 +249,9 @@ func (a *app) runCmd() *cobra.Command {
 		Use: "logs <run>", Short: "Print a run's captured output",
 		Args: cobra.ExactArgs(1), RunE: a.runLogs(),
 	}
+	logs.Flags().Bool("log", false, "framed captures: only the pipeline's log lines")
+	logs.Flags().Bool("frames", false, "framed captures: only the protocol transcript")
+	logs.Flags().Bool("tagged", false, "framed captures: the raw tagged file, unrendered")
 	cancel := &cobra.Command{
 		Use: "cancel <run>", Short: "Cancel one running run (kills its process group)",
 		Args: cobra.ExactArgs(1), RunE: a.runCancel(),
@@ -329,6 +337,7 @@ func (a *app) engineCmd() *cobra.Command {
 		Args: cobra.NoArgs, RunE: a.engineServiceInstall(),
 	}
 	svcInstall.Flags().String("path", "", "write the unit to this path instead of the engine-home default")
+	svcInstall.Flags().Bool("autostart", false, "also enable and start the unit: the engine runs at login and restarts on failure (docker-style always-on)")
 	svcUninstall := &cobra.Command{
 		Use: "uninstall", Short: "Remove the installed service unit",
 		Args: cobra.NoArgs, RunE: a.engineServiceUninstall(),

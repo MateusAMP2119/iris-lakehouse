@@ -8,8 +8,7 @@ import (
 // are the only database clients: no other shipped package -- archive included --
 // may open a third path by importing the pgx driver. archive reuses store and pg;
 // it never holds pgx itself. The check is the static proxy for "two clients, two
-// databases, never crossed"; the meta-vs-data DSN split is proven in the
-// conformance suite elsewhere. Synthetic graphs plant a pgx import in packages
+// databases, never crossed". Synthetic graphs plant a pgx import in packages
 // that must not have one, then the real repo (which has no pgx import at all yet)
 // must be clean.
 func TestStorePgSoleDBClients(t *testing.T) {
@@ -24,11 +23,10 @@ func TestStorePgSoleDBClients(t *testing.T) {
 	})
 
 	t.Run("a harness fake may import pgx", func(t *testing.T) {
-		// pg/pgtest and the conformance harness drive Postgres in tests; the sole-
-		// client rule bounds the shipped product, not the scaffolding.
+		// pg/pgtest drives Postgres in tests; the sole-client rule bounds the
+		// shipped product, not the scaffolding.
 		g := synthGraph(
 			pkg("pg/pgtest", pgxImport),
-			pkg("conformance", pgxImport),
 		)
 		if vs := g.CheckDBClients(); len(vs) != 0 {
 			t.Errorf("CheckDBClients flagged harness pgx imports: %v", vs)

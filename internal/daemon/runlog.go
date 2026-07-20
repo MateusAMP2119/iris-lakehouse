@@ -3,9 +3,12 @@ package daemon
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"strings"
 
+	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/config"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/dispatch"
 )
@@ -85,28 +88,90 @@ func (w *RunLogWriter) Open(runID string) (dispatch.WriteCloser, string, error) 
 // run paths stream output through.
 var _ dispatch.RunLog = (*RunLogWriter)(nil)
 
-// openRunLog opens the per-run output sink through logs, best-effort: capture
-// never blocks dispatch, so a nil writer (shape tests) or a failed open runs the
-// pipeline uncaptured -- (nil, "") with the failure warned -- and runs.log_ref
-// stays NULL for that run.
-func openRunLog(logs *RunLogWriter, runID string, logger *slog.Logger) (dispatch.WriteCloser, string) {
+// openRunLog opens the per-run output capture through logs under the
+// pipeline's declared recording contract, best-effort: capture never blocks
+// dispatch, so a nil writer (shape tests) or a failed open runs the pipeline
+// uncaptured -- (nil, "") with the failure warned -- and runs.log_ref stays
+// NULL for that run. A contract declaring split or stamp yields a line-framed
+// capture (its #| identity header marks the file framed); the default contract
+// is the legacy raw stderr capture, ref and bytes unchanged.
+func openRunLog(logs *RunLogWriter, runID, pipeline string, split, stamp bool, logger *slog.Logger) (*runCapture, string) {
 	if logs == nil {
 		return nil, ""
 	}
-	sink, ref, err := logs.Open(runID)
+	f, ref, err := logs.Create(runID)
 	if err != nil {
 		if logger != nil {
 			logger.Warn("run log: open failed; run output is not captured", "run", runID, "err", err)
 		}
 		return nil, ""
 	}
-	return sink, ref
+	return newRunCapture(f, runID, pipeline, split, stamp), ref
 }
 
-// closeRunLog closes a run's output sink once the run is reaped; a nil sink (an
-// uncaptured run) is a no-op.
-func closeRunLog(sink dispatch.WriteCloser) {
+// closeRunLog closes a run's output capture once the run is reaped; a nil
+// capture (an uncaptured run) is a no-op.
+func closeRunLog(sink *runCapture) {
 	if sink != nil {
 		_ = sink.Close()
 	}
+}
+
+// runLogMetaTailCap bounds the tail read runLogMeta scans for the capture's
+// last line; a longer final line reports its retained tail.
+const runLogMetaTailCap = 4096
+
+// runLogMeta stats the run's local capture file and reads its last line for
+// the ps readout's per-run log metadata. It answers nil -- no metadata rides
+// the row -- when capture is off, the file is absent (the run executed on
+// another host or was pruned), or the file cannot be read; ps never fabricates.
+func runLogMeta(logs *RunLogWriter, runID string) *api.PsRunLog {
+	if logs == nil {
+		return nil
+	}
+	path := logs.Ref(runID)
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+	meta := &api.PsRunLog{Ref: path, SizeBytes: info.Size()}
+	f, err := os.Open(path) //nolint:gosec // G304: the path is the engine-owned run log under the engine home, keyed by an engine-assigned run id.
+	if err != nil {
+		return meta
+	}
+	defer func() { _ = f.Close() }()
+
+	head := make([]byte, 2)
+	if n, _ := io.ReadFull(f, head); n == 2 {
+		meta.Framed = dispatch.FramedCapture(string(head))
+	}
+	if last, ok := lastCaptureLine(f, info.Size()); ok {
+		if meta.Framed {
+			if rendered, keep := renderCaptureLine(last, ""); keep {
+				meta.LastLine = rendered
+			}
+		} else {
+			meta.LastLine = last
+		}
+	}
+	return meta
+}
+
+// lastCaptureLine reads the file's last non-empty line from a bounded tail.
+func lastCaptureLine(f *os.File, size int64) (string, bool) {
+	off := size - runLogMetaTailCap
+	if off < 0 {
+		off = 0
+	}
+	buf := make([]byte, size-off)
+	if _, err := f.ReadAt(buf, off); err != nil && !errors.Is(err, io.EOF) {
+		return "", false
+	}
+	lines := strings.Split(strings.TrimRight(string(buf), "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if lines[i] != "" {
+			return lines[i], true
+		}
+	}
+	return "", false
 }

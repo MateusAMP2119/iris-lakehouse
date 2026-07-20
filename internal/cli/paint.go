@@ -2,16 +2,13 @@ package cli
 
 import (
 	"os"
-	"strings"
 )
 
-// The ANSI SGR codes for the lifecycle-command terminal ceremony. They match the
-// bright palette the curl installer and uninstaller paint (install.sh /
-// uninstall.sh): bright red/yellow/green/cyan/blue/magenta, plus dim and reset.
-// Raw escape codes keep this dependency-free.
+// ANSI SGR codes for the lifecycle ceremony, matching install.sh's palette; raw escapes keep this dependency-free.
 const (
 	ansiReset   = "\033[0m"
 	ansiDim     = "\033[2m"
+	ansiInverse = "\033[7m"
 	ansiRed     = "\033[1;31m"
 	ansiYellow  = "\033[1;33m"
 	ansiGreen   = "\033[1;32m"
@@ -19,10 +16,6 @@ const (
 	ansiBlue    = "\033[1;34m"
 	ansiMagenta = "\033[1;35m"
 )
-
-// rainbowPalette is the per-letter color cycle of the "Goodbye" farewell,
-// matching uninstall.sh (R, Y, G, C, B, M, then wrapping).
-var rainbowPalette = []string{ansiRed, ansiYellow, ansiGreen, ansiCyan, ansiBlue, ansiMagenta}
 
 // painter renders the lifecycle-command terminal ceremony. When enabled its
 // methods wrap text in ANSI SGR codes; when disabled every method returns its
@@ -58,26 +51,7 @@ func (p painter) paint(code, s string) string {
 func (p painter) green(s string) string   { return p.paint(ansiGreen, s) }
 func (p painter) cyan(s string) string    { return p.paint(ansiCyan, s) }
 func (p painter) magenta(s string) string { return p.paint(ansiMagenta, s) }
-func (p painter) yellow(s string) string  { return p.paint(ansiYellow, s) }
 func (p painter) dim(s string) string     { return p.paint(ansiDim, s) }
-
-// rainbow renders s one bright color per rune (cycling R, Y, G, C, B, M), the
-// farewell gradient of uninstall.sh. When disabled it returns s unchanged, so the
-// plain "Goodbye from iris." line stays byte-exact.
-func (p painter) rainbow(s string) string {
-	if !p.enabled {
-		return s
-	}
-	var b strings.Builder
-	i := 0
-	for _, r := range s {
-		b.WriteString(rainbowPalette[i%len(rainbowPalette)])
-		b.WriteRune(r)
-		i++
-	}
-	b.WriteString(ansiReset)
-	return b.String()
-}
 
 // newPainter builds the painter for one invocation, resolving the terminal gate
 // through the injected isTTY seam or, in production, the real stdout stat.

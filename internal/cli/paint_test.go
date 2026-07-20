@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-	"unicode/utf8"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/update"
 )
@@ -65,40 +64,15 @@ func TestLifecycleCeremonyTTYGating(t *testing.T) {
 	}
 }
 
-// TestLifecycleCeremonyRainbow proves the per-letter rainbow farewell: enabled it
-// wraps every rune in a bright color and resets at the end; disabled it returns
-// the string untouched, so the plain "Goodbye from iris." line stays byte-exact.
-func TestLifecycleCeremonyRainbow(t *testing.T) {
-	off := painter{enabled: false}
-	if got := off.rainbow("Goodbye"); got != "Goodbye" {
-		t.Errorf("disabled rainbow altered text: %q, want %q", got, "Goodbye")
-	}
-	on := painter{enabled: true}
-	got := on.rainbow("Goodbye")
-	if !strings.Contains(got, esc) {
-		t.Errorf("enabled rainbow injected no escape: %q", got)
-	}
-	// Every visible letter must survive (escapes are interleaved between them).
-	for _, r := range "Goodbye" {
-		if !strings.ContainsRune(got, r) {
-			t.Errorf("rainbow dropped letter %q from %q", string(r), got)
-		}
-	}
-	if !strings.HasSuffix(got, ansiReset) {
-		t.Errorf("rainbow did not reset at the end: %q", got)
-	}
-}
-
 // TestLifecycleCeremonyPlainWhenPiped proves no ANSI escape ever reaches a
 // non-terminal consumer: with a buffer stdout (the default, not a char device)
-// and under --json, every update and uninstall output path is byte-identical
-// plain text, and the pinned strings are unchanged. It also proves the converse:
-// forcing the tty seam on turns the ceremony on (escapes appear), so the plain
-// guarantee is a real gate, not a dead helper.
+// and under --json, every update output path is byte-identical plain text, and
+// the pinned strings are unchanged. It also proves the converse: forcing the
+// tty seam on turns the ceremony on (escapes appear), so the plain guarantee is
+// a real gate, not a dead helper.
 func TestLifecycleCeremonyPlainWhenPiped(t *testing.T) {
 	clearTargetEnv(t)
 	unsetNoColor(t)
-	deadSock := shortSocket(t)
 
 	t.Run("update up-to-date piped is plain", func(t *testing.T) {
 		var out, errb bytes.Buffer
@@ -143,35 +117,6 @@ func TestLifecycleCeremonyPlainWhenPiped(t *testing.T) {
 		assertNoEsc(t, out.String())
 	})
 
-	t.Run("uninstall success piped is plain", func(t *testing.T) {
-		scratch := scratchExecutable(t)
-		var out, errb bytes.Buffer
-		a := newApp(&out, &errb)
-		a.executablePath = func() (string, error) { return scratch, nil }
-		if code := a.run([]string{"--socket", deadSock, "uninstall", "--yes"}); code != exitOK {
-			t.Fatalf("exit = %d, want %d\n%s", code, exitOK, errb.String())
-		}
-		assertNoEsc(t, out.String())
-		if !strings.Contains(out.String(), "Uninstalled "+scratch+".") || !strings.Contains(out.String(), "Goodbye from iris.") {
-			t.Errorf("plain uninstall strings changed: %q", out.String())
-		}
-	})
-
-	t.Run("uninstall abort piped is plain", func(t *testing.T) {
-		scratch := scratchExecutable(t)
-		var out, errb bytes.Buffer
-		a := newApp(&out, &errb)
-		a.executablePath = func() (string, error) { return scratch, nil }
-		a.confirm = func(_ string, _ bool) (bool, error) { return false, nil }
-		if code := a.run([]string{"--socket", deadSock, "uninstall"}); code != exitOK {
-			t.Fatalf("exit = %d, want %d\n%s", code, exitOK, errb.String())
-		}
-		assertNoEsc(t, out.String())
-		if !strings.Contains(out.String(), "Aborted. Nothing removed.") {
-			t.Errorf("plain abort string changed: %q", out.String())
-		}
-	})
-
 	t.Run("update progress stages carry no ANSI when piped", func(t *testing.T) {
 		var out bytes.Buffer
 		a := newApp(&out, io.Discard)
@@ -198,20 +143,6 @@ func TestLifecycleCeremonyPlainWhenPiped(t *testing.T) {
 		}
 	})
 
-	t.Run("forced tty turns the uninstall ceremony on", func(t *testing.T) {
-		scratch := scratchExecutable(t)
-		var out, errb bytes.Buffer
-		a := newApp(&out, &errb)
-		a.isTTY = func() bool { return true }
-		a.executablePath = func() (string, error) { return scratch, nil }
-		if code := a.run([]string{"--socket", deadSock, "uninstall", "--yes"}); code != exitOK {
-			t.Fatalf("exit = %d, want %d\n%s", code, exitOK, errb.String())
-		}
-		if !strings.Contains(out.String(), esc) {
-			t.Errorf("forced-tty uninstall emitted no escape: %q", out.String())
-		}
-	})
-
 	t.Run("update progress stages colored on a tty", func(t *testing.T) {
 		var out bytes.Buffer
 		a := newApp(&out, io.Discard)
@@ -228,44 +159,6 @@ func TestLifecycleCeremonyPlainWhenPiped(t *testing.T) {
 var ansiSeq = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
 func stripANSI(s string) string { return ansiSeq.ReplaceAllString(s, "") }
-
-// TestUninstallBoxAligns proves the confirmation box stays aligned for any path
-// length: the top rule, the content line, and the bottom rule share one visible
-// width, and the content line carries both a left and a right border. Width is
-// measured on the unstyled text, so the magenta version never inflates it.
-func TestUninstallBoxAligns(t *testing.T) {
-	paths := []string{"/a", "/usr/local/bin/iris", "/very/long/nested/path/to/somewhere/deep/iris"}
-	for _, path := range paths {
-		t.Run(path, func(t *testing.T) {
-			var out bytes.Buffer
-			a := newApp(&out, io.Discard)
-			p := makePainter(false, func() bool { return true })
-			a.uninstallBox(p, "v0.3.2", path)
-
-			lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
-			if len(lines) != 3 {
-				t.Fatalf("box = %d lines, want 3:\n%s", len(lines), out.String())
-			}
-			top, mid, bot := stripANSI(lines[0]), stripANSI(lines[1]), stripANSI(lines[2])
-			wt, wm, wb := utf8.RuneCountInString(top), utf8.RuneCountInString(mid), utf8.RuneCountInString(bot)
-			if wt != wm || wm != wb {
-				t.Errorf("misaligned widths top=%d mid=%d bot=%d for %q:\n%s", wt, wm, wb, path, out.String())
-			}
-			if !strings.HasPrefix(top, "  ┌") || !strings.HasSuffix(top, "┐") {
-				t.Errorf("top rule malformed: %q", top)
-			}
-			if !strings.HasPrefix(bot, "  └") || !strings.HasSuffix(bot, "┘") {
-				t.Errorf("bottom rule malformed: %q", bot)
-			}
-			if !strings.HasPrefix(mid, "  │") || !strings.HasSuffix(mid, "│") {
-				t.Errorf("content line missing a border: %q", mid)
-			}
-			if !strings.Contains(mid, "Uninstall v0.3.2 from "+path+"?") {
-				t.Errorf("content line lost its text: %q", mid)
-			}
-		})
-	}
-}
 
 // assertNoEsc fails the test if s carries any ANSI escape byte.
 func assertNoEsc(t *testing.T, s string) {

@@ -21,6 +21,7 @@ func (r *listingRows) Scan(dest ...any) error {
 	row := r.rows[r.i-1]
 	*(dest[0].(*string)) = row.Name
 	*(dest[1].(*bool)) = row.Active
+	*(dest[2].(*string)) = row.Lane
 	return nil
 }
 
@@ -53,10 +54,10 @@ func (p *listingPool) query(_ context.Context, _ string, _ ...any) (poolRows, er
 func TestPipelineListActiveDefault(t *testing.T) {
 	t.Run("pipeline-list-active-default", func(t *testing.T) {
 		seed := []PipelineListing{
-			{Name: "extract_orders", Active: true},  // has a running run
-			{Name: "load_customers", Active: false}, // registered, no active run
-			{Name: "reconcile", Active: true},       // has a queued run
-			{Name: "sweep", Active: false},          // registered, idle
+			{Name: "extract_orders", Active: true, Lane: "ingest"}, // has a running run, composed into ingest
+			{Name: "load_customers", Active: false, Lane: ""},      // registered, no active run, own lane
+			{Name: "reconcile", Active: true, Lane: "reporting"},   // has a queued run
+			{Name: "sweep", Active: false, Lane: ""},               // registered, idle, own lane
 		}
 
 		t.Run("default lists only pipelines with a queued or running run", func(t *testing.T) {
@@ -67,7 +68,10 @@ func TestPipelineListActiveDefault(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ActivePipelines: %v", err)
 			}
-			want := []PipelineListing{{Name: "extract_orders", Active: true}, {Name: "reconcile", Active: true}}
+			want := []PipelineListing{
+				{Name: "extract_orders", Active: true, Lane: "ingest"},
+				{Name: "reconcile", Active: true, Lane: "reporting"},
+			}
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("active listing = %v, want %v", got, want)
 			}
@@ -89,6 +93,25 @@ func TestPipelineListActiveDefault(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, seed) {
 				t.Errorf("all listing = %v, want %v", got, seed)
+			}
+		})
+
+		t.Run("listing carries each pipeline's lane, empty when unassigned", func(t *testing.T) {
+			pool := &listingPool{rows: seed}
+			lister := newPgxPipelineLister(pool)
+			got, err := lister.AllPipelines(context.Background())
+			if err != nil {
+				t.Fatalf("AllPipelines: %v", err)
+			}
+			lanes := map[string]string{}
+			for _, p := range got {
+				lanes[p.Name] = p.Lane
+			}
+			if lanes["extract_orders"] != "ingest" || lanes["reconcile"] != "reporting" {
+				t.Errorf("assigned lanes not threaded: %v", lanes)
+			}
+			if lanes["load_customers"] != "" || lanes["sweep"] != "" {
+				t.Errorf("unassigned pipelines must carry an empty lane: %v", lanes)
 			}
 		})
 

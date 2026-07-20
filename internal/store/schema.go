@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// This file holds the embedded meta schema: the twenty control tables of the
+// This file holds the embedded meta schema: the twenty-three control tables of the
 // dedicated meta database, modeled as Go data that renders deterministically to
 // create-if-missing DDL and is directly assertable for the roster, foreign-key
 // graph, and identity-ordering contracts. The model is the single source; the
@@ -262,7 +262,7 @@ func dependenciesSatisfied(t Table, emitted map[string]bool) bool {
 	return true
 }
 
-// MetaSchema returns the meta control-plane schema: the twenty tables, in roster
+// MetaSchema returns the meta control-plane schema: the twenty-three tables, in roster
 // order. Roster order is not a safe DDL emission order (runs precedes artifacts it references); DDL() emits in
 // FK-dependency order instead. Ordering keys are monotonic bigint identity
 // columns; recorded_at is an opaque non-ordering text audit string throughout.
@@ -284,6 +284,41 @@ func MetaSchema() Schema {
 				Checks: []Check{
 					{Column: "artifact", Values: []string{"source", "built"}},
 					{Column: "data_mode", Values: []string{"disposable", "permanent"}},
+				},
+			},
+			// pipeline_logs: the declared run-log recording contract, one row per
+			// registered pipeline. An absent row means the engine default (one
+			// combined raw stream, no stamp); apply rewrites the row wholesale. A
+			// separate table rather than pipelines columns keeps the meta DDL
+			// purely additive (CREATE IF NOT EXISTS, no ALTER) across upgrades.
+			{
+				Name: "pipeline_logs",
+				Columns: []Column{
+					{Name: "pipeline", Type: "text"},
+					{Name: "split", Type: "boolean"},
+					{Name: "stamp", Type: "boolean"},
+				},
+				PrimaryKey: []string{"pipeline"},
+				ForeignKeys: []ForeignKey{
+					{Column: "pipeline", RefTable: "pipelines", RefColumn: "name"},
+				},
+			},
+			// pipeline_plugins: the declared plugin bindings, one row per alias;
+			// apply rewrites a pipeline's rows wholesale (additive DDL, like pipeline_logs).
+			{
+				Name: "pipeline_plugins",
+				Columns: []Column{
+					{Name: "pipeline", Type: "text"},
+					{Name: "alias", Type: "text"},
+					{Name: "ref", Type: "text"},
+					{Name: "lifetime", Type: "text"},
+				},
+				PrimaryKey: []string{"pipeline", "alias"},
+				ForeignKeys: []ForeignKey{
+					{Column: "pipeline", RefTable: "pipelines", RefColumn: "name"},
+				},
+				Checks: []Check{
+					{Column: "lifetime", Values: []string{"run", "lane", "resident"}},
 				},
 			},
 			// dependencies: the depends_on graph as edge rows, indexed both directions.
@@ -371,6 +406,48 @@ func MetaSchema() Schema {
 				},
 				Indexes: []Index{
 					{Name: "run_inputs_upstream_run_id_idx", Columns: []string{"upstream_run_id"}},
+				},
+			},
+			// run_plugins: the run-start plugin pin ledger (#215): alias, identity,
+			// digest, and -- for a service plugin -- the attached instance id, so
+			// state shared across runs is visible in lineage (two runs naming one
+			// instance shared it; a fresh binding always names a new one).
+			{
+				Name: "run_plugins",
+				Columns: []Column{
+					{Name: "run_id", Type: "bigint"},
+					{Name: "alias", Type: "text"},
+					{Name: "name", Type: "text"},
+					{Name: "version", Type: "text"},
+					{Name: "digest", Type: "text"},
+					{Name: "instance_id", Type: "text", Nullable: true},
+				},
+				PrimaryKey: []string{"run_id", "alias"},
+				ForeignKeys: []ForeignKey{
+					{Column: "run_id", RefTable: "runs", RefColumn: "id"},
+				},
+			},
+			// run_plugin_calls: one row per serviced plugin call (#215): verb, arg and
+			// response digests, outcome. recorded_at is an opaque audit string.
+			{
+				Name: "run_plugin_calls",
+				Columns: []Column{
+					{Name: "run_id", Type: "bigint"},
+					{Name: "seq", Type: "bigint"},
+					{Name: "alias", Type: "text"},
+					{Name: "verb", Type: "text"},
+					{Name: "args_digest", Type: "text"},
+					{Name: "outcome", Type: "text"},
+					{Name: "response_digest", Type: "text", Nullable: true},
+					{Name: "error", Type: "text", Nullable: true},
+					{Name: "recorded_at", Type: "text"},
+				},
+				PrimaryKey: []string{"run_id", "seq"},
+				ForeignKeys: []ForeignKey{
+					{Column: "run_id", RefTable: "runs", RefColumn: "id"},
+				},
+				Checks: []Check{
+					{Column: "outcome", Values: []string{"ok", "err"}},
 				},
 			},
 			// dead_letters: the outstanding worklist. run_id PK FK.

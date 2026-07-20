@@ -53,7 +53,7 @@ type ErrorBody struct {
 
 // Health is the payload of GET /healthz: the daemon's liveness and its leadership
 // role. Role is leader, standby, or unknown (before election resolves), reported on
-// both listeners so the CLI's daemon-reachability check and the conformance harness
+// both listeners so the CLI's daemon-reachability check and any HTTP consumer
 // can read the daemon's role.
 type Health struct {
 	// Status is "ok" when the daemon is serving.
@@ -104,6 +104,8 @@ func NewMux(opts ...MuxOption) http.Handler {
 		patMint:      noPATMint{},
 		replay:       noReplay{},
 		drain:        noDrain{},
+		catalog:      noCatalog{},
+		catalogList:  noCatalogList{},
 	}
 	for _, o := range opts {
 		o(m)
@@ -150,6 +152,10 @@ type mux struct {
 	// the real handler on winning leadership.
 	replay ReplayHandler
 	drain  DrainHandler
+	// catalog runs the leader-side POST /catalog/install (catalog.go, #217);
+	// catalogList serves the GET /catalog pack listing on any role (catalogread.go, #219).
+	catalog     CatalogHandler
+	catalogList CatalogListHandler
 	// endpoints and qreader are the /q serving seams (endpoint.go): the live
 	// compiled-shape source and the read executor. Both default nil (unwired):
 	// /q then answers the internal-fault envelope, per the unwired-seam doctrine.
@@ -201,6 +207,10 @@ func (m *mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.serveRunCancel(w, r)
 	case "/endpoint/apply":
 		m.serveEndpointApply(w, r)
+	case "/catalog/install":
+		m.serveCatalogInstall(w, r)
+	case "/catalog":
+		m.serveCatalogList(w, r)
 	case "/pat/create":
 		m.servePATCreate(w, r)
 	case "/pipeline/list":
@@ -222,9 +232,8 @@ func (m *mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// serveHealthz handles GET /healthz: the liveness-plus-role probe both the
-// CLI's daemon-reachability check and the conformance harness hit, served
-// identically on every role.
+// serveHealthz handles GET /healthz: the liveness-plus-role probe the CLI's
+// daemon-reachability check hits, served identically on every role.
 func (m *mux) serveHealthz(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET /healthz only")

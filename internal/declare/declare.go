@@ -16,6 +16,7 @@ package declare
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -82,7 +83,53 @@ func (s *StringList) UnmarshalYAML(b []byte) error {
 	return nil
 }
 
-// Pipeline is a parsed pipeline declaration: the eight-field declaration shape.
+// Logs is a pipeline's declared run-log recording contract: how the engine
+// captures the run's stdout and stderr. Omitted, the engine default applies
+// (one combined raw stream, no stamp) and the apply surfaces an advisory
+// warning, so the recording contract stays visible in the declaration.
+type Logs struct {
+	// Split captures stdout and stderr as separately tagged streams in one
+	// ordered capture, so consumers can tell error output apart or filter a
+	// single stream, instead of one undifferentiated byte stream.
+	Split bool `yaml:"split"`
+	// Stamp frames the capture with machine-readable run metadata: a header
+	// carrying the run id, pipeline, and start time, and a footer carrying the
+	// end time and exit code.
+	Stamp bool `yaml:"stamp"`
+}
+
+// The declared plugin lifetimes (#215); only run-lifetime tools execute today,
+// lane/resident parse so stage 3 has a model waiting.
+const (
+	// LifetimeRun scopes the plugin to one run (tool: exec per call); the default.
+	LifetimeRun = "run"
+	// LifetimeLane shares one instance across a lane's serial walk (later).
+	LifetimeLane = "lane"
+	// LifetimeResident keeps one instance alive across runs (later).
+	LifetimeResident = "resident"
+)
+
+// PluginUse is one declared plugin binding: alias → installed ref + lifetime.
+type PluginUse struct {
+	// Ref is the "name@version" reference to an installed plugin; required.
+	Ref string `yaml:"ref"`
+	// Lifetime is the declared instance lifetime; empty means run.
+	Lifetime string `yaml:"lifetime"`
+	// Fresh demands a cold instance for this pipeline's runs: a shared lane or
+	// resident instance is never attached warm, it is replaced before the run
+	// (state carried across runs stays visible in lineage; fresh opts out).
+	Fresh bool `yaml:"fresh"`
+}
+
+// EffectiveLifetime returns the declared lifetime, defaulting to run.
+func (p PluginUse) EffectiveLifetime() string {
+	if p.Lifetime == "" {
+		return LifetimeRun
+	}
+	return p.Lifetime
+}
+
+// Pipeline is a parsed pipeline declaration: the ten-field declaration shape.
 // name and run are required; the rest are optional.
 type Pipeline struct {
 	// Name is the pipeline name; required, and must match its folder.
@@ -95,6 +142,12 @@ type Pipeline struct {
 	EnvFile StringList `yaml:"env_file"`
 	// Lane is the pipeline's lane; omitted means its own lane.
 	Lane string `yaml:"lane"`
+	// Logs is the pipeline's run-log recording contract; nil means the engine
+	// default (combined raw stream, no stamp), surfaced as an apply warning.
+	Logs *Logs `yaml:"logs"`
+	// Plugins are the pipeline's declared plugin bindings by alias: the only
+	// external capabilities its runs may call, each digest-pinned at run start.
+	Plugins map[string]PluginUse `yaml:"plugins"`
 	// Reads are the pipeline's declared read access entries.
 	Reads []Access `yaml:"reads"`
 	// Writes are the pipeline's declared write access entries.
@@ -103,14 +156,16 @@ type Pipeline struct {
 	DependsOn []string `yaml:"depends_on"`
 }
 
-// Composer is a parsed lane composer: a lane folder's iris-declare.yaml carrying
-// the lane name and the lane's serial order. The deeper composer rules (folder
-// agreement, 2+ interlock) belong to a later task.
+// Composer is a parsed lane composer: the lane name, its serial order, and the optional folder surface (surface.go owns its rules).
 type Composer struct {
 	// Lane is the lane name; must match the composer's folder.
 	Lane string `yaml:"lane"`
 	// Order is the lane's serial walk: the member pipeline names, in order.
 	Order []string `yaml:"order"`
+	// Reads is the folder surface's read side; absent surface leaves members unconstrained.
+	Reads []Access `yaml:"reads"`
+	// Writes is the folder surface's write side.
+	Writes []Access `yaml:"writes"`
 }
 
 // Declaration is a parsed iris-declare.yaml discriminated by content: exactly
@@ -124,21 +179,27 @@ type Declaration struct {
 	Composer *Composer
 }
 
-// pipelineFields is the eight-field whitelist for a pipeline declaration.
+// pipelineFields is the ten-field whitelist for a pipeline declaration.
 var pipelineFields = map[string]bool{
-	"name": true, "run": true, "env": true, "env_file": true,
-	"lane": true, "reads": true, "writes": true, "depends_on": true,
+	"name": true, "run": true, "env": true, "env_file": true, "lane": true,
+	"logs": true, "plugins": true, "reads": true, "writes": true, "depends_on": true,
 }
 
 // pipelineFieldList is the human-readable rendering of pipelineFields, in
 // declaration order, for error messages.
-const pipelineFieldList = "name, run, env, env_file, lane, reads, writes, depends_on"
+const pipelineFieldList = "name, run, env, env_file, lane, logs, plugins, reads, writes, depends_on"
+
+// logsFields is the whitelist for the logs block inside a pipeline declaration.
+var logsFields = map[string]bool{"split": true, "stamp": true}
+
+// logsFieldList is the human-readable rendering of logsFields.
+const logsFieldList = "split, stamp"
 
 // composerFields is the whitelist for a lane composer.
-var composerFields = map[string]bool{"lane": true, "order": true}
+var composerFields = map[string]bool{"lane": true, "order": true, "reads": true, "writes": true}
 
 // composerFieldList is the human-readable rendering of composerFields.
-const composerFieldList = "lane, order"
+const composerFieldList = "lane, order, reads, writes"
 
 // ParseDeclaration parses an iris-declare.yaml document into a Declaration,
 // discriminating a pipeline (carries run) from a lane composer (carries order)
@@ -177,11 +238,104 @@ func parsePipeline(raw map[string]any, data []byte) (*Declaration, error) {
 	if err := requireArgvList(raw); err != nil {
 		return nil, err
 	}
+	if err := checkLogsShape(raw); err != nil {
+		return nil, err
+	}
+	if err := checkPluginsShape(raw); err != nil {
+		return nil, err
+	}
 	var p Pipeline
 	if err := yaml.Unmarshal(data, &p); err != nil {
 		return nil, fmt.Errorf("declare: parse pipeline declaration: %w", err)
 	}
 	return &Declaration{Kind: KindPipeline, Pipeline: &p}, nil
+}
+
+// checkLogsShape validates an optional logs block: a mapping whose keys are the
+// logs whitelist and whose values are booleans. An absent block is valid (the
+// engine default applies); any other shape names the offending key or value.
+func checkLogsShape(raw map[string]any) error {
+	v, ok := raw["logs"]
+	if !ok {
+		return nil
+	}
+	block, ok := v.(map[string]any)
+	if !ok {
+		return fmt.Errorf("declare: field %q must be a mapping of %s", "logs", logsFieldList)
+	}
+	if err := checkKeys(block, logsFields, logsFieldList); err != nil {
+		return err
+	}
+	for _, key := range []string{"split", "stamp"} {
+		bv, present := block[key]
+		if !present {
+			continue
+		}
+		if _, isBool := bv.(bool); !isBool {
+			return fmt.Errorf("declare: logs field %q must be a boolean", key)
+		}
+	}
+	return nil
+}
+
+// pluginsFields is the whitelist for one plugin binding inside the plugins block.
+var pluginsFields = map[string]bool{"ref": true, "lifetime": true, "fresh": true}
+
+// pluginsFieldList is the human-readable rendering of pluginsFields.
+const pluginsFieldList = "ref, lifetime, fresh"
+
+// pluginAliasRe admits plugin aliases: dot-free slugs (the alias prefixes call verbs as "alias.verb").
+var pluginAliasRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+
+// checkPluginsShape validates an optional plugins block: alias slug → {ref
+// name@version, lifetime run|lane|resident}. Install/digest checks are the
+// engine's at run start; this is shape only.
+func checkPluginsShape(raw map[string]any) error {
+	v, ok := raw["plugins"]
+	if !ok {
+		return nil
+	}
+	block, ok := v.(map[string]any)
+	if !ok {
+		return fmt.Errorf("declare: field %q must be a mapping of alias to {%s}", "plugins", pluginsFieldList)
+	}
+	aliases := make([]string, 0, len(block))
+	for alias := range block {
+		aliases = append(aliases, alias)
+	}
+	sort.Strings(aliases)
+	for _, alias := range aliases {
+		if !pluginAliasRe.MatchString(alias) {
+			return fmt.Errorf("declare: plugin alias %q is not a lowercase slug ([a-z0-9_-])", alias)
+		}
+		entry, ok := block[alias].(map[string]any)
+		if !ok {
+			return fmt.Errorf("declare: plugin %q must be a mapping of %s", alias, pluginsFieldList)
+		}
+		if err := checkKeys(entry, pluginsFields, pluginsFieldList); err != nil {
+			return err
+		}
+		ref, ok := entry["ref"].(string)
+		if !ok || strings.TrimSpace(ref) == "" {
+			return fmt.Errorf("declare: plugin %q needs a non-empty %q (name@version)", alias, "ref")
+		}
+		name, version, cut := strings.Cut(ref, "@")
+		if !cut || strings.TrimSpace(name) == "" || strings.TrimSpace(version) == "" {
+			return fmt.Errorf("declare: plugin %q ref %q is not name@version", alias, ref)
+		}
+		if lv, present := entry["lifetime"]; present {
+			s, ok := lv.(string)
+			if !ok || (s != LifetimeRun && s != LifetimeLane && s != LifetimeResident) {
+				return fmt.Errorf("declare: plugin %q lifetime must be %s, %s, or %s", alias, LifetimeRun, LifetimeLane, LifetimeResident)
+			}
+		}
+		if fv, present := entry["fresh"]; present {
+			if _, ok := fv.(bool); !ok {
+				return fmt.Errorf("declare: plugin %q fresh must be a boolean", alias)
+			}
+		}
+	}
+	return nil
 }
 
 // parseComposer validates and decodes a composer-shaped declaration. Only the

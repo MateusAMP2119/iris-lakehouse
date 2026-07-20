@@ -17,9 +17,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
-// The documented IRIS_* environment variable names. These eight are the complete
+// The documented IRIS_* environment variable names. These nine are the complete
 // recognized set; no other IRIS_* variable feeds configuration.
 const (
 	// EnvHome relocates the engine home wholesale (tests, packaging). It is not a
@@ -33,6 +34,9 @@ const (
 	EnvRetain               = "IRIS_RETAIN"
 	EnvJournalPartitionRows = "IRIS_JOURNAL_PARTITION_ROWS"
 	EnvObjectsPath          = "IRIS_OBJECTS_PATH"
+	EnvWorkspace            = "IRIS_WORKSPACE"
+	// EnvCatalogs is a comma-separated list of catalog index URLs.
+	EnvCatalogs = "IRIS_CATALOGS"
 )
 
 // The built-in default numeric settings: run-history retention (keep the newest
@@ -57,6 +61,8 @@ const (
 	SocketName = "iris.sock"
 	// ObjectsDir is the default object-store directory name under the engine home.
 	ObjectsDir = "objects"
+	// WorkspaceDir is the default workspace directory name under the engine home; the daemon derives it from settings, never from its cwd (#203).
+	WorkspaceDir = "workspace"
 	// FileName is the optional configuration file's name under the engine home.
 	FileName = "iris.toml"
 )
@@ -103,6 +109,10 @@ type Settings struct {
 	TLSCert string
 	// TLSKey is the TLS key for the TCP listener, empty for plain TCP.
 	TLSKey string
+	// Workspace is the tree the daemon dispatches from (pipelines/, schemas/, env files); defaults to <engine home>/workspace.
+	Workspace string
+	// Catalogs is the ordered list of catalog index URLs pipeline packs install from (#220); empty by default.
+	Catalogs []string
 }
 
 // Managed reports whether the engine runs its own managed Postgres. That is the
@@ -128,6 +138,9 @@ type Layer struct {
 	TCP                  *string
 	TLSCert              *string
 	TLSKey               *string
+	Workspace            *string
+	// Catalogs is set-whole-or-unset: a later layer replaces the entire list, never merges.
+	Catalogs *[]string
 }
 
 // Resolve folds the four configuration sources into resolved Settings under
@@ -169,6 +182,12 @@ func Resolve(defaults, file, env, flags Layer) Settings {
 		if l.TLSKey != nil {
 			s.TLSKey = *l.TLSKey
 		}
+		if l.Workspace != nil {
+			s.Workspace = *l.Workspace
+		}
+		if l.Catalogs != nil {
+			s.Catalogs = *l.Catalogs // whole-list replacement: the highest layer that set it wins
+		}
 	}
 	return s
 }
@@ -179,10 +198,12 @@ func Resolve(defaults, file, env, flags Layer) Settings {
 // journal partition size take their documented defaults; and the admin DSN is
 // left unset, which selects the managed Postgres. An empty home yields paths
 // relative to the invoking directory, the caller's last-resort fallback when no
-// home directory resolves.
+// home directory resolves. The catalog list is left unset: no catalog indexes by
+// default.
 func Defaults(home string) Layer {
 	socket := filepath.Join(home, SocketName)
 	objects := filepath.Join(home, ObjectsDir)
+	workspace := filepath.Join(home, WorkspaceDir)
 	retain := DefaultRetain
 	journal := DefaultJournalPartitionRows
 	empty := ""
@@ -197,6 +218,7 @@ func Defaults(home string) Layer {
 		TCP:                  &empty,
 		TLSCert:              &empty,
 		TLSKey:               &empty,
+		Workspace:            &workspace,
 	}
 }
 
@@ -205,8 +227,9 @@ func Defaults(home string) Layer {
 // empty variable contributes nothing (a nil field), so it defers to the layers
 // below rather than overriding them with an empty value. The two integer
 // variables (IRIS_RETAIN, IRIS_JOURNAL_PARTITION_ROWS) are parsed; a non-numeric
-// value is a configuration error. getenv is injected (os.Getenv in production) so
-// resolution stays pure and testable.
+// value is a configuration error. IRIS_CATALOGS is split on commas with spaces
+// trimmed and empty entries dropped. getenv is injected (os.Getenv in
+// production) so resolution stays pure and testable.
 func FromEnv(getenv func(string) string) (Layer, error) {
 	var l Layer
 	if v := getenv(EnvSocket); v != "" {
@@ -224,6 +247,13 @@ func FromEnv(getenv func(string) string) (Layer, error) {
 	if v := getenv(EnvObjectsPath); v != "" {
 		l.ObjectsPath = &v
 	}
+	if v := getenv(EnvWorkspace); v != "" {
+		l.Workspace = &v
+	}
+	if v := getenv(EnvCatalogs); v != "" {
+		list := splitList(v)
+		l.Catalogs = &list
+	}
 	if v := getenv(EnvRetain); v != "" {
 		n, err := parseInt(v)
 		if err != nil {
@@ -239,6 +269,17 @@ func FromEnv(getenv func(string) string) (Layer, error) {
 		l.JournalPartitionRows = &n
 	}
 	return l, nil
+}
+
+// splitList parses a comma-separated value (IRIS_CATALOGS), trimming spaces and dropping empties.
+func splitList(v string) []string {
+	out := []string{}
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // parseInt parses a base-10 signed 64-bit integer, the form both the integer

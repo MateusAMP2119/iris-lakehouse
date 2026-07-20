@@ -10,6 +10,22 @@ meta: CREATE TABLE IF NOT EXISTS pipelines (
     CHECK (artifact IN ('source', 'built')),
     CHECK (data_mode IN ('disposable', 'permanent'))
 );
+meta: CREATE TABLE IF NOT EXISTS pipeline_logs (
+    pipeline text,
+    split boolean NOT NULL,
+    stamp boolean NOT NULL,
+    PRIMARY KEY (pipeline),
+    FOREIGN KEY (pipeline) REFERENCES pipelines (name)
+);
+meta: CREATE TABLE IF NOT EXISTS pipeline_plugins (
+    pipeline text,
+    alias text,
+    ref text NOT NULL,
+    lifetime text NOT NULL,
+    PRIMARY KEY (pipeline, alias),
+    FOREIGN KEY (pipeline) REFERENCES pipelines (name),
+    CHECK (lifetime IN ('run', 'lane', 'resident'))
+);
 meta: CREATE TABLE IF NOT EXISTS dependencies (
     from_pipeline text,
     to_pipeline text,
@@ -64,6 +80,30 @@ meta: CREATE TABLE IF NOT EXISTS run_inputs (
     FOREIGN KEY (run_id) REFERENCES runs (id)
 );
 meta: CREATE INDEX IF NOT EXISTS run_inputs_upstream_run_id_idx ON run_inputs (upstream_run_id);
+meta: CREATE TABLE IF NOT EXISTS run_plugins (
+    run_id bigint,
+    alias text,
+    name text NOT NULL,
+    version text NOT NULL,
+    digest text NOT NULL,
+    instance_id text,
+    PRIMARY KEY (run_id, alias),
+    FOREIGN KEY (run_id) REFERENCES runs (id)
+);
+meta: CREATE TABLE IF NOT EXISTS run_plugin_calls (
+    run_id bigint,
+    seq bigint,
+    alias text NOT NULL,
+    verb text NOT NULL,
+    args_digest text NOT NULL,
+    outcome text NOT NULL,
+    response_digest text,
+    error text,
+    recorded_at text NOT NULL,
+    PRIMARY KEY (run_id, seq),
+    FOREIGN KEY (run_id) REFERENCES runs (id),
+    CHECK (outcome IN ('ok', 'err'))
+);
 meta: CREATE TABLE IF NOT EXISTS dead_letters (
     run_id bigint,
     reason text NOT NULL,
@@ -200,5 +240,10 @@ data: CREATE TABLE IF NOT EXISTS public.data_journal (
 data: CREATE INDEX IF NOT EXISTS data_journal_provenance_idx ON public.data_journal ("schema", "table", row_pk, run_id);
 data: CREATE TABLE IF NOT EXISTS public.data_journal_p0 PARTITION OF public.data_journal FOR VALUES FROM (MINVALUE) TO (MAXVALUE);
 data: GRANT SELECT ON public.data_journal TO PUBLIC;
+data: CREATE SCHEMA IF NOT EXISTS iris;
+data: CREATE TABLE IF NOT EXISTS iris.turn_positions (
+    pipeline text PRIMARY KEY,
+    position bigint NOT NULL
+);
 meta: INSERT INTO engine_key (id, private_key, created_at) VALUES (1, '\x<engine-key>', now()::text) ON CONFLICT (id) DO NOTHING;
 socket: prepare

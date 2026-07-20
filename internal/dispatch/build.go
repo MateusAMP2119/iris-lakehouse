@@ -15,8 +15,8 @@ package dispatch
 //
 // The toolchain runs as a direct exec in the pipeline's folder -- never a shell
 // -- via the same exec.Runner seam every subprocess rides, so integration tests
-// drive builds with a fake toolchain while the real PyInstaller/pkg/go
-// invocations are conformance work (E13).
+// drive builds with a fake toolchain; the real PyInstaller/pkg/go invocations
+// run only inside a live engine.
 
 import (
 	"bytes"

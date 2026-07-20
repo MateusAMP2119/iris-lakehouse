@@ -9,7 +9,6 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/MateusAMP2119/iris-lakehouse/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/MateusAMP2119/iris-lakehouse/ci.yml?branch=development&style=for-the-badge&label=CI" alt="CI"></a>
   <img src="https://img.shields.io/badge/Go-1.25%2B-00ADD8?style=for-the-badge&logo=go" alt="Go 1.25+">
   <img src="https://img.shields.io/badge/Postgres-16%2B-4169E1?style=for-the-badge&logo=postgresql&logoColor=white" alt="Postgres 16+">
   <img src="https://img.shields.io/badge/cgo-free-brightgreen?style=for-the-badge" alt="cgo-free">
@@ -31,7 +30,7 @@ One command, no dependencies. Installs the latest prebuilt static binary.
 curl -fsSL https://install.iris-lakehouse.bymarreco.com | bash
 ```
 
-The installer ends by offering `iris quickstart` — the guided tour of the first session. Take it any time later with the same command.
+The installer ends by printing the first commands of a real session — see [Getting started](#getting-started).
 
 ### Snapshot channel (bleeding edge)
 
@@ -69,7 +68,7 @@ Then bootstrap the engine. Iris provisions and manages its own Postgres (or poin
 ```sh
 iris engine install       # provision managed Postgres + meta schema
 iris engine start -d      # start the daemon: leader election, lanes, read API
-iris ps                   # confirm it's alive: role, uptime, runs, host load
+iris ps                   # confirm it's alive: live view of role, uptime, runs, host load (q quits)
 ```
 
 Updating later is one command; it fetches the latest release, verifies its checksum, and swaps the binary in place:
@@ -84,17 +83,11 @@ Leaving? Iris removes itself (prompts first; refuses while a daemon runs until y
 iris uninstall
 ```
 
-Binary broken or missing? The script fallback does the same from outside:
-
-```sh
-curl -fsSL https://install.iris-lakehouse.bymarreco.com/uninstall.sh | bash
-```
+Binary broken? Remove it by hand — `rm ~/.iris/bin/iris` — then reinstall or delete `~/.iris` entirely.
 
 ---
 
 ## Getting started
-
-New here? `iris quickstart` walks this whole section for you: it explains each step, asks before running it, and really runs it — ending with a live engine and a row you can trace. The rest of this section is the manual version.
 
 A pipeline is a folder: one script, one declaration:
 
@@ -149,8 +142,7 @@ Global flags everywhere: `--json` (machine output), `--socket`, `--host`, `--tok
 | `iris endpoint` | `apply`, `remove`, `list`, `show` | Declared read endpoints at `GET /q/{endpoint}` |
 | `iris pat` | `create`, `list`, `revoke` | Personal access tokens (scopes: `control`, `read`, `data`) |
 | `iris engine` | `start`, `stop`, `install`, `uninstall`, `logs`, `inspect`, `connect`, `service …` | Daemon and host lifecycle |
-| `iris ps` | *(root verb)* | Engine process status: runs plus host load, docker-ps style (`-a` all runs, `-q` ids only) |
-| `iris quickstart` | *(root verb)* | Guided tour of the first session (`--yes` runs it unattended) |
+| `iris ps` | *(root verb)* | Engine process status: a live full-screen view on a terminal (lanes, pipelines, runs, log tails); the `GET /ps` JSON envelope when piped or under `--json` (`--all` widens the JSON runs to history) |
 | `iris update` | *(root verb)* | Self-replace the installed binary with the latest release (`--snapshot` for the rolling build) |
 | `iris uninstall` | *(root verb)* | Remove the installed iris binary itself (prompts first; engine must be down) |
 
@@ -209,16 +201,13 @@ cli ──► daemon/api ──► dispatch ──► store (meta db) / pg (data
 
 ## Tested
 
-The suite runs in two tiers. The default tier is database-free: unit tests for pure logic and integration tests that use fakes and local process I/O — including the architecture tests that fail the build when a dependency points the wrong way. The conformance tier is the opposite end: it builds the real binary, starts a real daemon, talks to it over its socket, and runs against real Postgres, so the shipped artifact is what gets exercised. It sits behind the `conformance` build tag and is excluded from the default run.
+The suite is database-free: unit tests for pure logic and integration tests that use fakes and local process I/O — including the architecture tests that fail the build when a dependency points the wrong way.
 
 ```sh
-go test -race ./...                                                        # unit + integration (database-free)
-go test -race -tags conformance -timeout 20m ./internal/conformance/...   # real binary + real Postgres, ~11 min
+go test ./...   # unit + integration (database-free)
 ```
 
-Conformance wants `IRIS_PG_DSN` pointing at a Postgres 16+ cluster whose role has `CREATEDB` + `CREATEROLE`; without it, the suite provisions embedded Postgres where it can.
-
-CI runs both tiers on Go 1.25 and 1.26, plus golangci-lint and the cross-compile matrix, with conformance against Postgres 17. Nothing merges red.
+There is no test CI: the suite and golangci-lint run locally before every merge. Nothing merges red.
 
 ---
 
@@ -250,6 +239,6 @@ Merging a PR into `master` is now the **only** action required to produce a new 
 
 ## Status
 
-All 15 epics (E00–E14) are **complete on `development`**: full CI green, full conformance suite passing under `-race`. Epic checkpoint merges to `master` are in progress.
+All 15 epics (E00–E14) are **complete on `development`**: full suite green. Epic checkpoint merges to `master` are in progress.
 
 Built test-first, end to end, by AI coding agents working under the conventions in [CLAUDE.md](CLAUDE.md): every line of source written against failing tests, nothing merged red.

@@ -55,6 +55,12 @@ WHERE run_id IN (SELECT id FROM runs WHERE pipeline = $1)
 WHERE run_id IN (SELECT id FROM runs WHERE pipeline = $1)
    OR failed_upstream = $1`
 
+	// retireRunPluginsSQL clears the target's run-start plugin pins (#215), before runs.
+	retireRunPluginsSQL = `DELETE FROM run_plugins WHERE run_id IN (SELECT id FROM runs WHERE pipeline = $1)`
+
+	// retireRunPluginCallsSQL clears the target's plugin call ledger (#215), before runs.
+	retireRunPluginCallsSQL = `DELETE FROM run_plugin_calls WHERE run_id IN (SELECT id FROM runs WHERE pipeline = $1)`
+
 	// retireRunsSQL clears the target's run history. It runs after run_inputs and
 	// dead_letters (its children) and before artifacts (runs.artifact_hash references
 	// artifacts.hash).
@@ -85,6 +91,13 @@ WHERE run_id IN (SELECT id FROM runs WHERE pipeline = $1)
 	// and credentials and before the pipelines row they reference.
 	retireRolesSQL = `DELETE FROM roles WHERE pipeline = $1`
 
+	// retirePipelineLogsSQL clears the pipeline's declared run-log recording
+	// contract, before the pipelines row it references.
+	retirePipelineLogsSQL = `DELETE FROM pipeline_logs WHERE pipeline = $1`
+
+	// retirePipelinePluginsSQL clears the declared plugin bindings (#215), before pipelines.
+	retirePipelinePluginsSQL = `DELETE FROM pipeline_plugins WHERE pipeline = $1`
+
 	// retirePipelineSQL deletes the registry root last: with every child row already
 	// gone, the pipelines row can be removed without tripping a foreign key, and until
 	// this point journal stamps still resolve the binary's name.
@@ -108,6 +121,8 @@ func (w *Writer) RetirePipeline(ctx context.Context, name string) error {
 	stmts := []Statement{
 		{SQL: retireRunInputsSQL, Args: []any{name}},
 		{SQL: retireDeadLettersSQL, Args: []any{name}},
+		{SQL: retireRunPluginsSQL, Args: []any{name}},
+		{SQL: retireRunPluginCallsSQL, Args: []any{name}},
 		{SQL: retireRunsSQL, Args: []any{name}},
 		{SQL: retireArtifactsSQL, Args: []any{name}},
 		{SQL: retireDependenciesSQL, Args: []any{name}},
@@ -115,6 +130,8 @@ func (w *Writer) RetirePipeline(ctx context.Context, name string) error {
 		{SQL: retireGrantsSQL, Args: []any{name}},
 		{SQL: retireCredentialsSQL, Args: []any{name}},
 		{SQL: retireRolesSQL, Args: []any{name}},
+		{SQL: retirePipelineLogsSQL, Args: []any{name}},
+		{SQL: retirePipelinePluginsSQL, Args: []any{name}},
 		{SQL: retirePipelineSQL, Args: []any{name}},
 	}
 	if err := w.execTx(ctx, stmts); err != nil {
@@ -149,6 +166,7 @@ func (w *Writer) RetirePipelineWithSummaries(ctx context.Context, name string, s
 		Statement{SQL: retireGrantsSQL, Args: []any{name}},
 		Statement{SQL: retireCredentialsSQL, Args: []any{name}},
 		Statement{SQL: retireRolesSQL, Args: []any{name}},
+		Statement{SQL: retirePipelineLogsSQL, Args: []any{name}},
 		Statement{SQL: retirePipelineSQL, Args: []any{name}},
 	)
 	if err := w.execTx(ctx, stmts); err != nil {
