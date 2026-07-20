@@ -175,7 +175,7 @@ func (a *app) uninstallSelf() runE {
 				}
 			}
 			if !jsonMode {
-				a.uninstallProgressBar(p, "• Removing engine state...")
+				a.uninstallProgressBar(p, "• Removing engine state")
 			}
 			steps = append(steps, uninstallStep{Step: 2, Name: stepEngineState, Status: "removed", Removed: removed})
 			done("Engine state removed.")
@@ -210,7 +210,7 @@ func (a *app) uninstallSelf() runE {
 		removeInstallerSymlink(path)
 		removeShellPathEntries()
 		if !jsonMode {
-			a.uninstallProgressBar(p, "🧹 Removing binary and traces...")
+			a.uninstallProgressBar(p, "• Removing binary and traces")
 		}
 		done("Binary removed")
 		done("Traces erased")
