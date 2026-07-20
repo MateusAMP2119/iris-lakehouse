@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -336,29 +335,15 @@ func (a *app) farewellQuote(p painter) {
 	fmt.Fprintf(a.out, "%s%s\n", strings.Repeat(" ", pad), p.dim(attr))
 }
 
-// terminalConfirm prompts the step's question on stderr and reads one y/N keypress from stdin (no Enter); no terminal returns errNotATerminal so the caller refuses instead of blocking.
+// terminalConfirm prompts via huh when a TTY is available; no terminal returns
+// errNotATerminal so the caller refuses instead of blocking. Tests inject
+// a.confirm to script answers without a real terminal.
 func (a *app) terminalConfirm(question string, _ bool) (bool, error) {
-	stat, err := os.Stdin.Stat()
-	if err != nil || stat.Mode()&os.ModeCharDevice == 0 {
-		return false, errNotATerminal
+	out := a.errOut
+	if out == nil {
+		out = os.Stderr
 	}
-	fmt.Fprintf(a.errOut, "  %s (y/N): ", question)
-	if ans, ok := readSingleKey(); ok {
-		yes := ans == 'y' || ans == 'Y'
-		shown := "n"
-		if yes {
-			shown = "y"
-		}
-		fmt.Fprintf(a.errOut, "%s\n", shown)
-		return yes, nil
-	}
-	// stty unavailable: fall back to a line read
-	line, rerr := bufio.NewReader(os.Stdin).ReadString('\n')
-	if rerr != nil && line == "" {
-		return false, nil // EOF with no answer is a decline, not an error.
-	}
-	ans := strings.ToLower(strings.TrimSpace(line))
-	return ans == "y" || ans == "yes", nil
+	return confirmWithHuh(question, out)
 }
 
 // readSingleKey reads one raw keypress from stdin via stty; ok=false means raw mode could not be entered.

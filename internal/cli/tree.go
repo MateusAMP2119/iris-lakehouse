@@ -102,6 +102,7 @@ func (a *app) newRootCommand() *cobra.Command {
 		a.pluginCmd(),
 		a.catalogCmd(),
 		a.updateCmd(),
+		a.setupCmd(),
 		a.uninstallCmd(),
 	)
 	return root
