@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
@@ -278,18 +277,14 @@ func (a *app) uninstallAborted(p painter, jsonMode bool, path string, steps []un
 	return nil
 }
 
-// uninstallProgressBar animates a removal step's bar in place on a terminal, prefix leading the bar; plain glyphs match the installer's engine bar exactly. Piped runs draw nothing.
+// uninstallProgressBar animates a removal step via Bubble Tea + bubbles/progress
+// so the bar looks the same on every platform (no raw ANSI \r loops). Piped and
+// --json runs draw nothing.
 func (a *app) uninstallProgressBar(p painter, prefix string) {
 	if !p.enabled {
 		return
 	}
-	const cells = 10
-	for i := 0; i <= cells; i++ {
-		bar := strings.Repeat("█", i) + strings.Repeat("░", cells-i)
-		fmt.Fprintf(a.out, "\r\033[2K  %s [%s] %d%%", prefix, bar, i*100/cells)
-		time.Sleep(25 * time.Millisecond)
-	}
-	fmt.Fprintln(a.out)
+	runProgressBar(a.out, prefix)
 }
 
 // uninstallHeaderBox draws the cyan header box on a terminal, version in magenta; borders sized on the unstyled interior so escapes never skew alignment.

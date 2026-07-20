@@ -44,6 +44,7 @@ func (a *app) setupEngine() runE {
 		case setupLocal:
 			fmt.Fprintln(a.out, "  • Selected: Local mode")
 			fmt.Fprintln(a.out, "  🚀 Starting Iris Engine...")
+			runProgressBar(a.out, "• Setting up engine...")
 			if err := a.runSelf(cmd, "engine", "install"); err != nil {
 				return err
 			}
