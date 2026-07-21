@@ -72,6 +72,8 @@ func ceremonyConfirmTheme() *huh.Theme {
 
 // ceremonySetupTheme pins title and description wrap to the install ceremony
 // frame so setup selects/inputs share the same right edge as progress [✓].
+// Do not widen SelectSelector / options: huh joins "> " + option horizontally,
+// and a full-width selector forces the option onto the next line.
 func ceremonySetupTheme() *huh.Theme {
 	theme := huh.ThemeCharm()
 	width := ceremonyConfirmWidth()
@@ -84,12 +86,6 @@ func ceremonySetupTheme() *huh.Theme {
 	theme.Blurred.Title = theme.Blurred.Title.Width(contentCols)
 	theme.Focused.Description = theme.Focused.Description.Width(contentCols)
 	theme.Blurred.Description = theme.Blurred.Description.Width(contentCols)
-	theme.Focused.SelectSelector = theme.Focused.SelectSelector.Width(contentCols)
-	theme.Blurred.SelectSelector = theme.Blurred.SelectSelector.Width(contentCols)
-	theme.Focused.Option = theme.Focused.Option.Width(contentCols)
-	theme.Blurred.Option = theme.Blurred.Option.Width(contentCols)
-	theme.Focused.TextInput.Placeholder = theme.Focused.TextInput.Placeholder.Width(contentCols)
-	theme.Blurred.TextInput.Placeholder = theme.Blurred.TextInput.Placeholder.Width(contentCols)
 	return theme
 }
 

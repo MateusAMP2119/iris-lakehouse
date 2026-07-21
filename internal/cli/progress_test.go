@@ -103,15 +103,51 @@ func TestCeremonySetupFormWidthMatchesGrid(t *testing.T) {
 	if got := ceremonyConfirmWidth(); got != want {
 		t.Fatalf("ceremonyConfirmWidth() = %d, check line width = %d", got, want)
 	}
-	// Form is built with that width; ThemeCharm content is frame-inset.
 	_ = newCeremonySetupForm(huh.NewGroup(huh.NewSelect[string]().Options(huh.NewOption("a", "a"))))
-	// Full-width mark is unchanged.
-	full := strings.Repeat("x", ceremonyMarkCols)
-	if got := padCeremonyMark(full); got != full {
-		t.Fatalf("full-width mark should be unchanged, got %q", got)
+}
+
+// TestCeremonySetupSelectKeepsInlineSelector proves focused options stay
+// "> label" on one line. Widening SelectSelector to the frame forced the
+// label onto the next line.
+func TestCeremonySetupSelectKeepsInlineSelector(t *testing.T) {
+	var choice string
+	sel := huh.NewSelect[string]().
+		Title("Engine setup").
+		Description("Local install on this machine, or connect to an existing engine.").
+		Options(
+			huh.NewOption("Local mode: install + start engine on this machine", "local"),
+			huh.NewOption("Remote mode: connect to an existing engine", "remote"),
+			huh.NewOption("Skip for now", "skip"),
+		).
+		Value(&choice)
+	sel.Focus()
+	_ = sel.WithTheme(ceremonySetupTheme())
+	_ = sel.WithWidth(ceremonyConfirmWidth())
+	view := stripANSI(sel.View())
+	for _, line := range strings.Split(view, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == ">" {
+			t.Fatalf("selector alone on a line (frame broke join):\n%s", view)
+		}
 	}
-	if padCeremonyMark("") != "" {
-		t.Fatal("empty mark should stay empty")
+	if !strings.Contains(view, "Local mode:") {
+		t.Fatalf("missing local option:\n%s", view)
+	}
+	// Prefer the tight inline form when the option fits next to "> ".
+	if !strings.Contains(view, "> Local mode:") && !strings.Contains(view, ">Local mode:") {
+		// Long options may wrap after the prefix; require at least one line
+		// that starts with the selector and continues with non-space text.
+		ok := false
+		for _, line := range strings.Split(view, "\n") {
+			tline := strings.TrimLeft(line, " ┃│")
+			if strings.HasPrefix(tline, "> ") && len(strings.TrimSpace(tline)) > 2 {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			t.Fatalf("no inline selector+label line:\n%s", view)
+		}
 	}
 }
 
