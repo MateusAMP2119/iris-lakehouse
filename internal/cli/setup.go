@@ -6,41 +6,64 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/MateusAMP2119/iris-lakehouse/internal/catalog"
+	"github.com/MateusAMP2119/iris-lakehouse/internal/config"
 )
 
-// setupCmd builds `iris setup`: the post-install engine configuration menu
-// (local install+start, remote connect, or skip). install.sh invokes this so
-// the interactive flow uses huh/viper-backed config instead of shell prompts.
+// setupEngineChoiceName is the short-lived marker install.sh's two setup phases
+// share under the engine home: engine phase writes it, catalog phase reads and
+// removes it. Not user-facing config.
+const setupEngineChoiceName = ".setup-engine-choice"
+
+// setupCmd builds `iris setup`: post-install engine and/or catalog configuration.
+// install.sh runs --phase engine then --phase catalog so the ceremony can show
+// [3/4] and [4/4] as separate steps. Standalone `iris setup` runs both (all).
 func (a *app) setupCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "setup",
-		Short: "Post-install engine setup (local, remote, or skip)",
+		Short: "Post-install engine and catalog setup",
 		Args:  cobra.NoArgs,
-		RunE:  a.setupEngine(),
+		RunE:  a.setupRun(),
 	}
 	c.Flags().String("mode", "", "local|remote|skip (non-interactive; also IRIS_ENGINE_SETUP)")
+	c.Flags().String("catalogs", "", "public|skip|<index-url>[,url…] (non-interactive; also IRIS_SETUP_CATALOGS)")
+	c.Flags().String("phase", "all", "engine|catalog|all (install.sh uses engine then catalog)")
 	return daemonless(c)
 }
 
-func (a *app) setupEngine() runE {
+func (a *app) setupRun() runE {
 	return func(cmd *cobra.Command, _ []string) error {
 		jsonMode, _ := cmd.Flags().GetBool("json")
 		if jsonMode {
 			return a.usage("iris setup is interactive; do not pass --json")
 		}
+		phase, _ := cmd.Flags().GetString("phase")
+		phase = strings.ToLower(strings.TrimSpace(phase))
+		if phase == "" {
+			phase = "all"
+		}
+		switch phase {
+		case "engine", "catalog", "all":
+		default:
+			return a.usage("iris setup --phase must be engine, catalog, or all")
+		}
+
 		mode, _ := cmd.Flags().GetString("mode")
 		if mode == "" {
 			mode = os.Getenv("IRIS_ENGINE_SETUP")
 		}
 		mode = strings.ToLower(strings.TrimSpace(mode))
 
-		choice, err := selectEngineSetup(mode, a.out)
-		if err != nil {
-			return &fault{code: exitOpFailed, codeStr: "setup_failed", message: fmt.Sprintf("iris setup: %v", err)}
+		catalogsPre, _ := cmd.Flags().GetString("catalogs")
+		if catalogsPre == "" {
+			catalogsPre = os.Getenv("IRIS_SETUP_CATALOGS")
 		}
+		catalogsPre = strings.TrimSpace(catalogsPre)
 
 		p := a.newPainter(false)
 		log := newCeremonyLog(a.out)
@@ -49,60 +72,200 @@ func (a *app) setupEngine() runE {
 			log.line(formatCeremonyLine(label, mark))
 		}
 
-		switch choice {
-		case setupLocal:
-			log.line("  • Selected: Local mode")
-			// Real work under live bars: install can take a while (Postgres
-			// materialize / adopt). A cosmetic fill-to-100% before the work
-			// made the terminal look frozen; these bars track the jobs.
-			if err := runProgressWhile(a.out, "• Installing engine", func() error {
-				return a.runSelfQuiet(cmd, "engine", "install")
-			}); err != nil {
+		var choice engineSetupChoice
+		if phase == "engine" || phase == "all" {
+			var err error
+			choice, err = a.runEngineSetupPhase(cmd, mode, log)
+			if err != nil {
 				return err
 			}
-			// Reinstall / repeated setup: a reachable daemon already owns the
-			// engine — skip start -d so we do not spawn a second candidate.
-			settings := a.resolveTarget(cmd)
-			ctx := cmd.Context()
-			if ctx == nil {
-				ctx = context.Background()
-			}
-			if a.probeDaemon(ctx, settings) == nil {
-				done("Engine already running")
-			} else if err := runProgressWhile(a.out, "• Starting engine", func() error {
-				return a.runSelfQuiet(cmd, "engine", "start", "-d")
-			}); err != nil {
-				return err
-			} else {
-				done("Engine started")
-			}
-			maybeReviewCeremony(a.out, log.content())
-			return nil
-		case setupRemote:
-			log.line("  • Selected: Remote mode")
-			host, token, perr := promptRemoteEndpoint(a.out)
-			if perr != nil {
-				return &fault{code: exitOpFailed, codeStr: "setup_failed", message: fmt.Sprintf("iris setup: %v", perr)}
-			}
-			host = strings.TrimSpace(host)
-			if host == "" {
-				log.line("  • No endpoint given. Remote mode: 'iris engine connect <host>'.")
-				maybeReviewCeremony(a.out, log.content())
-				return nil
-			}
-			args := []string{"engine", "connect", host}
-			if strings.TrimSpace(token) != "" {
-				args = append(args, "--token", token)
-			}
-			return a.runSelf(cmd, args...)
-		default:
-			log.line("  • Selected: Skip for now")
-			log.line("  • No engine configured. Local mode: 'iris engine install && iris engine start -d';")
-			log.line("    remote mode: 'iris engine connect <host>'.")
-			maybeReviewCeremony(a.out, log.content())
-			return nil
 		}
+		if phase == "catalog" || phase == "all" {
+			if phase == "catalog" {
+				choice = a.loadEngineSetupChoice()
+			}
+			if err := a.runCatalogSetupPhase(cmd, choice, catalogsPre, log, done); err != nil {
+				return err
+			}
+		}
+		if phase == "all" || phase == "catalog" {
+			maybeReviewCeremony(a.out, log.content())
+		}
+		return nil
 	}
+}
+
+// runEngineSetupPhase handles the engine menu and local install / remote connect.
+// Local mode installs only — start waits for the catalog phase so iris.toml
+// catalogs are in place before the daemon boots (no hot-reload).
+func (a *app) runEngineSetupPhase(cmd *cobra.Command, mode string, log *ceremonyLog) (engineSetupChoice, error) {
+	choice, err := selectEngineSetup(mode, a.out)
+	if err != nil {
+		return 0, &fault{code: exitOpFailed, codeStr: "setup_failed", message: fmt.Sprintf("iris setup: %v", err)}
+	}
+	if err := a.saveEngineSetupChoice(choice); err != nil {
+		return 0, &fault{code: exitOpFailed, codeStr: "setup_failed", message: fmt.Sprintf("iris setup: %v", err)}
+	}
+
+	switch choice {
+	case setupLocal:
+		log.line("  • Selected: Local mode")
+		if err := runProgressWhile(a.out, "• Installing engine", func() error {
+			return a.runSelfQuiet(cmd, "engine", "install")
+		}); err != nil {
+			return choice, err
+		}
+		return choice, nil
+	case setupRemote:
+		log.line("  • Selected: Remote mode")
+		host, token, perr := promptRemoteEndpoint(a.out)
+		if perr != nil {
+			return choice, &fault{code: exitOpFailed, codeStr: "setup_failed", message: fmt.Sprintf("iris setup: %v", perr)}
+		}
+		host = strings.TrimSpace(host)
+		if host == "" {
+			log.line("  • No endpoint given. Remote mode: 'iris engine connect <host>'.")
+			return choice, nil
+		}
+		args := []string{"engine", "connect", host}
+		if strings.TrimSpace(token) != "" {
+			args = append(args, "--token", token)
+		}
+		return choice, a.runSelf(cmd, args...)
+	default:
+		log.line("  • Selected: Skip for now")
+		log.line("  • No engine configured. Local mode: 'iris engine install && iris engine start -d';")
+		log.line("    remote mode: 'iris engine connect <host>'.")
+		return choice, nil
+	}
+}
+
+// runCatalogSetupPhase is the [4/4] Catalog step: pick a pack source, record it,
+// then start a local engine so the daemon boots with catalogs already set.
+func (a *app) runCatalogSetupPhase(cmd *cobra.Command, choice engineSetupChoice, catalogsPre string, log *ceremonyLog, done func(string)) error {
+	defer a.clearEngineSetupChoice()
+
+	if choice == setupRemote {
+		log.line("  • Packs come from the remote engine's catalogs")
+		return nil
+	}
+
+	if err := a.setupCatalogs(catalogsPre, log, done); err != nil {
+		return err
+	}
+
+	// Local install left the engine stopped so catalogs land before first start.
+	if choice == setupLocal {
+		return a.startEngineIfNeeded(cmd, log, done)
+	}
+	return nil
+}
+
+// startEngineIfNeeded starts -d when no daemon answers; if one is already up,
+// records that and leaves it alone (operator may need a restart to pick up a
+// newly written catalogs list — rare on a fresh install path).
+func (a *app) startEngineIfNeeded(cmd *cobra.Command, log *ceremonyLog, done func(string)) error {
+	settings := a.resolveTarget(cmd)
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if a.probeDaemon(ctx, settings) == nil {
+		done("Engine already running")
+		return nil
+	}
+	if err := runProgressWhile(a.out, "• Starting engine", func() error {
+		return a.runSelfQuiet(cmd, "engine", "start", "-d")
+	}); err != nil {
+		return err
+	}
+	done("Engine started")
+	return nil
+}
+
+// setupCatalogs runs the catalog menu (or preselect) and records the chosen
+// index URLs in the engine home iris.toml. Skip leaves the file untouched.
+func (a *app) setupCatalogs(preselect string, log *ceremonyLog, done func(string)) error {
+	choice, urls, err := selectCatalogSetup(preselect, a.out)
+	if err != nil {
+		return &fault{code: exitOpFailed, codeStr: "setup_failed", message: fmt.Sprintf("iris setup: %v", err)}
+	}
+	switch choice {
+	case catalogSetupSkip:
+		log.line("  • Catalog: skipped")
+		return nil
+	case catalogSetupPublic:
+		urls = []string{catalog.PublicCatalogURL}
+		log.line("  • Selected: Public catalog")
+	case catalogSetupCustom:
+		log.line("  • Selected: Custom catalog")
+	}
+	home, err := config.Home(os.Getenv)
+	if err != nil {
+		return &fault{code: exitOpFailed, codeStr: "setup_failed", message: fmt.Sprintf("iris setup: resolve the engine home: %v", err)}
+	}
+	tomlPath := filepath.Join(home, config.FileName)
+	if err := config.UpsertTOML(tomlPath, nil, map[string][]string{"catalogs": urls}); err != nil {
+		return &fault{code: exitOpFailed, codeStr: "setup_failed", message: fmt.Sprintf("iris setup: record catalogs: %v", err)}
+	}
+	done("Catalog configured")
+	return nil
+}
+
+func (a *app) saveEngineSetupChoice(choice engineSetupChoice) error {
+	home, err := config.Home(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("resolve the engine home: %w", err)
+	}
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		return fmt.Errorf("create engine home: %w", err)
+	}
+	var s string
+	switch choice {
+	case setupLocal:
+		s = "local"
+	case setupRemote:
+		s = "remote"
+	default:
+		s = "skip"
+	}
+	path := filepath.Join(home, setupEngineChoiceName)
+	if err := os.WriteFile(path, []byte(s+"\n"), 0o600); err != nil {
+		return fmt.Errorf("record setup choice: %w", err)
+	}
+	return nil
+}
+
+func (a *app) loadEngineSetupChoice() engineSetupChoice {
+	home, err := config.Home(os.Getenv)
+	if err != nil {
+		return setupSkip
+	}
+	data, err := os.ReadFile(filepath.Join(home, setupEngineChoiceName)) //nolint:gosec // G304: fixed name under the resolved engine home.
+	if err != nil {
+		// No marker: prefer remote when iris.toml already points at a host.
+		settings := a.resolveTarget(nil)
+		if strings.TrimSpace(settings.Host) != "" {
+			return setupRemote
+		}
+		return setupSkip
+	}
+	switch strings.TrimSpace(string(data)) {
+	case "local":
+		return setupLocal
+	case "remote":
+		return setupRemote
+	default:
+		return setupSkip
+	}
+}
+
+func (a *app) clearEngineSetupChoice() {
+	home, err := config.Home(os.Getenv)
+	if err != nil {
+		return
+	}
+	_ = os.Remove(filepath.Join(home, setupEngineChoiceName))
 }
 
 // runSelf re-invokes the current iris binary with args (same argv0), inheriting

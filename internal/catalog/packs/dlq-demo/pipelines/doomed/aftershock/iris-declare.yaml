@@ -1,6 +1,0 @@
-name: aftershock
-run: [sh, main.sh]
-lane: doomed
-logs:
-  stamp: true    # even a doomed pipeline can declare its recording contract
-depends_on: [boom]

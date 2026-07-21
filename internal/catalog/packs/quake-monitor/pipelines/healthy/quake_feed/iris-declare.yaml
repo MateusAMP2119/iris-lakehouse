@@ -1,9 +1,0 @@
-name: quake_feed
-run: [python3, main.py]
-lane: healthy
-logs:
-  split: true    # capture the turn protocol transcript beside the stderr log
-  stamp: true    # frame the capture with run id, start/end, and outcome
-writes:
-  - table: demo.quakes
-    fields: [id, occurred_at, latitude, longitude, depth_km, magnitude, place, event_type, status]

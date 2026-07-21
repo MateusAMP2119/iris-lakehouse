@@ -94,9 +94,9 @@ func TestPsFrameGoldens(t *testing.T) {
 			m := newPsModel(Snapshot{Ps: api.PsPayload{
 				Engine: api.PsEngine{Version: "dev", Role: "leader", PID: 7, Uptime: "12s"},
 			}}, "unix:///home/tiger/.iris/engine.sock")
-			// Too short for the mark; must still render a guided card.
+			// Too short for the spacious card; must still render the guide.
 			got := framePlain(m, 60, 12)
-			if !strings.Contains(got, "No pipelines registered yet") {
+			if !strings.Contains(got, "GET STARTED") {
 				t.Fatalf("tiny empty frame missing guidance:\n%s", got)
 			}
 		})
@@ -234,7 +234,7 @@ func TestPsFrameStyling(t *testing.T) {
 			}
 		})
 
-		t.Run("empty workspace header stays calm without hollow metrics", func(t *testing.T) {
+		t.Run("empty workspace header keeps load but drops run counts", func(t *testing.T) {
 			m := newPsModel(Snapshot{Ps: api.PsPayload{
 				Engine: api.PsEngine{Version: "dev", Role: "leader", PID: 7, Uptime: "12s"},
 			}}, "")
@@ -242,9 +242,14 @@ func TestPsFrameStyling(t *testing.T) {
 			if !strings.Contains(top, "iris") || !strings.Contains(top, "LEADER") {
 				t.Fatalf("empty header %q missing identity", top)
 			}
-			for _, bad := range []string{"CPU", "MEM", "running", "queued"} {
+			for _, want := range []string{"CPU", "MEM"} {
+				if !strings.Contains(top, want) {
+					t.Errorf("empty header missing live load %q: %q", want, top)
+				}
+			}
+			for _, bad := range []string{"running", "queued"} {
 				if strings.Contains(top, bad) {
-					t.Errorf("empty header must not show hollow metric %q: %q", bad, top)
+					t.Errorf("empty header must not show hollow count %q: %q", bad, top)
 				}
 			}
 		})

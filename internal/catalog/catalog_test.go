@@ -7,100 +7,49 @@ import (
 	"github.com/MateusAMP2119/iris-lakehouse/internal/declare"
 )
 
-// TestEmbedded proves the embedded catalog loads: both founding packs, README and files present.
-func TestEmbedded(t *testing.T) {
-	packs, err := Embedded()
-	if err != nil {
-		t.Fatalf("Embedded() error: %v", err)
-	}
-	if len(packs) != 2 {
-		t.Fatalf("Embedded() = %d packs, want 2", len(packs))
-	}
-	byName := map[string]Pack{}
-	for _, p := range packs {
-		byName[p.Name] = p
-		if p.Source != SourceEmbedded {
-			t.Errorf("pack %q source = %q, want %q", p.Name, p.Source, SourceEmbedded)
-		}
-		if p.README == "" {
-			t.Errorf("pack %q carries no README", p.Name)
-		}
-		if p.Description == "" || len(p.Tags) == 0 {
-			t.Errorf("pack %q index entry is bare: %+v", p.Name, p.IndexEntry)
-		}
-		for _, f := range p.Files {
-			if strings.HasSuffix(f.Path, ReadmeName) && !strings.Contains(f.Path, "/") {
-				t.Errorf("pack %q materializes its README (%s)", p.Name, f.Path)
-			}
-		}
-	}
-	if _, ok := byName[StarterPack]; !ok {
-		t.Fatalf("starter pack %q missing from the embedded catalog", StarterPack)
-	}
-	if _, ok := byName["dlq-demo"]; !ok {
-		t.Fatal("dlq-demo missing from the embedded catalog")
-	}
-}
-
-// TestEmbeddedPacksParseAndDiscover proves every embedded pack materializes into a valid workspace under the real declare loaders.
-func TestEmbeddedPacksParseAndDiscover(t *testing.T) {
-	packs, err := Embedded()
-	if err != nil {
-		t.Fatalf("Embedded() error: %v", err)
-	}
-	for _, p := range packs {
-		t.Run(p.Name, func(t *testing.T) {
-			root := t.TempDir()
-			if _, err := Materialize(root, p, false); err != nil {
-				t.Fatalf("Materialize: %v", err)
-			}
-			ws, err := declare.DiscoverWorkspace(root)
-			if err != nil {
-				t.Fatalf("DiscoverWorkspace over the materialized pack: %v", err)
-			}
-			if len(ws.Pipelines) == 0 {
-				t.Fatal("materialized pack discovers no pipelines")
-			}
-		})
-	}
-}
-
 // TestApplyOrder proves the derived sequence: first member, composer, remaining members in composer order.
 func TestApplyOrder(t *testing.T) {
-	cases := []struct {
-		pack string
-		want []string
-	}{
-		{"quake-monitor", []string{
-			"pipelines/healthy/quake_feed/iris-declare.yaml",
-			"pipelines/healthy/iris-declare.yaml",
-			"pipelines/healthy/quake_report/iris-declare.yaml",
-		}},
-		{"dlq-demo", []string{
-			"pipelines/doomed/boom/iris-declare.yaml",
-			"pipelines/doomed/iris-declare.yaml",
-			"pipelines/doomed/aftershock/iris-declare.yaml",
-		}},
+	p := declPack(map[string]string{
+		"pipelines/healthy/iris-declare.yaml":              "lane: healthy\norder:\n  - quake_feed\n  - quake_report\n",
+		"pipelines/healthy/quake_feed/iris-declare.yaml":   "name: quake_feed\nrun: [python, main.py]\nlane: healthy\n",
+		"pipelines/healthy/quake_report/iris-declare.yaml": "name: quake_report\nrun: [python, main.py]\nlane: healthy\ndepends_on: [quake_feed]\n",
+	})
+	want := []string{
+		"pipelines/healthy/quake_feed/iris-declare.yaml",
+		"pipelines/healthy/iris-declare.yaml",
+		"pipelines/healthy/quake_report/iris-declare.yaml",
 	}
-	for _, tc := range cases {
-		t.Run(tc.pack, func(t *testing.T) {
-			p, ok, err := EmbeddedPack(tc.pack)
-			if err != nil || !ok {
-				t.Fatalf("EmbeddedPack(%q) = ok %v, err %v", tc.pack, ok, err)
-			}
-			got, err := ApplyOrder(p)
-			if err != nil {
-				t.Fatalf("ApplyOrder: %v", err)
-			}
-			if len(got) != len(tc.want) {
-				t.Fatalf("ApplyOrder = %v, want %v", got, tc.want)
-			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Fatalf("ApplyOrder[%d] = %q, want %q (full: %v)", i, got[i], tc.want[i], got)
-				}
-			}
-		})
+	got, err := ApplyOrder(p)
+	if err != nil {
+		t.Fatalf("ApplyOrder: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("ApplyOrder = %v, want %v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("ApplyOrder[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+// TestMaterializeDiscover proves a synthetic pack materializes into a workspace the declare loaders accept.
+func TestMaterializeDiscover(t *testing.T) {
+	p := declPack(map[string]string{
+		"pipelines/l/iris-declare.yaml":   "lane: l\norder:\n  - a\n",
+		"pipelines/l/a/iris-declare.yaml": "name: a\nrun: [sh, main.sh]\nlane: l\n",
+		"pipelines/l/a/main.sh":           "#!/bin/sh\nexit 0\n",
+	})
+	root := t.TempDir()
+	if _, err := Materialize(root, p, false); err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	ws, err := declare.DiscoverWorkspace(root)
+	if err != nil {
+		t.Fatalf("DiscoverWorkspace over the materialized pack: %v", err)
+	}
+	if len(ws.Pipelines) == 0 {
+		t.Fatal("materialized pack discovers no pipelines")
 	}
 }
 
@@ -222,15 +171,23 @@ func TestParseIndex(t *testing.T) {
 
 // TestPipelineNames proves the pack's declared pipeline roster.
 func TestPipelineNames(t *testing.T) {
-	p, _, err := EmbeddedPack(StarterPack)
-	if err != nil {
-		t.Fatalf("EmbeddedPack: %v", err)
-	}
+	p := declPack(map[string]string{
+		"pipelines/healthy/iris-declare.yaml":              "lane: healthy\norder:\n  - quake_feed\n  - quake_report\n",
+		"pipelines/healthy/quake_feed/iris-declare.yaml":   "name: quake_feed\nrun: [python, main.py]\nlane: healthy\n",
+		"pipelines/healthy/quake_report/iris-declare.yaml": "name: quake_report\nrun: [python, main.py]\nlane: healthy\n",
+	})
 	names, err := PipelineNames(p)
 	if err != nil {
 		t.Fatalf("PipelineNames: %v", err)
 	}
 	if len(names) != 2 || names[0] != "quake_feed" || names[1] != "quake_report" {
 		t.Fatalf("PipelineNames = %v, want [quake_feed quake_report]", names)
+	}
+}
+
+// TestPublicCatalogURL pins the setup default so a silent change is a test failure.
+func TestPublicCatalogURL(t *testing.T) {
+	if !strings.HasPrefix(PublicCatalogURL, "https://") || !strings.Contains(PublicCatalogURL, "iris-catalog") {
+		t.Fatalf("PublicCatalogURL = %q, want the public iris-catalog index", PublicCatalogURL)
 	}
 }

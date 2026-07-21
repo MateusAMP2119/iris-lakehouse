@@ -16,6 +16,7 @@
 #   IRIS_BASE_URL=<url>  fetch the asset + checksums from here (local testing)
 #   IRIS_DEST=<dir>      install into this directory (default ~/.iris/bin)
 #   IRIS_ENGINE_SETUP=<local|remote|skip>  answer the engine-setup menu without a prompt
+#   IRIS_SETUP_CATALOGS=<public|skip|url[,url…]>  answer the catalog menu without a prompt
 #   NO_COLOR             plain output
 set -eu
 
@@ -167,7 +168,7 @@ asset="iris_${os}_${arch}.tar.gz"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-section "[1/3] Downloading"
+section "[1/4] Downloading"
 say "• Fetching ${asset}"
 curl -fsSL "${BASE}/${asset}" -o "${tmp}/${asset}"
 curl -fsSL "${BASE}/checksums.txt" -o "${tmp}/checksums.txt"
@@ -183,7 +184,7 @@ curl -fsSL "${BASE}/checksums.txt" -o "${tmp}/checksums.txt"
 # Binary not on disk yet — compact inline check (ceremony grid starts after install).
 printf "  • Verifying checksum... ${GRN}✓${RST} Verified\n"
 
-section "[2/3] Installing"
+section "[2/4] Installing"
 say "• Extracting binary..."
 tar -xzf "${tmp}/${asset}" -C "$tmp"
 mkdir -p "$dest"
@@ -282,7 +283,7 @@ if [ -n "$installed" ]; then
   fi
 fi
 
-section "[3/3] Engine Setup"
+section "[3/4] Engine Setup"
 case "$requested" in
   snapshot*)
     printf "  ${YLW}!${RST} Snapshot build — features may change; some are experimental.\n"
@@ -290,10 +291,18 @@ case "$requested" in
     ;;
 esac
 
-# Engine setup menu lives in the binary (huh + viper-backed config + BT bars).
-# IRIS_ENGINE_SETUP=local|remote|skip still works headless.
-if ! "$bin" setup; then
+# Setup phases live in the binary (huh + viper-backed config + BT bars).
+# IRIS_ENGINE_SETUP=local|remote|skip and IRIS_SETUP_CATALOGS=public|skip|url still work headless.
+# Engine first (install only for local), then catalog, then local start — so the
+# daemon boots with catalogs already in iris.toml.
+if ! "$bin" setup --phase engine; then
   echo "iris: engine setup failed" >&2
+  exit 1
+fi
+
+section "[4/4] Catalog"
+if ! "$bin" setup --phase catalog; then
+  echo "iris: catalog setup failed" >&2
   exit 1
 fi
 

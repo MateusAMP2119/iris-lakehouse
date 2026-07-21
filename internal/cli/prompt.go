@@ -2,8 +2,10 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -68,6 +70,37 @@ func ceremonyConfirmTheme() *huh.Theme {
 	return theme
 }
 
+// ceremonySetupTheme pins title and description wrap to the install ceremony
+// frame so setup selects/inputs share the same right edge as progress [✓].
+func ceremonySetupTheme() *huh.Theme {
+	theme := huh.ThemeCharm()
+	width := ceremonyConfirmWidth()
+	frame := theme.Focused.Base.GetHorizontalFrameSize()
+	contentCols := width - frame
+	if contentCols < 1 {
+		contentCols = width
+	}
+	theme.Focused.Title = theme.Focused.Title.Width(contentCols)
+	theme.Blurred.Title = theme.Blurred.Title.Width(contentCols)
+	theme.Focused.Description = theme.Focused.Description.Width(contentCols)
+	theme.Blurred.Description = theme.Blurred.Description.Width(contentCols)
+	theme.Focused.SelectSelector = theme.Focused.SelectSelector.Width(contentCols)
+	theme.Blurred.SelectSelector = theme.Blurred.SelectSelector.Width(contentCols)
+	theme.Focused.Option = theme.Focused.Option.Width(contentCols)
+	theme.Blurred.Option = theme.Blurred.Option.Width(contentCols)
+	theme.Focused.TextInput.Placeholder = theme.Focused.TextInput.Placeholder.Width(contentCols)
+	theme.Blurred.TextInput.Placeholder = theme.Blurred.TextInput.Placeholder.Width(contentCols)
+	return theme
+}
+
+// newCeremonySetupForm builds a huh form sized to the install ceremony grid
+// (indent + bullet + body + mark), matching progress/check lines.
+func newCeremonySetupForm(groups ...*huh.Group) *huh.Form {
+	return huh.NewForm(groups...).
+		WithTheme(ceremonySetupTheme()).
+		WithWidth(ceremonyConfirmWidth())
+}
+
 // newCeremonyConfirm builds the yes/no field used by confirmWithHuh. Theme and
 // width are applied by the form (or by tests that call View directly).
 func newCeremonyConfirm(question string, value *bool) *huh.Confirm {
@@ -117,7 +150,7 @@ func selectEngineSetup(preselect string, out io.Writer) (engineSetupChoice, erro
 		defer closer.Close()
 	}
 	var choice string
-	form := huh.NewForm(
+	form := newCeremonySetupForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("Engine setup").
@@ -129,7 +162,7 @@ func selectEngineSetup(preselect string, out io.Writer) (engineSetupChoice, erro
 				).
 				Value(&choice),
 		),
-	).WithTheme(huh.ThemeCharm()).WithInput(in)
+	).WithInput(in)
 	if out != nil {
 		form = form.WithOutput(out)
 	}
@@ -158,7 +191,7 @@ func promptRemoteEndpoint(out io.Writer) (host, token string, err error) {
 	if closer != nil {
 		defer closer.Close()
 	}
-	form := huh.NewForm(
+	form := newCeremonySetupForm(
 		huh.NewGroup(
 			huh.NewInput().
 				Title("Remote Iris endpoint (host:port)").
@@ -168,7 +201,7 @@ func promptRemoteEndpoint(out io.Writer) (host, token string, err error) {
 				EchoMode(huh.EchoModePassword).
 				Value(&token),
 		),
-	).WithTheme(huh.ThemeCharm()).WithInput(in)
+	).WithInput(in)
 	if out != nil {
 		form = form.WithOutput(out)
 	}
@@ -176,6 +209,131 @@ func promptRemoteEndpoint(out io.Writer) (host, token string, err error) {
 		return "", "", runErr
 	}
 	return host, token, nil
+}
+
+// catalogSetupChoice is the post-install catalog menu selection.
+type catalogSetupChoice int
+
+const (
+	catalogSetupPublic catalogSetupChoice = iota + 1
+	catalogSetupCustom
+	catalogSetupSkip
+)
+
+// selectCatalogSetup runs the installer's catalog menu through huh when a
+// keyboard is available. preselect (IRIS_SETUP_CATALOGS / --catalogs) short-
+// circuits: "public", "skip", or one-or-more comma-separated index URLs.
+// Headless with no preselect skips (same posture as the engine menu).
+func selectCatalogSetup(preselect string, out io.Writer) (catalogSetupChoice, []string, error) {
+	preselect = strings.TrimSpace(preselect)
+	if preselect != "" {
+		switch strings.ToLower(preselect) {
+		case "public":
+			return catalogSetupPublic, nil, nil
+		case "skip":
+			return catalogSetupSkip, nil, nil
+		}
+		urls, err := parseCatalogSetupURLs(preselect)
+		if err != nil {
+			return 0, nil, err
+		}
+		return catalogSetupCustom, urls, nil
+	}
+	in, closer := ceremonyReviewInput()
+	if in == nil {
+		return catalogSetupSkip, nil, nil
+	}
+	if closer != nil {
+		defer closer.Close()
+	}
+	var choice string
+	form := newCeremonySetupForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Pipeline catalog").
+				Description("Collection of pre-built pipelines. Install by name after the engine is up. Custom catalogs can be added later.").
+				Options(
+					huh.NewOption("Public catalog", "public"),
+					huh.NewOption("Custom catalog", "custom"),
+					huh.NewOption("Skip for now", "skip"),
+				).
+				Value(&choice),
+		),
+	).WithInput(in)
+	if out != nil {
+		form = form.WithOutput(out)
+	}
+	if err := form.Run(); err != nil {
+		if errors.Is(err, huh.ErrUserAborted) {
+			return catalogSetupSkip, nil, nil
+		}
+		return catalogSetupSkip, nil, err
+	}
+	switch choice {
+	case "public":
+		return catalogSetupPublic, nil, nil
+	case "custom":
+		url, err := promptCatalogURL(out)
+		if err != nil {
+			return 0, nil, err
+		}
+		urls, err := parseCatalogSetupURLs(url)
+		if err != nil {
+			return 0, nil, err
+		}
+		return catalogSetupCustom, urls, nil
+	default:
+		return catalogSetupSkip, nil, nil
+	}
+}
+
+// promptCatalogURL asks for one catalog index URL via huh.
+func promptCatalogURL(out io.Writer) (string, error) {
+	in, closer := ceremonyReviewInput()
+	if in == nil {
+		return "", errNotATerminal
+	}
+	if closer != nil {
+		defer closer.Close()
+	}
+	var raw string
+	form := newCeremonySetupForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Catalog URL").
+				Description("HTTPS URL of a catalog.json listing installable pipelines.").
+				Placeholder("https://example.com/catalog.json").
+				Value(&raw),
+		),
+	).WithInput(in)
+	if out != nil {
+		form = form.WithOutput(out)
+	}
+	if err := form.Run(); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(raw), nil
+}
+
+// parseCatalogSetupURLs splits a comma-separated list of catalog index URLs and
+// requires each to be an absolute http(s) URL.
+func parseCatalogSetupURLs(raw string) ([]string, error) {
+	parts := strings.Split(raw, ",")
+	var urls []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if !strings.HasPrefix(p, "http://") && !strings.HasPrefix(p, "https://") {
+			return nil, fmt.Errorf("catalog URL must be http(s): %q", p)
+		}
+		urls = append(urls, p)
+	}
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("catalog setup needs at least one index URL")
+	}
+	return urls, nil
 }
 
 // lipgloss painter helpers for uninstall ceremony (alongside the existing ANSI painter).

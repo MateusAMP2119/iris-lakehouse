@@ -23,7 +23,7 @@ type catalogListPayload struct {
 // catalogCmd builds `iris catalog`: pack browsing plus the leader-mediated install (#217).
 func (a *app) catalogCmd() *cobra.Command {
 	initCmd := &cobra.Command{
-		Use: "init", Short: "Install the embedded starter pack (" + catalog.StarterPack + ") into the engine's workspace",
+		Use: "init", Short: "Install the starter pack (" + catalog.StarterPack + ") into the engine's workspace",
 		Args: cobra.NoArgs, RunE: a.catalogInstall(true),
 	}
 	install := &cobra.Command{
@@ -35,7 +35,7 @@ func (a *app) catalogCmd() *cobra.Command {
 		c.Flags().Bool("force", false, "overwrite existing workspace paths instead of refusing")
 	}
 	list := &cobra.Command{
-		Use: "list", Short: "List the packs available to install (embedded plus configured catalogs)",
+		Use: "list", Short: "List the packs available to install from configured catalogs",
 		Args: cobra.NoArgs, RunE: a.catalogList(),
 	}
 	show := &cobra.Command{
@@ -94,10 +94,11 @@ func (a *app) catalogInstall(starter bool) runE {
 	}
 }
 
-// catalogListTimeout bounds the listing read so a wedged daemon degrades to the embedded fallback instead of hanging the verb.
+// catalogListTimeout bounds the listing read so a wedged daemon fails instead of hanging the verb.
 const catalogListTimeout = 10 * time.Second
 
-// fetchCatalogListing reads GET /catalog; live=false means no engine answered (the caller falls back to embedded), and a non-nil err is already a fault carrying the daemon's own code.
+// fetchCatalogListing reads GET /catalog. live=false means no engine answered.
+// Catalog egress is daemon-side only: with no engine the CLI does not fetch packs itself.
 func (a *app) fetchCatalogListing(cmd *cobra.Command, op string) (payload catalogListPayload, live bool, err error) {
 	settings := a.resolveTarget(cmd)
 	client, base, overTCP := a.daemonHTTPClient(settings)
@@ -105,7 +106,6 @@ func (a *app) fetchCatalogListing(cmd *cobra.Command, op string) (payload catalo
 	defer cancel()
 	req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, base+"/catalog", nil)
 	if rerr != nil {
-		// A malformed target is a usage failure, never a silent embedded fallback.
 		return catalogListPayload{}, true, &fault{code: exitOpFailed, codeStr: "request", message: fmt.Sprintf("iris catalog %s: build request: %v", op, rerr)}
 	}
 	if overTCP && settings.Token != "" {
@@ -140,38 +140,7 @@ func (a *app) fetchCatalogListing(cmd *cobra.Command, op string) (payload catalo
 	return catalogListPayload{Packs: env.Data.Packs, Warnings: env.Data.Warnings}, true, nil
 }
 
-// embeddedListing renders the embedded packs as listing entries: the zero-network fallback.
-func embeddedListing() (catalogListPayload, error) {
-	packs, err := catalog.Embedded()
-	if err != nil {
-		return catalogListPayload{}, err
-	}
-	out := catalogListPayload{Warnings: []string{"engine unreachable · embedded packs only"}}
-	for _, p := range packs {
-		out.Packs = append(out.Packs, localPackEntry(p))
-	}
-	return out, nil
-}
-
-// localPackEntry renders one embedded pack with its full preview material.
-func localPackEntry(p catalog.Pack) api.CatalogPack {
-	entry := api.CatalogPack{
-		Name: p.Name, Description: p.Description, Tags: p.Tags,
-		Requires: p.Requires, SHA256: p.SHA256, Source: p.Source, Readme: p.README,
-	}
-	for _, f := range p.Files {
-		entry.Files = append(entry.Files, f.Path)
-	}
-	if names, err := catalog.PipelineNames(p); err == nil {
-		entry.Pipelines = names
-	}
-	if order, err := catalog.ApplyOrder(p); err == nil {
-		entry.ApplyOrder = order
-	}
-	return entry
-}
-
-// catalogList handles `iris catalog list`: the daemon's multi-source listing, embedded fallback with no engine.
+// catalogList handles `iris catalog list`: the daemon's multi-source listing.
 func (a *app) catalogList() runE {
 	return func(cmd *cobra.Command, _ []string) error {
 		payload, live, err := a.fetchCatalogListing(cmd, "list")
@@ -179,9 +148,7 @@ func (a *app) catalogList() runE {
 			return err
 		}
 		if !live {
-			if payload, err = embeddedListing(); err != nil {
-				return catalogFault("list", err)
-			}
+			return catalogFault("list", fmt.Errorf("engine unreachable; start it (iris engine start -d) or pass --socket/--host"))
 		}
 		if jsonMode, _ := cmd.Flags().GetBool("json"); jsonMode {
 			return json.NewEncoder(a.out).Encode(dataEnvelope{Data: payload})
@@ -209,26 +176,22 @@ func (a *app) catalogList() runE {
 	}
 }
 
-// catalogShow handles `iris catalog show <pack>`: the daemon's view of one pack, embedded fallback with no engine.
+// catalogShow handles `iris catalog show <pack>`: the daemon's view of one pack.
 func (a *app) catalogShow() runE {
 	return func(cmd *cobra.Command, args []string) error {
 		payload, live, err := a.fetchCatalogListing(cmd, "show")
 		if err != nil {
 			return err
 		}
+		if !live {
+			return catalogFault("show", fmt.Errorf("engine unreachable; start it (iris engine start -d) or pass --socket/--host"))
+		}
 		var entry *api.CatalogPack
-		if live {
-			for i := range payload.Packs {
-				if payload.Packs[i].Name == args[0] && !payload.Packs[i].Shadowed {
-					entry = &payload.Packs[i]
-					break
-				}
+		for i := range payload.Packs {
+			if payload.Packs[i].Name == args[0] && !payload.Packs[i].Shadowed {
+				entry = &payload.Packs[i]
+				break
 			}
-		} else if p, ok, lerr := catalog.EmbeddedPack(args[0]); lerr != nil {
-			return catalogFault("show", lerr)
-		} else if ok {
-			e := localPackEntry(p)
-			entry = &e
 		}
 		if entry == nil {
 			return catalogFault("show", fmt.Errorf("no such pack %q (run iris catalog list)", args[0]))
