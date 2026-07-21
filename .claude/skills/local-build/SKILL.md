@@ -24,7 +24,15 @@ upgrade-in-place detection, plain next-steps lines.
 ## Knobs (pass through to install.sh)
 
 - `IRIS_DEST=<dir>` — install somewhere other than `/usr/local/bin`.
+- `IRIS_ENGINE_SETUP=local|remote|skip` — headless `[3/4] Engine Setup`.
+- `IRIS_SETUP_CATALOGS=public|skip|<url>[,url…]` — headless `[4/4] Catalog` (`public` pins iris-catalog).
 - `NO_COLOR=1` — plain output.
+
+Smoke local install with packs:
+
+```bash
+IRIS_ENGINE_SETUP=local IRIS_SETUP_CATALOGS=public sh install-local.sh
+```
 
 ## Rules
 

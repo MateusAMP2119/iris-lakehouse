@@ -1,6 +1,0 @@
-# boom deliberately declares NO logs block: apply surfaces the advisory
-# warning and its runs get the legacy raw capture -- the contrast to the
-# healthy lane's framed logs.
-name: boom
-run: [sh, main.sh]
-lane: doomed

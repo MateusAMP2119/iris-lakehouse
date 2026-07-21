@@ -18,6 +18,55 @@ import (
 	"github.com/MateusAMP2119/iris-lakehouse/internal/catalog"
 )
 
+// starterPackTar builds a minimal three-step apply-order pack named StarterPack.
+func starterPackTar(t *testing.T) []byte {
+	t.Helper()
+	files := map[string]string{
+		"pipelines/healthy/iris-declare.yaml":              "lane: healthy\norder:\n  - quake_feed\n  - quake_report\n",
+		"pipelines/healthy/quake_feed/iris-declare.yaml":   "name: quake_feed\nrun: [sh, main.sh]\nlane: healthy\n",
+		"pipelines/healthy/quake_feed/main.sh":             "#!/bin/sh\nexit 0\n",
+		"pipelines/healthy/quake_report/iris-declare.yaml": "name: quake_report\nrun: [sh, main.sh]\nlane: healthy\ndepends_on: [quake_feed]\n",
+		"pipelines/healthy/quake_report/main.sh":           "#!/bin/sh\nexit 0\n",
+		"README.md":                                        "# starter\n",
+	}
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	for name, body := range files {
+		b := []byte(body)
+		if err := tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(b))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = tw.Close()
+	_ = gw.Close()
+	return buf.Bytes()
+}
+
+// starterResolver serves StarterPack from an in-memory fake catalog.
+func starterResolver(t *testing.T) catalog.Resolver {
+	t.Helper()
+	blob := starterPackTar(t)
+	sum := sha256.Sum256(blob)
+	index, err := json.Marshal(catalog.Index{Format: catalog.IndexFormat, Packs: []catalog.IndexEntry{{
+		Name: catalog.StarterPack, Path: "packs/" + catalog.StarterPack + ".tar.gz",
+		SHA256: hex.EncodeToString(sum[:]), Requires: "v0.1.0",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetch := func(_ context.Context, url string) ([]byte, error) {
+		if strings.HasSuffix(url, "catalog.json") {
+			return index, nil
+		}
+		return blob, nil
+	}
+	return catalog.Resolver{Catalogs: []catalog.Remote{{URL: "https://cat.example/catalog.json", Fetch: fetch}}}
+}
+
 // TestCatalogOrchestratorInstall proves the leader-side pack install: materialize into the
 // workspace, answer the derived apply order, and (with apply) run the declare sequence in order.
 func TestCatalogOrchestratorInstall(t *testing.T) {
@@ -30,7 +79,7 @@ func TestCatalogOrchestratorInstall(t *testing.T) {
 
 	t.Run("materialize answers files and order without applying", func(t *testing.T) {
 		ws := t.TempDir()
-		o := newCatalogOrchestrator(ws, nil, catalog.Resolver{}, nil, nil)
+		o := newCatalogOrchestrator(ws, nil, starterResolver(t), nil, nil)
 		res, err := o.installPack(context.Background(), api.CatalogInstallRequest{Pack: catalog.StarterPack})
 		if err != nil {
 			t.Fatalf("installPack: %v", err)
@@ -49,7 +98,7 @@ func TestCatalogOrchestratorInstall(t *testing.T) {
 			applied = append(applied, req.Path)
 			return api.ControlResult{Warnings: []string{"w:" + req.Path}}, nil
 		}
-		o := newCatalogOrchestrator(t.TempDir(), nil, catalog.Resolver{}, fake, nil)
+		o := newCatalogOrchestrator(t.TempDir(), nil, starterResolver(t), fake, nil)
 		res, err := o.installPack(context.Background(), api.CatalogInstallRequest{Pack: catalog.StarterPack, Apply: true})
 		if err != nil {
 			t.Fatalf("installPack: %v", err)
@@ -72,7 +121,7 @@ func TestCatalogOrchestratorInstall(t *testing.T) {
 			}
 			return api.ControlResult{}, nil
 		}
-		o := newCatalogOrchestrator(t.TempDir(), nil, catalog.Resolver{}, fake, nil)
+		o := newCatalogOrchestrator(t.TempDir(), nil, starterResolver(t), fake, nil)
 		_, err := o.installPack(context.Background(), api.CatalogInstallRequest{Pack: catalog.StarterPack, Apply: true})
 		if err == nil || !strings.Contains(err.Error(), "quake_report") || !errors.Is(err, fail) {
 			t.Fatalf("installPack = %v, want the failing target named", err)
@@ -125,7 +174,7 @@ func TestCatalogOrchestratorInstall(t *testing.T) {
 
 	t.Run("a reinstall refuses without force and lands with it", func(t *testing.T) {
 		ws := t.TempDir()
-		o := newCatalogOrchestrator(ws, nil, catalog.Resolver{}, nil, nil)
+		o := newCatalogOrchestrator(ws, nil, starterResolver(t), nil, nil)
 		if _, err := o.installPack(context.Background(), api.CatalogInstallRequest{Pack: catalog.StarterPack}); err != nil {
 			t.Fatalf("first install: %v", err)
 		}

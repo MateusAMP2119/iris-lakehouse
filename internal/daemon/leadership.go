@@ -82,7 +82,7 @@ type Candidate struct {
 	appliedHds store.AppliedHeadReader
 	data       dataPlane
 	// catalogs is the pack-install plane (#217), riding the control orchestrator's apply
-	// seam; catalogResolver spans the embedded set plus the configured remote catalogs (#220).
+	// seam; catalogResolver spans the configured remote catalogs (#220).
 	catalogs        *catalogPlane
 	catalogResolver catalog.Resolver
 
@@ -269,7 +269,7 @@ func WithControlPlane(cp *controlPlane, workspace string, reg store.RegistryRead
 	}
 }
 
-// WithCatalogPlane wires the leader-side catalog plane (#217): its orchestrator installs with the control plane's, so pack installs ride the same workspace, registry reader, and apply path. resolver spans the embedded set plus the configured remote catalogs (#220). A nil cp leaves installs unwired.
+// WithCatalogPlane wires the leader-side catalog plane (#217): its orchestrator installs with the control plane's, so pack installs ride the same workspace, registry reader, and apply path. resolver spans the configured remote catalogs (#220). A nil cp leaves installs unwired.
 func WithCatalogPlane(cp *catalogPlane, resolver catalog.Resolver) CandidateOption {
 	return func(c *Candidate) {
 		c.catalogs = cp

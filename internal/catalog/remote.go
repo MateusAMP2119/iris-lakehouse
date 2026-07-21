@@ -196,31 +196,24 @@ func extractPack(name string, blob []byte) ([]File, string, error) {
 // Listing is one pack visible across all configured sources.
 type Listing struct {
 	IndexEntry
-	// Source is the pack's origin: SourceEmbedded or a catalog URL.
+	// Source is the pack's origin: a catalog URL.
 	Source string
 	// Shadowed marks a name already owned by an earlier source.
 	Shadowed bool
 }
 
-// Resolver resolves packs across the embedded set plus configured remote catalogs, in order.
+// Resolver resolves packs across the configured remote catalogs, in order.
 type Resolver struct {
 	// Catalogs are the configured remote catalogs; the earliest wins a name clash.
 	Catalogs []Remote
 }
 
-// List returns every visible pack, embedded first; an unreachable catalog is skipped and its error joined into the returned error beside the partial listing.
+// List returns every visible pack from configured catalogs; an unreachable catalog
+// is skipped and its error joined into the returned error beside the partial listing.
 func (r Resolver) List(ctx context.Context) ([]Listing, error) {
 	var out []Listing
 	seen := map[string]bool{}
 	var errs []error
-	embedded, err := Embedded()
-	if err != nil {
-		errs = append(errs, err)
-	}
-	for _, p := range embedded {
-		out = append(out, Listing{IndexEntry: p.IndexEntry, Source: SourceEmbedded, Shadowed: seen[p.Name]})
-		seen[p.Name] = true
-	}
 	for _, c := range r.Catalogs {
 		idx, err := c.Index(ctx)
 		if err != nil {
@@ -235,12 +228,10 @@ func (r Resolver) List(ctx context.Context) ([]Listing, error) {
 	return out, errors.Join(errs...)
 }
 
-// Resolve returns the named pack from its first owning source (embedded, then catalogs in order), sha-verifying a remote winner; an unreachable earlier catalog fails resolution so a shadowed pack can never win.
+// Resolve returns the named pack from its first owning catalog, sha-verifying the
+// tarball; an unreachable earlier catalog fails resolution so a shadowed pack can
+// never win. ok is false when no configured catalog lists the name.
 func (r Resolver) Resolve(ctx context.Context, name string) (Pack, bool, error) {
-	p, ok, err := EmbeddedPack(name)
-	if err != nil || ok {
-		return p, ok, err
-	}
 	for _, c := range r.Catalogs {
 		idx, err := c.Index(ctx)
 		if err != nil {

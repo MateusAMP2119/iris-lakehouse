@@ -206,8 +206,14 @@ func TestRemotePackURLGuards(t *testing.T) {
 // TestResolverList proves source order, shadowing, and the failed-catalog partial listing.
 func TestResolverList(t *testing.T) {
 	alphaA := demoTarball(t)
-	a := catalogServer(t, []IndexEntry{demoEntry(StarterPack, alphaA), demoEntry("alpha", alphaA)}, nil)
-	b := catalogServer(t, []IndexEntry{demoEntry("alpha", alphaA), demoEntry("beta", alphaA)}, nil)
+	a := catalogServer(t, []IndexEntry{demoEntry(StarterPack, alphaA), demoEntry("alpha", alphaA)}, map[string][]byte{
+		"packs/" + StarterPack + ".tar.gz": alphaA,
+		"packs/alpha.tar.gz":               alphaA,
+	})
+	b := catalogServer(t, []IndexEntry{demoEntry("alpha", alphaA), demoEntry("beta", alphaA)}, map[string][]byte{
+		"packs/alpha.tar.gz": alphaA,
+		"packs/beta.tar.gz":  alphaA,
+	})
 
 	t.Run("shadowing order", func(t *testing.T) {
 		out, err := Resolver{Catalogs: []Remote{a, b}}.List(context.Background())
@@ -223,9 +229,7 @@ func TestResolverList(t *testing.T) {
 			got = append(got, row{l.Name, l.Source, l.Shadowed})
 		}
 		want := []row{
-			{StarterPack, SourceEmbedded, false},
-			{"dlq-demo", SourceEmbedded, false},
-			{StarterPack, a.URL, true},
+			{StarterPack, a.URL, false},
 			{"alpha", a.URL, false},
 			{"alpha", b.URL, true},
 			{"beta", b.URL, false},
@@ -254,15 +258,25 @@ func TestResolverList(t *testing.T) {
 		for _, l := range out {
 			names[l.Name+"@"+l.Source] = l.Source
 		}
-		for _, want := range []string{StarterPack + "@" + SourceEmbedded, "dlq-demo@" + SourceEmbedded, "alpha@" + b.URL, "beta@" + b.URL} {
+		for _, want := range []string{"alpha@" + b.URL, "beta@" + b.URL} {
 			if _, ok := names[want]; !ok {
 				t.Errorf("partial listing lacks %s: %v", want, names)
 			}
 		}
 	})
+
+	t.Run("empty catalogs list is empty", func(t *testing.T) {
+		out, err := Resolver{}.List(context.Background())
+		if err != nil {
+			t.Fatalf("List empty: %v", err)
+		}
+		if len(out) != 0 {
+			t.Fatalf("List empty = %v, want none", out)
+		}
+	})
 }
 
-// TestResolverResolve proves embedded-first ownership, remote sha-verified wins, and clean not-found.
+// TestResolverResolve proves first-catalog ownership, remote sha-verified wins, and clean not-found.
 func TestResolverResolve(t *testing.T) {
 	winner := packTarGz(t, []tarEntry{regEntry("pipelines/alpha/iris-declare.yaml", "first catalog\n")})
 	loser := packTarGz(t, []tarEntry{regEntry("pipelines/alpha/iris-declare.yaml", "second catalog\n")})
@@ -270,21 +284,10 @@ func TestResolverResolve(t *testing.T) {
 	b := catalogServer(t, []IndexEntry{demoEntry("alpha", loser)}, map[string][]byte{"packs/alpha.tar.gz": loser})
 	res := Resolver{Catalogs: []Remote{a, b}}
 
-	t.Run("embedded wins without fetching", func(t *testing.T) {
-		var fetched bool
-		spy := Remote{URL: "https://catalog.example/catalog.json", Fetch: func(context.Context, string) ([]byte, error) {
-			fetched = true
-			return nil, errors.New("unreachable")
-		}}
-		p, ok, err := Resolver{Catalogs: []Remote{spy}}.Resolve(context.Background(), StarterPack)
-		if err != nil || !ok {
-			t.Fatalf("Resolve(%s) = ok=%v, err=%v", StarterPack, ok, err)
-		}
-		if p.Source != SourceEmbedded {
-			t.Errorf("Source = %q, want %q", p.Source, SourceEmbedded)
-		}
-		if fetched {
-			t.Error("remote fetched although the embedded set owns the name")
+	t.Run("unknown name with empty catalogs is clean not-found", func(t *testing.T) {
+		p, ok, err := Resolver{}.Resolve(context.Background(), StarterPack)
+		if err != nil || ok || p.Name != "" {
+			t.Fatalf("Resolve(%s) with no catalogs = ok=%v err=%v p=%+v", StarterPack, ok, err, p)
 		}
 	})
 

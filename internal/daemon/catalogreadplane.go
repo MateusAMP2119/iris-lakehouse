@@ -12,10 +12,11 @@ import (
 )
 
 // This file is the GET /catalog read plane (#219, #220): the pack listing the ps
-// overlay renders, served on any role from the embedded catalog plus the
-// configured remote catalogs, badged installed when every pack pipeline is
-// currently registered. An unreachable catalog degrades to a warning beside the
-// partial listing, mirroring the ps offline banner pattern.
+// overlay renders, served on any role from the configured remote catalogs, badged
+// installed when every pack pipeline is currently registered. An unreachable
+// catalog degrades to a warning beside the partial listing, mirroring the ps
+// offline banner pattern. Non-shadowed packs are resolved (fetch + sha verify)
+// so previews and installed badges work the same for every source.
 
 // catalogReadPlane is the daemon's api.CatalogListHandler.
 type catalogReadPlane struct {
@@ -35,7 +36,7 @@ func NewCatalogReadPlane(registry store.RegistryReader, resolver catalog.Resolve
 	return &catalogReadPlane{registry: registry, resolver: resolver, logger: logger}
 }
 
-// ListPacks answers every visible pack with badges and preview material; embedded entries carry full previews, remote ones their index facts.
+// ListPacks answers every visible pack with badges and preview material.
 func (p *catalogReadPlane) ListPacks(ctx context.Context) (api.CatalogListResult, error) {
 	listings, lerr := p.resolver.List(ctx)
 	registered := map[string]bool{}
@@ -49,27 +50,38 @@ func (p *catalogReadPlane) ListPacks(ctx context.Context) (api.CatalogListResult
 		}
 	}
 	res := api.CatalogListResult{Packs: make([]api.CatalogPack, 0, len(listings))}
+	var enrichWarns []string
 	for _, l := range listings {
-		res.Packs = append(res.Packs, describeListing(l, registered))
+		entry, w := p.describeListing(ctx, l, registered)
+		res.Packs = append(res.Packs, entry)
+		if w != "" {
+			enrichWarns = append(enrichWarns, w)
+		}
 	}
 	if lerr != nil {
 		res.Warnings = strings.Split(lerr.Error(), "\n")
 	}
+	res.Warnings = append(res.Warnings, enrichWarns...)
 	return res, nil
 }
 
-// describeListing renders one listing entry, enriching embedded packs with their full preview.
-func describeListing(l catalog.Listing, registered map[string]bool) api.CatalogPack {
+// describeListing renders one listing entry. Shadowed rows stay index-only;
+// winners are resolved for full preview and installed badges. A resolve failure
+// keeps the index facts and returns a soft warning (never fails the list).
+func (p *catalogReadPlane) describeListing(ctx context.Context, l catalog.Listing, registered map[string]bool) (api.CatalogPack, string) {
 	entry := api.CatalogPack{
 		Name: l.Name, Description: l.Description, Tags: l.Tags,
 		Requires: l.Requires, SHA256: l.SHA256, Source: l.Source, Shadowed: l.Shadowed,
 	}
-	if l.Source != catalog.SourceEmbedded {
-		return entry
+	if l.Shadowed {
+		return entry, ""
 	}
-	pk, ok, err := catalog.EmbeddedPack(l.Name)
-	if err != nil || !ok {
-		return entry
+	pk, ok, err := p.resolver.Resolve(ctx, l.Name)
+	if err != nil {
+		return entry, "catalog pack " + l.Name + " preview unavailable: " + err.Error()
+	}
+	if !ok {
+		return entry, ""
 	}
 	entry.Readme = pk.README
 	for _, f := range pk.Files {
@@ -82,7 +94,7 @@ func describeListing(l catalog.Listing, registered map[string]bool) api.CatalogP
 	if order, oerr := catalog.ApplyOrder(pk); oerr == nil {
 		entry.ApplyOrder = order
 	}
-	return entry
+	return entry, ""
 }
 
 // allRegistered reports whether every name is currently registered.

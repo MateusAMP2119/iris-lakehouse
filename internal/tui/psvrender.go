@@ -503,70 +503,19 @@ func renderPsFrame(m *psModel, w, h int, colorless bool) *screenBuf {
 	return b
 }
 
-// irisMarkArt is the project mark for the quiet-engine empty card (~20×24).
-// Spacing is load-bearing; lines share one origin when centered so the cross
-// stays true. Too-small terminals fall back to a text brand.
-const irisMarkArt = `
-           *#           
-           %@           
-           %@           
-           @@           
-           @@           
-           @@           
-@@         @@@        @@
-  %@@@%    @@@@@@@@@@%  
-    *@@@@@ @@@@@@@@*    
-     @@@@@@@@@@@@@@     
-     @@@@@@@@@@@@@@     
-     @@@@@@@@@@@@@@     
-   @@@@@@@@@@@@@@@@@@   
-@@       #@@@@#       @@
-           @@           
-           @@           
-           @@           
-           @@           
-           @@           
-           #*           
-`
-
-// irisMarkLines splits a raw art block into paint-ready lines (leading spaces
-// kept, trailing padding dropped).
-func irisMarkLines(art string) []string {
-	raw := strings.Split(strings.Trim(art, "\n"), "\n")
-	out := make([]string, 0, len(raw))
-	for _, l := range raw {
-		out = append(out, strings.TrimRight(l, " "))
-	}
-	return out
-}
-
-// irisMarkWidth is the display width of a mark block (widest line).
-func irisMarkWidth(lines []string) int {
-	w := 0
-	for _, l := range lines {
-		if n := len([]rune(l)); n > w {
-			w = n
-		}
-	}
-	return w
-}
-
-// irisMarkFor returns the mark when it fits the inner geometry, else nil
-// (caller paints a text brand instead).
-func irisMarkFor(innerW, innerH, textBelow int) []string {
-	if textBelow < 0 {
-		textBelow = 0
-	}
-	mark := irisMarkLines(irisMarkArt)
-	if irisMarkWidth(mark) <= innerW && len(mark)+textBelow <= innerH {
-		return mark
-	}
-	return nil
+// emptyActions are the guided-card rows: the three concrete moves a fresh
+// engine wants, key/command in accent, effect in dim.
+var emptyActions = []struct{ key, desc string }{
+	{"c", "browse the pack catalog, install a pipeline"},
+	{":logs <id>", "pin any run's log tail"},
+	{"iris declare apply", "register your own pipeline from YAML"},
 }
 
 // renderEmptyWorkspace paints the zero-state: engine is alive, nothing is
-// registered yet. Frameless (Grok welcome style) — mark + guidance centered in
-// the body with margins, no hollow multi-pane boxes and no full-screen border.
+// registered yet. No brand art — the header wordmark carries the identity;
+// the body is a status line, a bordered GET STARTED card, and two prose lines,
+// centered with soft margins. Short terminals shed prose and the card's
+// breathing rows, then fall back to a one-line nudge.
 func renderEmptyWorkspace(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 	if h < 3 || w < 20 {
 		b.text(x+2, y+1, ansiDim, "no pipelines yet · press c for catalog")
@@ -578,136 +527,77 @@ func renderEmptyWorkspace(b *screenBuf, m *psModel, x, y, w, h int, colorless bo
 	innerW := w - 2*hpad
 	innerH := h - 2*vpad
 	ox, oy := x+hpad, y+vpad
-	if innerW < 16 || innerH < 4 {
+	if innerW < 26 || innerH < 5 {
 		b.text(ox, oy, ansiDim, "no pipelines yet · c catalog")
 		return
 	}
-	_ = colorless // mark/action colors still apply; colorless path uses same glyphs
+	_ = colorless // accent/dim SGR apply; a disabled painter drops them at emit
 
-	// Card lines: brand mark + headline center; actions left-aligned as a column.
-	// align: 0 = action column (left in col), 1 = center by text width, 2 = mark
-	// block (left-aligned inside a fixed mark width so the cross stays true).
-	const (
-		alignCol    = 0
-		alignCenter = 1
-		alignMark   = 2
-	)
-	type row struct {
-		sgr   string
-		s     string
-		align int
-	}
 	e := m.snap.Ps.Engine
-	status := fmt.Sprintf("%s · %s · pid %d · up %s",
+	status := fmt.Sprintf("engine is quiet · %s · %s · pid %d · up %s",
 		e.Version, strings.ToUpper(e.Role), e.PID, e.Uptime)
 	if e.Version == "" {
-		status = "engine online"
+		status = "engine is quiet"
 	}
 
-	// Reserve a few rows under the mark for status + a short action line so the
-	// art never eats the whole card with no guidance. Prefer the large mark.
-	const minTextBelow = 4
-	mark := irisMarkFor(innerW, innerH, minTextBelow)
-	markW := irisMarkWidth(mark)
-
-	var lines []row
-	if mark != nil {
-		for _, l := range mark {
-			lines = append(lines, row{ansiMagenta, l, alignMark})
-		}
-		lines = append(lines,
-			row{"", "", alignCenter},
-			row{ansiDim, "engine is quiet · "+status, alignCenter},
-			row{ansiCyan, "No pipelines registered yet", alignCenter},
-		)
-	} else {
-		lines = []row{
-			{ansiMagenta, "✦  iris", alignCenter},
-			{ansiDim, "engine is quiet · " + status, alignCenter},
-			{ansiCyan, "No pipelines registered yet", alignCenter},
-		}
+	// Card geometry: lead + key column + widest effect, clamped to the body.
+	const lead, keyW = 3, 22
+	cardW := 74
+	if cardW > innerW {
+		cardW = innerW
+	}
+	spacious := innerH >= 15 // breathing rows inside the card + prose below
+	cardH := 2 + len(emptyActions)
+	if spacious {
+		cardH = 4 + 2*len(emptyActions) - 1
 	}
 
-	// Remaining vertical budget: prose only. Key chords live in the shortcuts
-	// bar (footer) so the card does not duplicate them.
-	used := len(lines)
-	rest := innerH - used
-
-	switch {
-	case rest >= 6:
-		lines = append(lines,
-			row{"", "", alignCenter},
-			row{ansiDim, "This view is your live ops board — lanes, runs, load, logs.", alignCenter},
-			row{ansiDim, "It lights up the moment work lands on the engine.", alignCenter},
-			row{"", "", alignCenter},
-			row{ansiDim, "iris catalog install <pack>  ·  iris declare apply", alignCenter},
-		)
-	case rest >= 3:
-		lines = append(lines,
-			row{"", "", alignCenter},
-			row{ansiDim, "press c to open the pack catalog", alignCenter},
-		)
+	contentH := 2 + cardH // status + gap + card
+	if spacious {
+		contentH += 3 // gap + two prose lines
 	}
-
-	// Column width for left-aligned action rows (longest action line).
-	colW := 0
-	for _, ln := range lines {
-		if ln.align == alignCol {
-			if n := len([]rune(ln.s)); n > colW {
-				colW = n
-			}
-		}
-	}
-	if colW > innerW {
-		colW = innerW
-	}
-	colX := ox + (innerW-colW)/2
-	if colX < ox {
-		colX = ox
-	}
-	markX := ox + (innerW-markW)/2
-	if markX < ox {
-		markX = ox
-	}
-
-	// Vertically center the block in the body.
-	contentH := len(lines)
 	startY := oy
 	if contentH < innerH {
 		startY = oy + (innerH-contentH)/2
 	}
-	for i, ln := range lines {
-		ry := startY + i
-		if ry >= y+h {
-			break
-		}
-		if ln.s == "" {
-			continue
-		}
-		s := ln.s
+	center := func(ry int, sgr, s string) {
 		runes := []rune(s)
 		if len(runes) > innerW {
 			s = string(runes[:innerW-1]) + "…"
 			runes = []rune(s)
 		}
-		var cx int
-		switch ln.align {
-		case alignMark:
-			cx = markX // fixed origin — preserves the cross geometry
-		case alignCenter:
-			cx = ox + (innerW-len(runes))/2
-			if cx < ox {
-				cx = ox
-			}
-		default:
-			cx = colX
+		b.text(ox+(innerW-len(runes))/2, ry, sgr, s)
+	}
+
+	center(startY, ansiDim, status)
+
+	cardX := ox + (innerW-cardW)/2
+	cardY := startY + 2
+	b.box(cardX, cardY, cardW, cardH, ansiDim, ansiDim, "GET STARTED")
+	itemY := cardY + 1
+	step := 1
+	if spacious {
+		itemY++
+		step = 2
+	}
+	for i, a := range emptyActions {
+		ry := itemY + i*step
+		b.text(cardX+1+lead, ry, ansiCyan, a.key)
+		desc := a.desc
+		if room := cardW - 2 - lead - keyW - 1; len([]rune(desc)) > room && room > 0 {
+			desc = string([]rune(desc)[:room-1]) + "…"
 		}
-		b.text(cx, ry, ln.sgr, s)
+		b.text(cardX+1+lead+keyW, ry, ansiDim, desc)
+	}
+
+	if spacious {
+		center(cardY+cardH+1, ansiDim, "This view is your live ops board — lanes, runs, load, logs.")
+		center(cardY+cardH+2, ansiDim, "It lights up the moment work lands on the engine.")
 	}
 }
 
-// renderPsHeader paints row 0. On a quiet engine it stays calm (no hollow
-// CPU/MEM metrics). With work registered: identity left, load right.
+// renderPsHeader paints row 0: identity left, live CPU/MEM right. A quiet
+// engine keeps the load readout (it is real data) but drops the run counts.
 func renderPsHeader(b *screenBuf, m *psModel) {
 	e := m.snap.Ps.Engine
 	x := 1
@@ -717,7 +607,8 @@ func renderPsHeader(b *screenBuf, m *psModel) {
 	}
 
 	if psIsEmptyWorkspace(m) {
-		// Grok-style quiet identity — no empty metric chrome.
+		// Quiet identity left; CPU/MEM right — real load even with no work
+		// registered. Run counts stay off (they are the hollow part).
 		put(ansiMagenta, "iris")
 		if e.Version != "" {
 			put(ansiDim, "  ")
@@ -729,6 +620,7 @@ func renderPsHeader(b *screenBuf, m *psModel) {
 			put(ansiDim, "  ·  up ")
 			put("", e.Uptime)
 		}
+		renderHeaderLoad(b, m, x, 0)
 		return
 	}
 
@@ -741,26 +633,12 @@ func renderPsHeader(b *screenBuf, m *psModel) {
 
 	// The right side: CPU heat strip, MEM, run counts, sized to fit and shed
 	// leftmost-first when the terminal narrows.
-	cpu := " " + cpuText(e.Load)
-	mem := " · MEM " + memText(e.Load)
 	counts := fmt.Sprintf(" · %d running · %d queued", e.RunningRuns, e.QueuedRuns)
-	stripW := 30
-	fixed := len("CPU ") + len([]rune(cpu+mem+counts))
-	if avail := b.w - 1 - idEnd - 3; fixed+stripW > avail {
-		stripW = avail - fixed
-		if stripW < 8 {
-			stripW = 0
-		}
-		if fixed+stripW > avail {
-			return // identity row only; the panes still carry the numbers
-		}
+	nx, ok := renderHeaderLoad(b, m, idEnd, len([]rune(counts)))
+	if !ok {
+		return // identity row only; the panes still carry the numbers
 	}
-	x = b.w - 1 - (fixed + stripW)
-	put(ansiDim, "CPU ")
-	b.renderHeatStrip(x, 0, stripW, m.stripCPU("", stripW))
-	x += stripW
-	put("", cpu)
-	put(ansiDim, mem)
+	x = nx
 	rc, qc := ansiCyan, ansiYellow
 	if e.RunningRuns == 0 {
 		rc = ansiDim
@@ -772,6 +650,37 @@ func renderPsHeader(b *screenBuf, m *psModel) {
 	put(rc, fmt.Sprintf("%d running", e.RunningRuns))
 	put(ansiDim, " · ")
 	put(qc, fmt.Sprintf("%d queued", e.QueuedRuns))
+}
+
+// renderHeaderLoad right-aligns the CPU heat strip and CPU/MEM readout on
+// row 0, reserving extraW cells after MEM for the caller's tail; the strip
+// shrinks, then the whole block sheds, when the identity block leaves no
+// room. Returns the x after MEM and whether anything was drawn.
+func renderHeaderLoad(b *screenBuf, m *psModel, idEnd, extraW int) (int, bool) {
+	e := m.snap.Ps.Engine
+	cpu := " " + cpuText(e.Load)
+	mem := " · MEM " + memText(e.Load)
+	stripW := 30
+	fixed := len("CPU ") + len([]rune(cpu+mem)) + extraW
+	if avail := b.w - 1 - idEnd - 3; fixed+stripW > avail {
+		stripW = avail - fixed
+		if stripW < 8 {
+			stripW = 0
+		}
+		if fixed+stripW > avail {
+			return 0, false
+		}
+	}
+	x := b.w - 1 - (fixed + stripW)
+	b.text(x, 0, ansiDim, "CPU ")
+	x += len("CPU ")
+	b.renderHeatStrip(x, 0, stripW, m.stripCPU("", stripW))
+	x += stripW
+	b.text(x, 0, "", cpu)
+	x += len([]rune(cpu))
+	b.text(x, 0, ansiDim, mem)
+	x += len([]rune(mem))
+	return x, true
 }
 
 func orDefault(s, def string) string {

@@ -203,7 +203,7 @@ func TestRunPsLoopCatalogWiring(t *testing.T) {
 				mu.Lock()
 				got = append(got, req)
 				mu.Unlock()
-				catalogMsgs <- psCatalogMsg{kind: psCatalogList, seq: req.seq, packs: []api.CatalogPack{{Name: "quake-monitor", Source: "embedded"}}}
+				catalogMsgs <- psCatalogMsg{kind: psCatalogList, seq: req.seq, packs: []api.CatalogPack{{Name: "quake-monitor", Source: "https://cat.example/catalog.json"}}}
 			},
 		}
 		m := newPsModel(psvFixture(), "")

@@ -11,11 +11,12 @@ import (
 // IndexFormat is the catalog.json format version this engine understands.
 const IndexFormat = 1
 
-// StarterPack is the pack `iris catalog init` installs.
+// StarterPack is the pack `iris catalog init` installs (resolved from configured catalogs).
 const StarterPack = "quake-monitor"
 
-// SourceEmbedded marks packs compiled into the binary.
-const SourceEmbedded = "embedded"
+// PublicCatalogURL is the public iris-catalog index setup pins by default.
+// Packs ship from that repo, not the engine binary.
+const PublicCatalogURL = "https://raw.githubusercontent.com/MateusAMP2119/iris-catalog/main/catalog.json"
 
 // ReadmeName is the pack's documentation file, shown by `show` and never materialized.
 const ReadmeName = "README.md"
@@ -74,7 +75,7 @@ type File struct {
 // Pack is a resolved pack: its index entry, source, README, and workspace files.
 type Pack struct {
 	IndexEntry
-	// Source names where the pack came from (embedded, or a catalog URL later).
+	// Source names where the pack came from (a catalog index URL).
 	Source string
 	// README is the pack's documentation, empty when the pack carries none.
 	README string

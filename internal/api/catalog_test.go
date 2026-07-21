@@ -105,7 +105,7 @@ func (f *fixedCatalogList) ListPacks(context.Context) (api.CatalogListResult, er
 // role, 500 unwired, params refused, POST refused.
 func TestCatalogListRoute(t *testing.T) {
 	t.Run("the listing renders in the data envelope on a standby too", func(t *testing.T) {
-		h := &fixedCatalogList{res: api.CatalogListResult{Packs: []api.CatalogPack{{Name: "quake-monitor", Source: "embedded"}}, Warnings: []string{"w"}}}
+		h := &fixedCatalogList{res: api.CatalogListResult{Packs: []api.CatalogPack{{Name: "quake-monitor", Source: "https://cat.example/catalog.json"}}, Warnings: []string{"w"}}}
 		rec := httptest.NewRecorder()
 		api.NewMux(api.WithCatalogList(h)).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/catalog", nil))
 		if rec.Code != http.StatusOK {

@@ -15,9 +15,10 @@ import (
 )
 
 // This file is the daemon's leader-side catalog plane (#217): POST /catalog/install
-// resolves a pack (embedded only at this stage), preflights it against the registry
-// and the workspace schemas, materializes it into the leader's own workspace, and
-// optionally runs the declare sequence through the control orchestrator.
+// resolves a pack from configured remote catalogs, preflights it against the
+// registry and the workspace schemas, materializes it into the leader's own
+// workspace, and optionally runs the declare sequence through the control
+// orchestrator.
 
 // catalogPlane is the daemon's api.CatalogHandler: a stable handle delegating to the live orchestrator while leading.
 type catalogPlane struct {

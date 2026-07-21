@@ -214,8 +214,8 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	role := api.NewRoleState()
 	control := newControlPlane()
 	// The catalog plane serves POST /catalog/install once this daemon leads (#217).
-	// The resolver spans the embedded packs plus the iris.toml catalogs list (#220);
-	// the client names packs, never URLs, so all catalog egress is daemon-side.
+	// The resolver spans the iris.toml catalogs list (#220); the client names packs,
+	// never URLs, so all catalog egress is daemon-side.
 	catalogCtl := newCatalogPlane()
 	catalogRemotes := make([]catalog.Remote, 0, len(s.Catalogs))
 	for _, u := range s.Catalogs {
