@@ -227,9 +227,15 @@ type workResultMsg struct{ err error }
 // workPollMsg re-arms the wait/poll loop while the job is still running.
 type workPollMsg struct{}
 
-// workProgressModel is a ceremony bar that creeps while real work runs, then
-// snaps to 100% when the job returns. Avoids the "bar done, then long silence"
-// feel of a cosmetic fill that finishes before install/start begin.
+// workStageMsg is delivered when the running job completes a real stage
+// (a parsed lifecycle log line, an observed pidfile, a reachable socket).
+type workStageMsg struct{}
+
+// workProgressModel is a ceremony bar driven by real work. With stages wired
+// (total > 0) the bar's floor is stagesSeen/total of the crawl cap and it
+// creeps only within the current stage's segment, so every jump is an actual
+// completed step; without stages it creeps toward the cap as before. It snaps
+// to 100% when the job returns.
 type workProgressModel struct {
 	label    string
 	bar      progress.Model
@@ -237,6 +243,9 @@ type workProgressModel struct {
 	quitting bool
 	err      error
 	done     <-chan error
+	stages   <-chan struct{}
+	total    int // expected stage count; 0 = no stage signal, pure crawl
+	seen     int
 	start    time.Time
 }
 
@@ -252,6 +261,24 @@ func newWorkProgressModel(label string, done <-chan error) workProgressModel {
 		done:  done,
 		start: time.Now(),
 	}
+}
+
+// workCrawlCap is where the bar parks until the job actually returns: the last
+// stretch is reserved for real completion, never simulated.
+const workCrawlCap = 0.92
+
+// segmentCeiling is the highest percent the crawl may reach before the next
+// real stage lands: with stages wired, the boundary of the current segment;
+// without, the crawl cap.
+func (m workProgressModel) segmentCeiling() float64 {
+	if m.total <= 0 {
+		return workCrawlCap
+	}
+	c := float64(m.seen+1) / float64(m.total) * workCrawlCap
+	if c > workCrawlCap {
+		c = workCrawlCap
+	}
+	return c
 }
 
 // workElapsedAfter is how long a job runs before the ceremony line starts
@@ -270,16 +297,19 @@ func formatWorkElapsed(d time.Duration) string {
 }
 
 func (m workProgressModel) Init() tea.Cmd {
-	return tea.Batch(m.bar.Init(), waitWork(m.done))
+	return tea.Batch(m.bar.Init(), waitWork(m.done, m.stages))
 }
 
-// waitWork returns as soon as the job finishes, or after a short tick so the
-// bar can keep creeping while work is still in flight.
-func waitWork(done <-chan error) tea.Cmd {
+// waitWork returns as soon as the job finishes or a real stage completes, or
+// after a short tick so the bar can keep creeping while work is in flight.
+// A nil stages channel blocks that arm forever (the un-staged crawl).
+func waitWork(done <-chan error, stages <-chan struct{}) tea.Cmd {
 	return func() tea.Msg {
 		select {
 		case err := <-done:
 			return workResultMsg{err: err}
+		case <-stages:
+			return workStageMsg{}
 		case <-time.After(80 * time.Millisecond):
 			return workPollMsg{}
 		}
@@ -290,17 +320,26 @@ func (m workProgressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		return m, nil
+	case workStageMsg:
+		// A real step completed: the bar's floor advances to the stage boundary.
+		m.seen++
+		if floor := float64(m.seen) / float64(max(m.total, 1)) * workCrawlCap; m.percent < floor {
+			m.percent = floor
+		}
+		cmd := m.bar.SetPercent(m.percent)
+		return m, tea.Batch(cmd, waitWork(m.done, m.stages))
 	case workPollMsg:
-		// Asymptotic crawl toward ~92% so long jobs never look frozen at 100% early.
-		if m.percent < 0.92 {
+		// Asymptotic crawl toward the current segment's ceiling so the bar never
+		// looks frozen between real stages (or, un-staged, toward the crawl cap).
+		if ceiling := m.segmentCeiling(); m.percent < ceiling {
 			// Larger steps early, smaller later: remaining * 0.06 per poll.
-			m.percent += (0.92 - m.percent) * 0.06
-			if m.percent > 0.92 {
-				m.percent = 0.92
+			m.percent += (ceiling - m.percent) * 0.06
+			if m.percent > ceiling {
+				m.percent = ceiling
 			}
 		}
 		cmd := m.bar.SetPercent(m.percent)
-		return m, tea.Batch(cmd, waitWork(m.done))
+		return m, tea.Batch(cmd, waitWork(m.done, m.stages))
 	case workResultMsg:
 		m.err = msg.err
 		m.percent = 1
@@ -347,6 +386,14 @@ func (m workProgressModel) View() string {
 // until work returns, then settles at 100%. Non-TTY: runs work with no animation.
 // The final settled line is appended to $IRIS_CEREMONY_LOG when set.
 func runProgressWhile(out io.Writer, prefix string, work func() error) error {
+	return runProgressStaged(out, prefix, 0, nil, work)
+}
+
+// runProgressStaged is runProgressWhile with real progress wired in: stages
+// carries one send per completed step of the work (total expected overall), and
+// the bar advances stage by stage — creeping only within the current stage's
+// segment — instead of simulating progress against wall-clock time.
+func runProgressStaged(out io.Writer, prefix string, total int, stages <-chan struct{}, work func() error) error {
 	if work == nil {
 		work = func() error { return nil }
 	}
@@ -361,6 +408,8 @@ func runProgressWhile(out io.Writer, prefix string, work func() error) error {
 	go func() { done <- work() }()
 
 	m := newWorkProgressModel(prefix, done)
+	m.total = total
+	m.stages = stages
 	p := tea.NewProgram(m, tea.WithOutput(out), tea.WithInput(nil))
 	final, err := p.Run()
 	wm, _ := final.(workProgressModel)

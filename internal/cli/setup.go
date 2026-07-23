@@ -4,15 +4,19 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/catalog"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/config"
+	"github.com/MateusAMP2119/iris-lakehouse/internal/daemon"
 )
 
 // setupEngineChoiceName is the short-lived marker install.sh's two setup phases
@@ -110,8 +114,12 @@ func (a *app) runEngineSetupPhase(cmd *cobra.Command, mode string, log *ceremony
 	switch choice {
 	case setupLocal:
 		log.line("  • Selected: Local mode")
-		if err := runProgressWhile(a.out, "• Installing engine", func() error {
-			return a.runSelfQuiet(cmd, "engine", "install")
+		// Real progress: the nested install's stage lines (parsed live off its
+		// stderr) drive the bar — placing Postgres, starting it, privileges,
+		// meta database, schema, journal, turn positions, socket, engine key.
+		stages := make(chan struct{}, 16)
+		if err := runProgressStaged(a.out, "• Installing engine", engineInstallStageCount, stages, func() error {
+			return a.runSelfQuietStaged(cmd, stages, "engine install: ", "engine", "install")
 		}); err != nil {
 			return choice, err
 		}
@@ -174,13 +182,53 @@ func (a *app) startEngineIfNeeded(cmd *cobra.Command, log *ceremonyLog, done fun
 		done("Engine already running")
 		return nil
 	}
-	if err := runProgressWhile(a.out, "• Starting engine", func() error {
+	// Real progress: the detached daemon's observable milestones — its pidfile
+	// appearing, then its control socket accepting a dial — drive the bar.
+	stages := make(chan struct{}, 8)
+	stop := make(chan struct{})
+	go watchStartMilestones(stop, settings, stages)
+	err := runProgressStaged(a.out, "• Starting engine", startMilestoneCount, stages, func() error {
 		return a.runSelfQuiet(cmd, "engine", "start", "-d")
-	}); err != nil {
+	})
+	close(stop)
+	if err != nil {
 		return err
 	}
 	done("Engine started")
 	return nil
+}
+
+// startMilestoneCount is the number of observable milestones a detached engine
+// start passes through: pidfile written, control socket reachable.
+const startMilestoneCount = 2
+
+// watchStartMilestones polls for the detached daemon's real start milestones
+// and reports each once on stages. It stops when both have fired or stop
+// closes (the start returned, successfully or not).
+func watchStartMilestones(stop <-chan struct{}, s config.Settings, stages chan<- struct{}) {
+	t := time.NewTicker(150 * time.Millisecond)
+	defer t.Stop()
+	sentPID, sentSocket := false, false
+	for !sentPID || !sentSocket {
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+			if !sentPID {
+				if _, err := os.Stat(daemon.PIDPath(s)); err == nil {
+					sentPID = true
+					stages <- struct{}{}
+				}
+			}
+			if !sentSocket {
+				if conn, err := net.Dial("unix", s.Socket); err == nil {
+					_ = conn.Close()
+					sentSocket = true
+					stages <- struct{}{}
+				}
+			}
+		}
+	}
 }
 
 // setupCatalogs runs the catalog menu (or preselect) and records the chosen
@@ -280,6 +328,64 @@ func (a *app) runSelf(_ *cobra.Command, args ...string) error {
 	c.Stderr = a.errOut
 	c.Stdin = os.Stdin
 	if err := c.Run(); err != nil {
+		return &fault{code: exitOpFailed, codeStr: "setup_failed", message: fmt.Sprintf("iris %s: %v", strings.Join(args, " "), err)}
+	}
+	return nil
+}
+
+// engineInstallStageCount is how many "engine install: …" stage lines a
+// managed-mode install emits (daemon.InstallEngine): placing Postgres,
+// starting Postgres, privileges verified, meta database created-or-exists,
+// meta schema, data journal, turn positions, control socket, engine key.
+const engineInstallStageCount = 9
+
+// stageScanWriter tees a subprocess stream and reports each line carrying the
+// stage marker with one non-blocking send — the live progress feed for the
+// setup ceremony bar.
+type stageScanWriter struct {
+	buf    bytes.Buffer
+	marker string
+	stages chan<- struct{}
+}
+
+func (w *stageScanWriter) Write(p []byte) (int, error) {
+	w.buf.Write(p)
+	for {
+		line, err := w.buf.ReadString('\n')
+		if err != nil {
+			// Partial line: keep it buffered for the next Write.
+			w.buf.WriteString(line)
+			break
+		}
+		if strings.Contains(line, w.marker) {
+			select {
+			case w.stages <- struct{}{}:
+			default:
+			}
+		}
+	}
+	return len(p), nil
+}
+
+// runSelfQuietStaged is runSelfQuiet with the child's stderr additionally
+// scanned for marker lines, each reported on stages as one completed step.
+func (a *app) runSelfQuietStaged(_ *cobra.Command, stages chan<- struct{}, marker string, args ...string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return &fault{code: exitOpFailed, codeStr: "setup_failed", message: fmt.Sprintf("iris setup: resolve self: %v", err)}
+	}
+	var out, errb bytes.Buffer
+	c := exec.Command(exe, args...)
+	c.Stdout = &out
+	c.Stderr = io.MultiWriter(&errb, &stageScanWriter{marker: marker, stages: stages})
+	c.Stdin = os.Stdin
+	if err := c.Run(); err != nil {
+		if a.out != nil {
+			fmt.Fprint(a.out, out.String())
+		}
+		if a.errOut != nil {
+			fmt.Fprint(a.errOut, errb.String())
+		}
 		return &fault{code: exitOpFailed, codeStr: "setup_failed", message: fmt.Sprintf("iris %s: %v", strings.Join(args, " "), err)}
 	}
 	return nil
