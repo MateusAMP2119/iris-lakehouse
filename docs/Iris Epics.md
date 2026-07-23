@@ -44,7 +44,7 @@ The harness is a permanent asset and predates every epic below; it is not itself
 - **Real I/O where it is cheap.** Process I/O that needs no database — subprocess execution, output capture, cancel and kill, socket HTTP against an in-process daemon — is tested for real against throwaway scripts rather than faked.
 - **End-to-end runner (removed).** The conformance tests once drove the actual shipped binary against a running daemon over the socket, asserting exit codes and `--json` output, with a real Postgres created by the engine itself hosting both databases. The suite is deleted; generated SQL now meets a live database only inside a live engine.
 - **No fixed sleeps.** Failover and other async assertions wait on connection and run state. A fixed sleep in a test is a bug.
-- **CI is the merge gate.** Per push and PR: golangci-lint, database-free unit plus integration on the Go version matrix, and `go build`. Green across all stages is the merge gate. Windows is deferred from v1 — unix socket, service wrapper, and process-group kill each need Windows-specific answers — and is revisited post-v1.
+- **CI is the merge gate.** Per push and PR: golangci-lint, database-free unit plus integration on the Go version matrix, and `go build`. Green across all stages is the merge gate. Windows was deferred from v1 and has since landed: AF_UNIX covers the control socket, a Job Object-backed runner covers process-tree kill, a named stop event covers graceful daemon shutdown, and releases ship `iris_windows_{amd64,arm64}.zip` installed via `install.ps1`. The service wrapper (systemd/launchd units) remains unix-only.
 
 ## Epic map
 

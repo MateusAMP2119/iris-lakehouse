@@ -210,7 +210,7 @@ func (a *app) uninstallSelf() runE {
 			review()
 			return err
 		}
-		if err := os.Remove(path); err != nil {
+		if err := removeSelfBinary(path); err != nil {
 			if errors.Is(err, fs.ErrPermission) {
 				return &fault{
 					code:    exitOpFailed,
@@ -229,6 +229,7 @@ func (a *app) uninstallSelf() runE {
 			say("  %s %s", p.dim("!"), err.Error())
 		}
 		removeShellPathEntries()
+		removeUserPathEntry(filepath.Dir(path))
 		// Wipe the engine home (workspace, empty bin/, iris.toml, any leftover
 		// leaves) so "Traces erased" means nothing remains under ~/.iris.
 		if home := engineHomeDir(settings); home != "" {

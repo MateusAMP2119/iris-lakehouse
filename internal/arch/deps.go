@@ -55,7 +55,8 @@ func LoadGoSum(path string) ([]string, error) {
 // (admitted for flag-set introspection, never as an independent CLI framework),
 // goccy/go-yaml, an argon2id provider (github.com/alexedwards/argon2id or
 // golang.org/x/crypto), the embedded-postgres supervisor, spf13/viper for
-// engine config resolution, and the Charm stack for interactive surfaces
+// engine config resolution, golang.org/x/sys for Windows process management in
+// the exec runner, and the Charm stack for interactive surfaces
 // (bubbletea, lipgloss, bubbles, huh). Everything else is off the allowlist;
 // digests and signatures use only stdlib hashing and crypto/ed25519, which are
 // never go.mod requires.
@@ -71,6 +72,8 @@ func AllowedDirectDependency(path string) bool {
 		"github.com/fergusstrange/embedded-postgres",
 		// Raw terminal mode (still used by legacy paths and tests).
 		"golang.org/x/term",
+		// Windows process management (Job Objects) in the exec runner.
+		"golang.org/x/sys",
 		// Charm interactive stack: live view + install/uninstall prompts.
 		"github.com/charmbracelet/bubbletea",
 		"github.com/charmbracelet/lipgloss",

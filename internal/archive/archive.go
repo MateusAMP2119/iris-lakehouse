@@ -211,21 +211,6 @@ func Read(path string) (Header, [][]byte, error) {
 	return h, rows, nil
 }
 
-// syncDir is local copy of the durable-dir sync (avoid importing internal
-// details; small and stdlib).
-func syncDir(dir string) error {
-	d, err := os.Open(dir) //nolint:gosec // G304: archive-owned dir.
-	if err != nil {
-		return err
-	}
-	serr := d.Sync()
-	cerr := d.Close()
-	if serr != nil {
-		return serr
-	}
-	return cerr
-}
-
 // ObjectStore is the seam the export flow uses to place archived partition
 // files into the content-addressed objects directory. *store.ObjectStore
 // satisfies it in production.
