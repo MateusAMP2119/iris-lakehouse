@@ -86,15 +86,22 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           VERSION="${{ steps.ver.outputs.version }}"
-          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
             GOOS=${target%/*} GOARCH=${target#*/}
             export GOOS GOARCH
             out="dist/iris_${GOOS}_${GOARCH}"
-            go build -trimpath -ldflags="-s -w -X github.com/MateusAMP2119/iris-lakehouse/internal/buildinfo.Version=${VERSION}" -o "${out}/iris" ./cmd/iris
-            tar -czf "${out}.tar.gz" -C "${out}" iris
+            bin="iris"
+            [[ "$GOOS" == windows ]] && bin="iris.exe"
+            go build -trimpath -ldflags="-s -w -X github.com/MateusAMP2119/iris-lakehouse/internal/buildinfo.Version=${VERSION}" -o "${out}/${bin}" ./cmd/iris
+            if [[ "$GOOS" == windows ]]; then
+              # Windows ships as zip: native Expand-Archive, no tar step in the installer.
+              (cd "${out}" && zip -q "../iris_${GOOS}_${GOARCH}.zip" "${bin}")
+            else
+              tar -czf "${out}.tar.gz" -C "${out}" "${bin}"
+            fi
             rm -r "${out}"
           done
-          (cd dist && shasum -a 256 *.tar.gz > checksums.txt)
+          (cd dist && shasum -a 256 *.tar.gz *.zip > checksums.txt)
 
       - name: Create GitHub release
         env:
