@@ -79,7 +79,7 @@ func (r *OSRunner) Start(ctx context.Context, spec Spec) (Handle, error) {
 	// child that already exited cannot be opened or assigned; that is not an
 	// error -- the job is simply empty and Kill is a no-op.
 	if proc, err := windows.OpenProcess(
-		windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(cmd.Process.Pid),
+		windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(cmd.Process.Pid), //nolint:gosec // G115: a freshly started child's pid is positive and fits uint32.
 	); err == nil {
 		_ = windows.AssignProcessToJobObject(job, proc)
 		_ = windows.CloseHandle(proc)

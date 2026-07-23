@@ -17,7 +17,10 @@ const stillActive = 259
 // access-denied still proves the pid names a live process we cannot inspect.
 // See the contract comment in lifecycle.go.
 func processAlive(pid int) bool {
-	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if pid <= 0 {
+		return false
+	}
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid)) //nolint:gosec // G115: guarded above; a Windows pid fits uint32.
 	if err != nil {
 		return err == windows.ERROR_ACCESS_DENIED
 	}
