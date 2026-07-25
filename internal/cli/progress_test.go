@@ -172,15 +172,15 @@ func TestFormatFarewellAlignsAuthorToCeremonyEdge(t *testing.T) {
 	for _, q := range farewellQuotes {
 		lines := formatFarewell(q)
 		if len(lines) < 2 {
-			t.Fatalf("quote %q: want quote line(s) + author, got %v", q.author, lines)
+			t.Fatalf("quote %q: want quote line(s) + author, got %v", q.Author, lines)
 		}
 		author := lines[len(lines)-1]
 		if got := lipgloss.Width(author); got != edge {
-			t.Errorf("author line width for %s = %d, want ceremony edge %d\n%q", q.author, got, edge, author)
+			t.Errorf("author line width for %s = %d, want ceremony edge %d\n%q", q.Author, got, edge, author)
 		}
 		for i, line := range lines[:len(lines)-1] {
 			if got := lipgloss.Width(line); got > edge {
-				t.Errorf("quote line %d for %s wider than edge: %d > %d\n%q", i, q.author, got, edge, line)
+				t.Errorf("quote line %d for %s wider than edge: %d > %d\n%q", i, q.Author, got, edge, line)
 			}
 		}
 	}

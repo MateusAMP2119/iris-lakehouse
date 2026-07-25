@@ -19,6 +19,7 @@ import (
 	"github.com/MateusAMP2119/iris-lakehouse/internal/buildinfo"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/config"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/daemon"
+	"github.com/MateusAMP2119/iris-lakehouse/internal/quotes"
 )
 
 // errNotATerminal reports that stdin cannot host the interactive y/N confirmation.
@@ -342,22 +343,8 @@ func (a *app) writeUninstallHeaderBox(p painter, version string, log *ceremonyLo
 	appendCeremonyLogFile(bot)
 }
 
-// farewellQuote is one entry of the farewell pool.
-type farewellQuote struct {
-	author string
-	text   string
-}
-
-// farewellQuotes is the built-in pool the closing quote is drawn from at random.
-var farewellQuotes = []farewellQuote{
-	{"Heraclitus", "The only constant in life is change."},
-	{"Marcus Aurelius", "Everything that happens is either endurable or not. If it is endurable, endure it."},
-	{"Lao Tzu", "When you realize nothing is lacking, the whole world belongs to you."},
-	{"Nietzsche", "One must still have chaos in oneself to be able to give birth to a dancing star."},
-	{"Epictetus", "It's not what happens to you, but how you react to it that matters."},
-	{"Socrates (via Plato)", "The unexamined life is not worth living."},
-	{"Seneca", "Every new beginning comes from some other beginning's end."},
-}
+// farewellQuotes is the shared ceremony pool the closing quote draws from.
+var farewellQuotes = quotes.Farewell
 
 // farewellQuote prints one random quote wrapped to the ceremony line width, with
 // the attribution right-aligned to that same edge (flush with [✓] / 100%).
@@ -397,10 +384,10 @@ func (a *app) writeFarewellQuote(p painter, log *ceremonyLog) {
 
 // formatFarewell wraps the quote to the ceremony grid and right-aligns the
 // author on the final line so it shares the mark column's right edge.
-func formatFarewell(q farewellQuote) []string {
-	quoted := fmt.Sprintf("%q", q.text)
+func formatFarewell(q quotes.Quote) []string {
+	quoted := fmt.Sprintf("%q", q.Text)
 	// ASCII hyphen-minus avoids ambiguous em-dash display width across terminals.
-	attr := "- " + q.author
+	attr := "- " + q.Author
 	indentW := lipgloss.Width(ceremonyIndent)
 	edge := ceremonyLineWidth()
 	inner := edge - indentW

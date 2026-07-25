@@ -64,6 +64,7 @@ var productRanks = map[string]int{
 	"pat":       1,
 	"plugin":    1,
 	"update":    1,
+	"quotes":    1, // ceremony quote pool; cli and tui both read it
 	"store":     2,
 	"pg":        2,
 	"exec":      2,
