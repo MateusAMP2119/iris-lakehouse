@@ -344,6 +344,21 @@ func (l *Loop) RunLanePass(ctx context.Context, lane Lane) error {
 // laneDone signals that a lane's perpetual-loop goroutine finished one pass.
 type laneDone struct{ lane string }
 
+// memberInFlight reports whether any of pipelines is already a member of a
+// running pass, whatever lane name that pass runs under.
+func memberInFlight(running map[string][]string, pipelines []string) bool {
+	for _, members := range running {
+		for _, m := range members {
+			for _, p := range pipelines {
+				if m == p {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // Run drives the perpetual dispatch loop until ctx is cancelled: one goroutine per
 // lane, each running that lane's pass, distinct lanes in parallel with no engine cap.
 // It reads the walk at each reconcile point (a pass boundary or a watermark wake),
@@ -372,7 +387,13 @@ type laneDone struct{ lane string }
 // their run seam and drain themselves -- so shutdown is not delayed by a
 // still-running (or hung) lane.
 func (l *Loop) Run(ctx context.Context) error {
-	running := map[string]bool{}
+	// running maps each in-flight pass's lane name to its member pipelines. The
+	// members matter: a pipeline's lane identity can change between walk reads
+	// (mid-apply, a pipeline is its own anonymous lane until the composer row
+	// lands), and a pass spawned under the new name would drive the same
+	// resident session as the still-running pass under the old name --
+	// interleaving the turn protocol and dead-lettering healthy turns.
+	running := map[string][]string{}
 	// lastSeq is each lane's watermark sequence at its last pass START (this term).
 	// Recording the sequence before the pass reads the walk means a bump landing
 	// mid-pass re-opens eligibility at the pass boundary: a change is never missed,
@@ -404,7 +425,15 @@ func (l *Loop) Run(ctx context.Context) error {
 		walkNames := make(map[string]bool, len(lanes))
 		for _, lane := range lanes {
 			walkNames[lane.Name] = true
-			if running[lane.Name] {
+			if _, ok := running[lane.Name]; ok {
+				continue
+			}
+			if memberInFlight(running, lane.Pipelines) {
+				// A member is already being driven under another lane identity
+				// (the lane renamed or recomposed mid-flight). Skip without
+				// recording a park sequence, so the lane stays eligible and
+				// spawns at the reconcile boundary where the overlapping pass
+				// ends -- never two passes over one pipeline's session.
 				continue
 			}
 			if l.events != nil {
@@ -413,13 +442,13 @@ func (l *Loop) Run(ctx context.Context) error {
 				}
 				lastSeq[lane.Name] = l.events.Seq()
 			}
-			running[lane.Name] = true
+			running[lane.Name] = append([]string(nil), lane.Pipelines...)
 			l.spawnLanePass(ctx, lane, done)
 		}
 		// Forget the park state of lanes the walk no longer names, so a removed
 		// pipeline's entry does not accumulate and a re-added lane passes fresh.
 		for name := range lastSeq {
-			if !walkNames[name] && !running[name] {
+			if _, alive := running[name]; !walkNames[name] && !alive {
 				delete(lastSeq, name)
 			}
 		}
