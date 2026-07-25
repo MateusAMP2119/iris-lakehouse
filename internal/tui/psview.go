@@ -190,9 +190,10 @@ func (c *Client) fetchPipelines(ctx context.Context) ([]api.PipelineListItem, er
 	return env.Data.Pipelines, nil
 }
 
-// fetchRunLogs reads a run's captured output and keeps the tail. The route
-// streams the whole current log then EOF (no offset support), so following is
-// this re-read each tick, bounded client-side.
+// fetchRunLogs reads the tail window of a run's captured output, raw
+// naturalized lines. The poller accumulates windows across ticks (raw lines
+// are stable across polls; humanized fold lines are not) and humanizes the
+// accumulated tail for display.
 func (c *Client) fetchRunLogs(ctx context.Context, id string) ([]string, error) {
 	resp, err := c.get(ctx, "/runs/"+id+"/logs?tailbytes=65536")
 	if err != nil {
@@ -210,11 +211,61 @@ func (c *Client) fetchRunLogs(ctx context.Context, id string) ([]string, error) 
 	if len(lines) == 1 && lines[0] == "" {
 		return nil, nil
 	}
-	lines = humanizeCapture(lines)
-	if len(lines) > psMaxLogLines {
-		lines = lines[len(lines)-psMaxLogLines:]
-	}
 	return lines, nil
+}
+
+// logGapMarker is the line the accumulator inserts when consecutive tail
+// windows do not overlap (output outpaced the follower between polls).
+const logGapMarker = "· · · output outpaced the follower; lines skipped · · ·"
+
+// mergeLogTail folds a freshly fetched tail window into the accumulated log:
+// the overlap between the accumulation's suffix and the window's prefix is
+// found and only the new lines append, so watching a run accumulates history
+// instead of rotating a fixed window. A window with no overlap appends whole
+// behind a gap marker. The accumulation is capped from the head.
+func mergeLogTail(acc, win []string) []string {
+	if len(win) == 0 {
+		return acc
+	}
+	if len(acc) == 0 {
+		return append(acc, win...)
+	}
+	if k := tailOverlap(acc, win); k > 0 {
+		acc = append(acc, win[k:]...)
+	} else if k := tailOverlap(acc[:len(acc)-1], win); k > 0 {
+		// The accumulation's last line was a mid-write partial the daemon cut;
+		// the window carries its completed form, so the partial is replaced.
+		acc = append(acc[:len(acc)-1], win[k:]...)
+	} else {
+		acc = append(acc, logGapMarker)
+		acc = append(acc, win...)
+	}
+	if len(acc) > psMaxLogLines {
+		acc = append(acc[:0], acc[len(acc)-psMaxLogLines:]...)
+	}
+	return acc
+}
+
+// tailOverlap returns the largest k where acc's last k lines equal win's
+// first k.
+func tailOverlap(acc, win []string) int {
+	limit := len(win)
+	if len(acc) < limit {
+		limit = len(acc)
+	}
+	for k := limit; k > 0; k-- {
+		match := true
+		for i := 0; i < k; i++ {
+			if acc[len(acc)-k+i] != win[i] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return k
+		}
+	}
+	return 0
 }
 
 // cancelRun POSTs the run cancel and renders the outcome as the view's note
@@ -451,15 +502,15 @@ func pollPs(ctx context.Context, c *Client, every time.Duration,
 			warn = "pipeline listing unavailable; lanes may be incomplete"
 		}
 		if focus != "" {
-			if logs, lerr := c.fetchRunLogs(ctx, focus); lerr == nil {
-				lastLogs = logs
+			if win, lerr := c.fetchRunLogs(ctx, focus); lerr == nil {
+				lastLogs = mergeLogTail(lastLogs, win)
 			} else if warn == "" {
 				warn = "run logs unavailable"
 			}
 		}
 		snap := Snapshot{Ps: ps, Pipelines: lastPipes}
 		if focus != "" {
-			snap.Logs, snap.LogsRun = lastLogs, focus
+			snap.Logs, snap.LogsRun = humanizeCapture(lastLogs), focus
 		}
 		// A history-carrying poll (once a minute) refreshes the last-known-state
 		// cache: the snapshot a later unreachable-at-open view revives.
