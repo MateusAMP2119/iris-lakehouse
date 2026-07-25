@@ -194,7 +194,7 @@ func (c *Client) fetchPipelines(ctx context.Context) ([]api.PipelineListItem, er
 // streams the whole current log then EOF (no offset support), so following is
 // this re-read each tick, bounded client-side.
 func (c *Client) fetchRunLogs(ctx context.Context, id string) ([]string, error) {
-	resp, err := c.get(ctx, "/runs/"+id+"/logs")
+	resp, err := c.get(ctx, "/runs/"+id+"/logs?tailbytes=65536")
 	if err != nil {
 		return nil, err
 	}

@@ -1503,7 +1503,7 @@ func renderLogsPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 	shown := logs[start:end]
 	yoff := innerH - len(shown)
 	for i, line := range shown {
-		b.text(x+2, y+1+yoff+i, logLineStyle(line), line)
+		paintLogLine(b, x+2, y+1+yoff+i, line)
 	}
 	if len(logs) > 0 {
 		tail := fmt.Sprintf(" %d lines ", len(logs))
@@ -1793,6 +1793,46 @@ func logLineStyle(line string) string {
 	default:
 		return ""
 	}
+}
+
+// paintLogLine paints one logs-pane line. A leveled application-log line
+// ("HH:MM:SS.mmm LEVEL msg") renders console-style: dim timestamp, the level
+// and message colored by severity (ERROR red, WARN yellow, DEBUG dim); any
+// other line keeps its origin styling.
+func paintLogLine(b *screenBuf, x, y int, line string) {
+	stamp, level, msg, ok := splitConsoleLine(line)
+	if !ok {
+		b.text(x, y, logLineStyle(line), line)
+		return
+	}
+	sev := ""
+	switch level {
+	case "ERROR":
+		sev = ansiRed
+	case "WARN":
+		sev = ansiYellow
+	case "DEBUG":
+		sev = ansiDim
+	}
+	b.text(x, y, ansiDim, stamp)
+	b.text(x+len(stamp)+1, y, sev, fmt.Sprintf("%-5s %s", level, msg))
+}
+
+// splitConsoleLine splits a served leveled log line into its clock stamp,
+// level name, and message, reporting whether the line carries that shape.
+func splitConsoleLine(line string) (stamp, level, msg string, ok bool) {
+	const clockLen = len("15:04:05.000")
+	if len(line) < clockLen+2 || line[2] != ':' || line[5] != ':' || line[8] != '.' {
+		return "", "", "", false
+	}
+	stamp = line[:clockLen]
+	rest := strings.TrimPrefix(line[clockLen:], " ")
+	level, msg, _ = strings.Cut(rest, " ")
+	switch strings.TrimSpace(level) {
+	case "DEBUG", "INFO", "WARN", "ERROR":
+		return stamp, strings.TrimSpace(level), strings.TrimPrefix(msg, " "), true
+	}
+	return "", "", "", false
 }
 
 // clipCells bounds s to w cells for a box-interior line.

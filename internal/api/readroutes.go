@@ -285,8 +285,10 @@ func (m *mux) serveRunLogs(w http.ResponseWriter, r *http.Request, id string) {
 		opts.TailBytes = n
 	}
 	for k := range r.URL.Query() {
-		if k != "stream" && k != "format" {
-			WriteError(w, http.StatusBadRequest, CodeBadRequest, "unknown parameter "+k+"; run logs accepts stream and format")
+		switch k {
+		case "stream", "format", "level", "tailbytes":
+		default:
+			WriteError(w, http.StatusBadRequest, CodeBadRequest, "unknown parameter "+k+"; run logs accepts stream, format, level, and tailbytes")
 			return
 		}
 	}
