@@ -36,6 +36,11 @@ func (c *capturingControl) Apply(_ context.Context, req api.ControlRequest) (api
 	return api.ControlResult{}, c.err
 }
 
+func (c *capturingControl) ApplyWorkspace(context.Context, api.WorkspaceApplyRequest) (api.WorkspaceApplyResult, error) {
+	c.calls = append(c.calls, controlCall{path: "/workspace/apply"})
+	return api.WorkspaceApplyResult{}, c.err
+}
+
 func (c *capturingControl) Destroy(_ context.Context, req api.ControlRequest) (api.ControlResult, error) {
 	c.calls = append(c.calls, controlCall{path: "/destroy", req: req})
 	return api.ControlResult{}, c.err

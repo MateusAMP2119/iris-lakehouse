@@ -24,6 +24,7 @@ var metaRoster = []string{
 	"pipeline_plugins",
 	"dependencies",
 	"lanes",
+	"declaration_heads",
 	"runs",
 	"run_inputs",
 	"run_plugins",

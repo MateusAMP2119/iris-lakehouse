@@ -27,6 +27,10 @@ const (
 	TurnEventRow = "row"
 	// TurnEventRun closes the engine's input feed: {"event":"run"}.
 	TurnEventRun = "run"
+	// TurnEventSource carries the declared source's fetched body, engine to
+	// pipeline, between go and the input rows:
+	// {"event":"source","url":"...","status":200,"body":"..."}.
+	TurnEventSource = "source"
 	// TurnEventCall requests one declared-plugin verb mid-turn:
 	// {"event":"call","call":N,"verb":"alias.verb","args":{...}}.
 	TurnEventCall = "call"
@@ -66,6 +70,21 @@ func EncodeGoFrame(turn int64) string {
 // input rows (zero rows is a normal turn).
 func EncodeRunFrame() string {
 	return `{"event":"run"}`
+}
+
+// EncodeSourceFrame renders the declared source's body frame. The body rides
+// as a JSON string, so any fetched bytes stay one protocol line.
+func EncodeSourceFrame(url string, status int, body []byte) (string, error) {
+	b, err := json.Marshal(struct {
+		Event  string `json:"event"`
+		URL    string `json:"url"`
+		Status int    `json:"status"`
+		Body   string `json:"body"`
+	}{Event: TurnEventSource, URL: url, Status: status, Body: string(body)})
+	if err != nil {
+		return "", fmt.Errorf("dispatch: encode source frame for %s: %w", url, err)
+	}
+	return string(b), nil
 }
 
 // EncodeRowFrame renders one row frame. table is the dotted schema.table; row

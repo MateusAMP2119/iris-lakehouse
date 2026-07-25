@@ -70,6 +70,9 @@ type LogsOptions struct {
 	// Format selects the wire rendering: "tagged" streams the framed file
 	// verbatim (the TUI parses the tags itself). Empty naturalizes.
 	Format string
+	// Level is the minimum application-log level served (debug, info, warn,
+	// error); empty keeps every log line.
+	Level string
 }
 
 // RunLogsHandler serves GET /runs/{id}/logs: the run's captured output,
@@ -267,7 +270,7 @@ func (m *mux) serveRunLogs(w http.ResponseWriter, r *http.Request, id string) {
 		WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET "+r.URL.Path+" only")
 		return
 	}
-	opts := LogsOptions{Stream: r.URL.Query().Get("stream"), Format: r.URL.Query().Get("format")}
+	opts := LogsOptions{Stream: r.URL.Query().Get("stream"), Format: r.URL.Query().Get("format"), Level: r.URL.Query().Get("level")}
 	for k := range r.URL.Query() {
 		if k != "stream" && k != "format" {
 			WriteError(w, http.StatusBadRequest, CodeBadRequest, "unknown parameter "+k+"; run logs accepts stream and format")

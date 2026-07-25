@@ -228,6 +228,7 @@ func newLaneLoop(
 		journal:     journal,
 		data:        data,
 		access:      newAccessCache(),
+		sources:     newSourceFetcher(),
 		objects:     objects,
 		counters:    counters,
 		runLogs:     runLogs,
@@ -357,7 +358,8 @@ type laneExec struct {
 	runner      exec.Runner
 	journal     dispatch.JournalHighWatermark
 	data        turnData     // data-database turn seam; nil composes shape tests (no feed, producing turns fault)
-	access      *accessCache // per-pipeline declared-access cache keyed by declaration checksum
+	access      *accessCache   // per-pipeline declared-access cache keyed by declaration checksum
+	sources     *sourceFetcher // declared-source conditional fetcher, engine-side input
 	objects     *store.ObjectStore
 	counters    *turnCounters // resident turn tallies for the ps readout; nil skips
 	runLogs     *RunLogWriter // per-run output capture; nil discards (shape tests)
@@ -434,7 +436,11 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 		trec.Plugins = rp.pins
 	}
 
-	res := driveTurn(ctx, ses, ses.nextTurn(), feed.Rows, acc.writes, rp, tr)
+	var src *sourceFrame
+	if acc.source != nil {
+		src = m.sources.fetch(ctx, rec.Pipeline, acc.source.HTTP, buf)
+	}
+	res := driveTurn(ctx, ses, ses.nextTurn(), src, feed.Rows, acc.writes, rp, tr, buf)
 	trec.Calls = res.calls
 	switch res.kind {
 	case turnShutdown:
@@ -751,7 +757,11 @@ func (m *laneExec) runToTerminal(ctx context.Context, pipeline string, target st
 	}
 	defer rp.end()
 
-	res := driveTurn(ctx, ses, ses.nextTurn(), feed.Rows, acc.writes, rp, sink)
+	var src *sourceFrame
+	if acc.source != nil {
+		src = m.sources.fetch(ctx, pipeline, acc.source.HTTP, sink)
+	}
+	res := driveTurn(ctx, ses, ses.nextTurn(), src, feed.Rows, acc.writes, rp, sink, sink)
 	if res.kind != turnShutdown {
 		m.counters.bump(pipeline, true) // a pre-minted run's row always records
 		if rp != nil {

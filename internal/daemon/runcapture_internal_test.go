@@ -48,6 +48,7 @@ func TestRunCaptureUnframedPassthrough(t *testing.T) {
 func TestRunCaptureFramedLog(t *testing.T) {
 	buf := &closableBuffer{}
 	c := newRunCapture(buf, "7", "quake_feed", true, false)
+	fixedNow(c)
 
 	// Chunked writes crossing line boundaries.
 	for _, chunk := range []string{"first ", "line\nsec", "ond line\ntail"} {
@@ -63,11 +64,11 @@ func TestRunCaptureFramedLog(t *testing.T) {
 
 	want := []string{
 		"", // the identity header, asserted by prefix below
-		"L|first line",
-		"L|second line",
+		"L|I|2026-07-18T12:00:00.000Z|first line",
+		"L|I|2026-07-18T12:00:00.000Z|second line",
 		`>|{"event":"go","turn":1}`,
 		`<|{"event":"done","turn":1}`,
-		"L|tail", // the unterminated tail, flushed at close
+		"L|I|2026-07-18T12:00:00.000Z|tail", // the unterminated tail, flushed at close
 	}
 	got := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
 	if len(got) != len(want) {
@@ -108,8 +109,8 @@ func TestRunCaptureStamp(t *testing.T) {
 	if !strings.HasPrefix(lines[0], `#|{"iris_log":1,"run":"42","pipeline":"quake_report","started":`) {
 		t.Errorf("open stamp = %q, want run identity and start", lines[0])
 	}
-	if lines[1] != "L|working" {
-		t.Errorf("log line = %q, want L|working", lines[1])
+	if lines[1] != "L|I|2026-07-18T12:00:00.000Z|working" {
+		t.Errorf("log line = %q, want the leveled INFO line", lines[1])
 	}
 	if want := `#|{"ended":"2026-07-18T12:00:00Z","outcome":"succeeded"}`; lines[2] != want {
 		t.Errorf("close stamp = %q, want %q", lines[2], want)

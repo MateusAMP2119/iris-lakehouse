@@ -351,6 +351,16 @@ func MetaSchema() Schema {
 					{Columns: []string{"lane", "pos"}},
 				},
 			},
+			// declaration_heads: the last-applied checksum per declaration file
+			// (workspace-relative path), the workspace-sync diff's registered side.
+			{
+				Name: "declaration_heads",
+				Columns: []Column{
+					{Name: "path", Type: "text"},
+					{Name: "checksum", Type: "text"},
+				},
+				PrimaryKey: []string{"path"},
+			},
 			// runs: history root. id is the monotonic bigint identity ordering key.
 			{
 				Name: "runs",

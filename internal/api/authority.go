@@ -113,7 +113,7 @@ func requiredScope(path string) pat.Scope {
 	// endpoint reads themselves are /q, gated as data.
 	switch path {
 	case "/deadletter/drain", "/deadletter/replay", "/workload/wipe", "/run/cancel",
-		"/endpoint/apply", "/pat/create":
+		"/endpoint/apply", "/pat/create", "/workspace/apply":
 		return pat.ScopeControl
 	}
 	return pat.ScopeRead

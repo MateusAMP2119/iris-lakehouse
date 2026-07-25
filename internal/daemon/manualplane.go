@@ -155,6 +155,7 @@ func newManualOrchestrator(workspace, pluginsRoot string, services *pluginServic
 		journal:     journal,
 		data:        data,
 		access:      newAccessCache(),
+		sources:     newSourceFetcher(),
 		inflight:    inflight,
 		sealer:      sealer,
 		runLogs:     runLogs,
@@ -316,6 +317,7 @@ type manualExec struct {
 	journal     dispatch.JournalHighWatermark
 	data        turnData       // data-database turn seam (#206); nil composes shape tests (no feed, producing turns dead-letter)
 	access      *accessCache   // per-pipeline declared-access cache keyed by declaration checksum
+	sources     *sourceFetcher // declared-source conditional fetcher, engine-side input
 	inflight    *inflightRuns  // tracks this run's live process group so a self-demotion kills it; nil in the shape tests
 	sealer      *journalSealer // the opportunistic post-pass seal step; nil in the shape tests leaves sealing off
 	runLogs     *RunLogWriter  // per-run output capture; nil discards (shape tests)
@@ -484,7 +486,11 @@ func (m *manualExec) runNow(ctx context.Context, rec store.RunRecord) (dispatch.
 	}
 	defer rp.end()
 
-	res := driveTurn(ctx, ses, ses.nextTurn(), feed.Rows, acc.writes, rp, sink)
+	var src *sourceFrame
+	if acc.source != nil {
+		src = m.sources.fetch(ctx, rec.Pipeline, acc.source.HTTP, sink)
+	}
+	res := driveTurn(ctx, ses, ses.nextTurn(), src, feed.Rows, acc.writes, rp, sink, sink)
 	if res.kind != turnShutdown && rp != nil {
 		prec := store.TurnRunRecord{Plugins: rp.pins, Calls: res.calls}
 		if lerr := m.submitter.Submit(ctx, func(w *store.Writer) error { return w.RecordRunPlugins(ctx, runID, prec) }); lerr != nil {

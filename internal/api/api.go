@@ -194,6 +194,8 @@ func (m *mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.serveApply(w, r)
 	case "/destroy":
 		m.serveDestroy(w, r)
+	case "/workspace/apply":
+		m.serveWorkspaceApply(w, r)
 	case "/deadletter/drain":
 		m.serveDeadletterDrain(w, r)
 	case "/deadletter/replay":
