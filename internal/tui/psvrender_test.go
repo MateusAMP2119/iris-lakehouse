@@ -263,7 +263,6 @@ func TestPsFrameStyling(t *testing.T) {
 				"state", "idle", "queue", "empty", "mem", "12s",
 				quotes.Farewell[0].Text, quotes.Farewell[0].Author, ":logs <id>", "quit",
 				"catalog", "type to filter", "loading catalog…", "⏎ apply picked",
-				"idle — waiting for work",
 			} {
 				if !strings.Contains(frame, want) {
 					t.Errorf("empty frame missing %q:\n%s", want, frame)

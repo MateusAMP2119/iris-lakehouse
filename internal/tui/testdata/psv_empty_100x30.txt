@@ -24,7 +24,7 @@
      │                                                                                        │
      │                                                                                        │
      │                                                                                        │
-     ╰────────────────────────────────────── ␣/○ pick · + source · ↑↓ browse · ⏎ apply picked ╯
+     ╰──────────────────────────────────────── ␣ pick · + source · ↑↓ browse · ⏎ apply picked ╯
 
-     idle — waiting for work
+
 

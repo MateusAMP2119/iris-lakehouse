@@ -544,9 +544,9 @@ var idleActions = []struct{ key, label string }{
 const idleBoxH = 7
 
 // idleStackH is the idle card's vertical budget for a banner of n rows:
-// banner, gap, version bar, gap, boxes, gap, status line.
+// banner, gap, version bar, gap, boxes, gap.
 func idleStackH(bannerRows int) int {
-	return bannerRows + 1 + 1 + 1 + idleBoxH + 1 + 1
+	return bannerRows + 1 + 1 + 1 + idleBoxH + 1
 }
 
 // idleCatMinH is the smallest inline catalog box worth drawing: borders,
@@ -665,10 +665,7 @@ func renderIdleCard(b *screenBuf, m *psModel, ox, oy, innerW, innerH int, art []
 
 	if catH > 0 {
 		renderIdleCatalogBox(b, m, cx, y, cardW, catH)
-		y += catH + 1
 	}
-
-	b.text(cx, y, ansiDim, "idle — waiting for work")
 }
 
 // clipEll bounds s to w cells, marking a cut with a trailing ellipsis.
@@ -723,7 +720,7 @@ func renderIdleCatalogBox(b *screenBuf, m *psModel, x, y, w, h int) {
 			m.addClick(psClick{x: hx, y: y + h - 1, w: len([]rune(button)) + 2, kind: psClickCatalogApply})
 		}
 	} else {
-		hint := "␣/○ pick · + source · ↑↓ browse · ⏎ apply picked"
+		hint := "␣ pick · + source · ↑↓ browse · ⏎ apply picked"
 		if hx := x + w - 3 - len([]rune(hint)); hx > x+2 {
 			b.text(hx, y+h-1, ansiDim, " "+hint+" ")
 		}
@@ -1910,7 +1907,7 @@ func renderCatalogOverlay(b *screenBuf, m *psModel) {
 
 	// Bottom band: banner (yellow) above the key hints.
 	b.box(ox, oy+listH, ow, footH, ansiBorder, ansiDim, "")
-	hint := "␣/○ pick · ⏎ apply picked · + source · esc close"
+	hint := "␣ pick · ⏎ apply picked · + source · esc close"
 	button := "" // the clickable select-then-apply affordance, when circles are picked
 	if n := len(c.batch()); n > 0 {
 		hint = "␣ mark · esc close"
