@@ -240,6 +240,11 @@ func mergeLogTail(acc, win []string) []string {
 		acc = append(acc, logGapMarker)
 		acc = append(acc, win...)
 	}
+	return capLogTail(acc)
+}
+
+// capLogTail bounds the accumulated log from the head.
+func capLogTail(acc []string) []string {
 	if len(acc) > psMaxLogLines {
 		acc = append(acc[:0], acc[len(acc)-psMaxLogLines:]...)
 	}
@@ -473,10 +478,12 @@ type psPollMsg struct {
 func pollPs(ctx context.Context, c *Client, every time.Duration,
 	focusCh <-chan string, cancelCh <-chan string, polls chan psPollMsg, notes chan<- string) {
 	var (
-		focus     string
-		lastPipes []api.PipelineListItem
-		lastLogs  []string
-		ticks     int
+		focus       string
+		lastPipes   []api.PipelineListItem
+		lastLogs    []string
+		runPipes    map[string]string // run id -> pipeline, from the last payload
+		runSwitched bool              // focus moved to the same pipeline's next run
+		ticks       int
 	)
 	poll := func(history bool) bool {
 		ps, err := c.fetchPs(ctx, true, history)
@@ -501,9 +508,21 @@ func pollPs(ctx context.Context, c *Client, every time.Duration,
 		} else {
 			warn = "pipeline listing unavailable; lanes may be incomplete"
 		}
+		runPipes = map[string]string{}
+		for _, r := range ps.Runs {
+			runPipes[r.ID] = r.Pipeline
+		}
 		if focus != "" {
 			if win, lerr := c.fetchRunLogs(ctx, focus); lerr == nil {
-				lastLogs = mergeLogTail(lastLogs, win)
+				if runSwitched {
+					// Same pipeline, next run: a new capture file, appended
+					// whole -- the pane is the pipeline's continuous console,
+					// run boundaries marked by their [iris] stamps.
+					lastLogs = capLogTail(append(lastLogs, win...))
+					runSwitched = false
+				} else {
+					lastLogs = mergeLogTail(lastLogs, win)
+				}
 			} else if warn == "" {
 				warn = "run logs unavailable"
 			}
@@ -528,7 +547,16 @@ func pollPs(ctx context.Context, c *Client, every time.Duration,
 		case <-ctx.Done():
 			return
 		case f := <-focusCh:
-			focus, lastLogs = f, nil
+			// A focus move within one pipeline (the loop minted its next run)
+			// keeps the accumulated console and appends; anything else -- a
+			// different pipeline, an unknown run -- starts fresh.
+			samePipe := f != "" && focus != "" && runPipes[f] != "" && runPipes[f] == runPipes[focus]
+			if samePipe && f != focus {
+				runSwitched = true
+			} else if f != focus {
+				lastLogs, runSwitched = nil, false
+			}
+			focus = f
 			if focus != "" && !poll(false) { // fetch the tail now, not a tick later
 				return
 			}
