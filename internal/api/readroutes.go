@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 )
 
 // This file is the E14 read-route surface: the runs collection with its
@@ -73,6 +74,10 @@ type LogsOptions struct {
 	// Level is the minimum application-log level served (debug, info, warn,
 	// error); empty keeps every log line.
 	Level string
+	// TailBytes serves only the capture's last N bytes (trimmed to whole
+	// lines), so a follower polling a growing file reads O(N) per poll, not
+	// the whole file. Zero serves everything.
+	TailBytes int64
 }
 
 // RunLogsHandler serves GET /runs/{id}/logs: the run's captured output,
@@ -271,6 +276,14 @@ func (m *mux) serveRunLogs(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	opts := LogsOptions{Stream: r.URL.Query().Get("stream"), Format: r.URL.Query().Get("format"), Level: r.URL.Query().Get("level")}
+	if tb := r.URL.Query().Get("tailbytes"); tb != "" {
+		n, err := strconv.ParseInt(tb, 10, 64)
+		if err != nil || n < 0 {
+			WriteError(w, http.StatusBadRequest, "bad_param", "tailbytes must be a non-negative integer")
+			return
+		}
+		opts.TailBytes = n
+	}
 	for k := range r.URL.Query() {
 		if k != "stream" && k != "format" {
 			WriteError(w, http.StatusBadRequest, CodeBadRequest, "unknown parameter "+k+"; run logs accepts stream and format")

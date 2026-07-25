@@ -56,6 +56,29 @@ func (p runLogsPlane) Logs(_ context.Context, id string, opts api.LogsOptions) (
 		return nil, fmt.Errorf("run logs: open captured output for run %s: %w", id, err)
 	}
 
+	// A tail request seeks near the end and serves whole lines from there, so
+	// a follower polling a growing capture reads O(tail) per poll, never the
+	// whole file. The framing probe still reads the file's first two bytes.
+	framedHead := make([]byte, 2)
+	headN, _ := f.ReadAt(framedHead, 0)
+	framed := headN == 2 && dispatch.FramedCapture(string(framedHead))
+	if opts.TailBytes > 0 {
+		if info, serr := f.Stat(); serr == nil && info.Size() > opts.TailBytes {
+			if !framed && (opts.Stream != "" || opts.Format != "") {
+				_ = f.Close()
+				return nil, fmt.Errorf("run logs: run %s was captured without framing (no declared logs block); stream and format views need a framed capture", id)
+			}
+			if _, serr := f.Seek(info.Size()-opts.TailBytes, io.SeekStart); serr == nil {
+				br := bufio.NewReader(f)
+				_, _ = br.ReadString('\n') // drop the cut partial line
+				if !framed || opts.Format == "tagged" {
+					return readCloser{Reader: br, Closer: f}, nil
+				}
+				return readCloser{Reader: &logViewReader{src: br, stream: opts.Stream, minLevel: opts.Level}, Closer: f}, nil
+			}
+		}
+	}
+
 	br := bufio.NewReader(f)
 	head, _ := br.Peek(2)
 	if !dispatch.FramedCapture(string(head)) {
