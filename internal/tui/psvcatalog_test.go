@@ -23,7 +23,7 @@ func openLoadedCatalog(m *psModel) {
 }
 
 // TestPsCatalogOverlay proves the overlay state machine (#219): listing, the
-// arm/confirm install gate, the force offer, apply-and-return, inline failures.
+// select-then-apply gate over the picked circles, apply-and-return, inline failures.
 func TestPsCatalogOverlay(t *testing.T) {
 	t.Run("ps-catalog-overlay", func(t *testing.T) {
 		t.Run("list absorb fills packs and clears loading", func(t *testing.T) {
@@ -47,65 +47,40 @@ func TestPsCatalogOverlay(t *testing.T) {
 			}
 		})
 
-		t.Run("enter arms, second enter parks the install request", func(t *testing.T) {
+		t.Run("enter with nothing picked only nudges toward the circles", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
 			openLoadedCatalog(m)
 			m.update(psKey{kind: psKeyEnter})
-			if !m.catalog.armed || m.catalogReq != nil {
-				t.Fatal("first enter must only arm")
+			if m.catalogReq != nil {
+				t.Fatal("enter with no picked packs must not park anything")
 			}
+			if !strings.Contains(m.catalog.banner, "nothing picked") {
+				t.Fatalf("banner = %q, want the pick nudge", m.catalog.banner)
+			}
+			m.update(key('a'))
+			if m.catalogReq != nil {
+				t.Fatal("'a' with no picked packs must not park either")
+			}
+		})
+
+		t.Run("enter fires the picked batch straight", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			openLoadedCatalog(m)
+			m.update(key(' ')) // pick quake-monitor
 			m.update(psKey{kind: psKeyEnter})
 			req := m.takeCatalogReq()
-			if req == nil || req.kind != psCatalogInstall || req.pack != "quake-monitor" || req.force {
-				t.Fatalf("second enter parked %+v, want the unforced install", req)
+			if req == nil || req.kind != psCatalogApply || req.pack != "quake-monitor" || !req.force {
+				t.Fatalf("enter parked %+v, want the batch head's apply", req)
 			}
 			if m.catalog.busy == "" {
-				t.Error("in-flight install must lock the overlay busy")
+				t.Error("in-flight apply must lock the overlay busy")
 			}
 		})
 
-		t.Run("moving the cursor disarms", func(t *testing.T) {
+		t.Run("'a' fires the picked batch and success returns to the main frame", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
 			openLoadedCatalog(m)
-			m.update(psKey{kind: psKeyEnter})
-			m.update(psKey{kind: psKeyDown})
-			if m.catalog.armed || m.catalog.sel != 1 {
-				t.Fatalf("overlay = %+v, want disarmed on pack 1", m.catalog)
-			}
-		})
-
-		t.Run("an existing-path refusal offers force, f re-requests forced", func(t *testing.T) {
-			m := newPsModel(psvFixture(), "")
-			openLoadedCatalog(m)
-			m.update(psKey{kind: psKeyEnter})
-			m.update(psKey{kind: psKeyEnter})
-			ireq := m.takeCatalogReq()
-			m.absorbCatalog(psCatalogMsg{kind: psCatalogInstall, seq: ireq.seq, err: `catalog install failed: existing path(s) pipelines/healthy/iris-declare.yaml`})
-			if !m.catalog.offer {
-				t.Fatalf("overlay = %+v, want the force offer", m.catalog)
-			}
-			m.update(key('f'))
-			req := m.takeCatalogReq()
-			if req == nil || req.kind != psCatalogInstall || !req.force {
-				t.Fatalf("f parked %+v, want the forced install", req)
-			}
-		})
-
-		t.Run("a successful install banners the apply hint", func(t *testing.T) {
-			m := newPsModel(psvFixture(), "")
-			openLoadedCatalog(m)
-			m.update(psKey{kind: psKeyEnter})
-			m.update(psKey{kind: psKeyEnter})
-			ireq := m.takeCatalogReq()
-			m.absorbCatalog(psCatalogMsg{kind: psCatalogInstall, seq: ireq.seq, res: &api.CatalogInstallResult{Pack: "quake-monitor", Files: []string{"a", "b"}}})
-			if !strings.Contains(m.catalog.banner, "installed quake-monitor (2 files)") {
-				t.Fatalf("banner = %q, want the install summary", m.catalog.banner)
-			}
-		})
-
-		t.Run("'a' parks install+apply and success returns to the main frame", func(t *testing.T) {
-			m := newPsModel(psvFixture(), "")
-			openLoadedCatalog(m)
+			m.update(key(' ')) // pick quake-monitor
 			m.update(key('a'))
 			areq := m.takeCatalogReq()
 			if areq == nil || areq.kind != psCatalogApply || !areq.force {
@@ -123,6 +98,7 @@ func TestPsCatalogOverlay(t *testing.T) {
 		t.Run("a not-leader apply banners inline with the leader hint", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
 			openLoadedCatalog(m)
+			m.update(key(' '))
 			m.update(key('a'))
 			areq := m.takeCatalogReq()
 			m.absorbCatalog(psCatalogMsg{kind: psCatalogApply, seq: areq.seq, err: "catalog install failed: this daemon is not the leader · leader: 10.0.0.9:7433"})
@@ -134,6 +110,7 @@ func TestPsCatalogOverlay(t *testing.T) {
 		t.Run("busy overlay swallows keys until the outcome lands", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
 			openLoadedCatalog(m)
+			m.update(key(' '))
 			m.update(key('a'))
 			m.takeCatalogReq()
 			m.update(psKey{kind: psKeyEnter})
@@ -170,16 +147,172 @@ func TestPsCatalogOverlay(t *testing.T) {
 			if m.catalog.loading || len(m.catalog.packs) != 1 {
 				t.Fatalf("overlay = %+v, want the live fetch absorbed", m.catalog)
 			}
-			// A late list must not unlock a busy install or retarget the armed pack.
+			// A late list must not unlock a busy apply or retarget the batch.
+			m.update(key(' ')) // pick quake-monitor
 			m.update(key('a'))
 			req3 := m.takeCatalogReq()
 			m.absorbCatalog(psCatalogMsg{kind: psCatalogList, seq: req2.seq, packs: nil})
 			if m.catalog.busy == "" || len(m.catalog.packs) != 1 {
-				t.Fatalf("overlay = %+v, want the superseded list dropped while installing", m.catalog)
+				t.Fatalf("overlay = %+v, want the superseded list dropped while applying", m.catalog)
 			}
 			m.absorbCatalog(psCatalogMsg{kind: psCatalogApply, seq: req3.seq, res: &api.CatalogInstallResult{Pack: "quake-monitor"}})
 			if m.catalog != nil {
 				t.Fatal("the in-flight apply's own outcome must still land")
+			}
+		})
+	})
+}
+
+// TestPsCatalogBatch proves the space-marked batch apply: marks toggle, 'a'
+// chains one apply per marked pack through the single-request loop, a failure
+// stops the chain naming the skipped tail, and a refreshed listing prunes
+// marks whose packs vanished.
+func TestPsCatalogBatch(t *testing.T) {
+	t.Run("ps-catalog-batch", func(t *testing.T) {
+		markBoth := func(m *psModel) {
+			m.update(key(' ')) // quake-monitor
+			m.update(psKey{kind: psKeyDown})
+			m.update(key(' ')) // dlq-demo
+		}
+
+		t.Run("space toggles the mark under the cursor", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			openLoadedCatalog(m)
+			m.update(key(' '))
+			if !m.catalog.marked["quake-monitor"] {
+				t.Fatalf("marked = %v, want quake-monitor marked", m.catalog.marked)
+			}
+			m.update(key(' '))
+			if len(m.catalog.marked) != 0 {
+				t.Fatalf("marked = %v, want the second space to unmark", m.catalog.marked)
+			}
+		})
+
+		t.Run("'a' applies the whole batch, one pack per outcome", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			openLoadedCatalog(m)
+			markBoth(m)
+			m.update(key('a'))
+			req := m.takeCatalogReq()
+			if req == nil || req.kind != psCatalogApply || req.pack != "quake-monitor" {
+				t.Fatalf("batch head parked %+v, want quake-monitor's apply", req)
+			}
+			if !strings.Contains(m.catalog.busy, "(1/2)") {
+				t.Errorf("busy = %q, want the (1/2) progress", m.catalog.busy)
+			}
+			m.absorbCatalog(psCatalogMsg{kind: psCatalogApply, seq: req.seq, res: &api.CatalogInstallResult{Pack: "quake-monitor"}})
+			req = m.takeCatalogReq()
+			if req == nil || req.kind != psCatalogApply || req.pack != "dlq-demo" {
+				t.Fatalf("chained request = %+v, want dlq-demo's apply", req)
+			}
+			if m.catalog == nil || !strings.Contains(m.catalog.busy, "(2/2)") {
+				t.Fatalf("overlay = %+v, want it open and busy (2/2)", m.catalog)
+			}
+			m.absorbCatalog(psCatalogMsg{kind: psCatalogApply, seq: req.seq, res: &api.CatalogInstallResult{Pack: "dlq-demo"}})
+			if m.catalog != nil {
+				t.Fatal("the last batch success must close the overlay")
+			}
+			if !strings.Contains(m.note, "2 packs applied") {
+				t.Errorf("note = %q, want the batch summary", m.note)
+			}
+		})
+
+		t.Run("a mid-batch failure banners and drops the tail", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			openLoadedCatalog(m)
+			markBoth(m)
+			m.update(key('a'))
+			req := m.takeCatalogReq()
+			m.absorbCatalog(psCatalogMsg{kind: psCatalogApply, seq: req.seq, err: "catalog install failed: boom"})
+			c := m.catalog
+			if c == nil || !strings.Contains(c.banner, "boom") || !strings.Contains(c.banner, "1 marked packs skipped") {
+				t.Fatalf("banner = %q, want the failure plus the skipped count", c.banner)
+			}
+			if len(c.queue) != 0 || m.catalogReq != nil {
+				t.Fatalf("queue = %v, want the batch cleared with nothing parked", c.queue)
+			}
+		})
+
+		t.Run("a refreshed listing prunes marks of vanished packs", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			openLoadedCatalog(m)
+			markBoth(m)
+			m.parkCatalogReqFor(m.catalog, psCatalogReq{kind: psCatalogList})
+			req := m.takeCatalogReq()
+			m.absorbCatalog(psCatalogMsg{kind: psCatalogList, seq: req.seq, packs: []api.CatalogPack{{Name: "dlq-demo"}}})
+			if m.catalog.marked["quake-monitor"] || !m.catalog.marked["dlq-demo"] {
+				t.Fatalf("marked = %v, want only dlq-demo to survive", m.catalog.marked)
+			}
+		})
+	})
+}
+
+// TestPsCatalogAddSource proves the '+' add-source prompt: typed URL, Enter
+// parks the request, a success chains a list refresh, a failure banners inline.
+func TestPsCatalogAddSource(t *testing.T) {
+	t.Run("ps-catalog-add-source", func(t *testing.T) {
+		typeURL := func(m *psModel, url string) {
+			for _, r := range url {
+				m.update(key(r))
+			}
+		}
+
+		t.Run("+ opens the prompt, enter parks the add request", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			openLoadedCatalog(m)
+			m.update(key('+'))
+			if !m.catalog.addingURL {
+				t.Fatal("+ must open the add-source prompt")
+			}
+			typeURL(m, "https://cat.example/catalog.json")
+			m.update(psKey{kind: psKeyEnter})
+			req := m.takeCatalogReq()
+			if req == nil || req.kind != psCatalogAddSource || req.url != "https://cat.example/catalog.json" {
+				t.Fatalf("enter parked %+v, want the add-source request", req)
+			}
+			if m.catalog.addingURL || m.catalog.busy == "" {
+				t.Fatalf("prompt = %+v, want it closed and the surface busy", m.catalog)
+			}
+		})
+
+		t.Run("a success banners the grown count and chains a list refresh", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			openLoadedCatalog(m)
+			m.update(key('+'))
+			typeURL(m, "https://cat.example/catalog.json")
+			m.update(psKey{kind: psKeyEnter})
+			req := m.takeCatalogReq()
+			m.absorbCatalog(psCatalogMsg{kind: psCatalogAddSource, seq: req.seq, sources: []string{"a", "b"}})
+			if !strings.Contains(m.catalog.banner, "source added (2 configured)") {
+				t.Fatalf("banner = %q, want the grown count", m.catalog.banner)
+			}
+			next := m.takeCatalogReq()
+			if next == nil || next.kind != psCatalogList {
+				t.Fatalf("chained request = %+v, want the list refresh", next)
+			}
+		})
+
+		t.Run("a refusal banners inline and keeps the surface", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			openLoadedCatalog(m)
+			m.update(key('+'))
+			typeURL(m, "https://dead/catalog.json")
+			m.update(psKey{kind: psKeyEnter})
+			req := m.takeCatalogReq()
+			m.absorbCatalog(psCatalogMsg{kind: psCatalogAddSource, seq: req.seq, err: "catalog source refused: no catalog.json here"})
+			if m.catalog == nil || !strings.Contains(m.catalog.banner, "no catalog.json here") {
+				t.Fatalf("overlay = %+v, want the inline refusal banner", m.catalog)
+			}
+		})
+
+		t.Run("esc closes the prompt without parking anything", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			openLoadedCatalog(m)
+			m.update(key('+'))
+			typeURL(m, "https://x")
+			m.update(psKey{kind: psKeyEsc})
+			if m.catalog == nil || m.catalog.addingURL || m.catalogReq != nil {
+				t.Fatalf("esc must close only the prompt: %+v", m.catalog)
 			}
 		})
 	})

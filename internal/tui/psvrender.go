@@ -445,23 +445,31 @@ func psIsEmptyWorkspace(m *psModel) bool {
 
 // renderPsFrame composes the whole dashboard for the current model state.
 func renderPsFrame(m *psModel, w, h int, colorless bool) *screenBuf {
+	m.clicks = m.clicks[:0] // regions are rebuilt with every frame
 	if w < psMinWidth || h < psMinHeight {
 		b := newScreenBuf(w, 1)
 		b.text(0, 0, "", "iris ps: terminal too small")
 		return b
 	}
 	b := newScreenBuf(w, h)
-	renderPsHeader(b, m)
-	renderPsFooter(b, m)
 
-	top := psHeaderRows(h)
-	paneH := h - top - 1 // rows between header and footer
+	// Footer is transient only (confirm, advisory, freeze, overlays) — no
+	// always-on shortcuts strip or socket target.
+	footerH := 0
+	if psFooterNeeded(m) {
+		footerH = 1
+		renderPsFooter(b, m)
+	}
 
-	// Quiet engine: skip the hollow multi-pane grid for a guided empty card.
-	// Overlays (commands, search, catalog) still compose on top.
+	// Quiet engine: no full-width top chrome. Status splits into two chips
+	// above the welcome card inside the body; overlays still compose on top.
 	if psIsEmptyWorkspace(m) {
-		renderEmptyWorkspace(b, m, 0, top, w, paneH, colorless)
+		renderEmptyWorkspace(b, m, 0, 0, w, h-footerH, colorless)
 	} else {
+		renderPsHeader(b, m)
+		top := psHeaderRows(h)
+		paneH := h - top - footerH // rows between header and optional footer
+
 		railW := 0
 		if w >= psRailMinWidth {
 			railW = w / 4
@@ -517,8 +525,7 @@ func renderPsFrame(m *psModel, w, h int, colorless bool) *screenBuf {
 	return b
 }
 
-// emptyActions are the welcome-card rows: the concrete moves a fresh engine
-// wants, label left, key/command right-aligned in accent.
+// emptyActions are the compact GET STARTED rows kept for tight terminals.
 var emptyActions = []struct{ label, key string }{
 	{"Browse the pack catalog", "c"},
 	{"Pin a run's log tail", ":logs <id>"},
@@ -526,19 +533,49 @@ var emptyActions = []struct{ label, key string }{
 	{"Quit", "q"},
 }
 
-// Grok-card geometry: the dot mark on the left, an identity-and-actions
-// column on the right, one bordered card centered in the body.
-const (
-	emptyCardW    = 70
-	emptyCardH    = 16 // border + blank + 12 logo rows + blank + border
-	emptyCardMinW = 56
-)
+// idleActions are the idle card's action rows beside the status box: key
+// left, label right. Catalog browsing lives inline below, so it needs no row.
+var idleActions = []struct{ key, label string }{
+	{":logs <id>", "pin a run's log tail"},
+	{"q", "quit"},
+}
+
+// idleBoxH is the status/actions box height: border + five content rows.
+const idleBoxH = 7
+
+// idleStackH is the idle card's vertical budget for a banner of n rows:
+// banner, gap, version bar, gap, boxes, gap, status line.
+func idleStackH(bannerRows int) int {
+	return bannerRows + 1 + 1 + 1 + idleBoxH + 1 + 1
+}
+
+// idleCatMinH is the smallest inline catalog box worth drawing: borders,
+// search row, and a few packs.
+const idleCatMinH = 7
+
+// pickIdleBanner chooses the widest installer banner form that fits — first
+// preferring forms that leave room for the inline catalog below the boxes,
+// then falling back to a bare stack: wide one-block art, stacked two-block
+// art, else the plain text line.
+func pickIdleBanner(w, h int) ([]string, bool) {
+	forms := [][]string{bannerWide, bannerStacked, {bannerText}}
+	for _, art := range forms {
+		if logoWidth(art) <= w && idleStackH(len(art))+idleCatMinH+1 <= h {
+			return art, true
+		}
+	}
+	for _, art := range forms {
+		if logoWidth(art) <= w && idleStackH(len(art)) <= h {
+			return art, true
+		}
+	}
+	return nil, false
+}
 
 // renderEmptyWorkspace paints the zero-state: engine is alive, nothing is
-// registered yet. Roomy terminals get the Grok-style welcome card — the dot
-// star on the left, IRIS + version, the quiet-engine note, and an action menu
-// with right-aligned keys. Tighter terminals keep a compact GET STARTED box,
-// then fall back to a one-line nudge.
+// registered yet. Roomy terminals get the installer banner, a gradient
+// version bar, and status/actions boxes. Tighter terminals keep a compact
+// GET STARTED box, then fall back to a one-line nudge.
 func renderEmptyWorkspace(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 	if h < 3 || w < 20 {
 		b.text(x+2, y+1, ansiDim, "no pipelines yet · press c for catalog")
@@ -556,60 +593,303 @@ func renderEmptyWorkspace(b *screenBuf, m *psModel, x, y, w, h int, colorless bo
 	}
 	_ = colorless // accent/dim SGR apply; a disabled painter drops them at emit
 
-	if innerW >= emptyCardMinW && innerH >= emptyCardH {
-		renderWelcomeCard(b, m, ox, oy, innerW, innerH)
+	if art, ok := pickIdleBanner(innerW, innerH); ok && innerW >= 56 {
+		renderIdleCard(b, m, ox, oy, innerW, innerH, art)
 		return
 	}
 	renderCompactEmpty(b, ox, oy, innerW, innerH)
 }
 
-// renderWelcomeCard is the roomy zero-state: one bordered card, logo left,
-// identity and actions right.
-func renderWelcomeCard(b *screenBuf, m *psModel, ox, oy, innerW, innerH int) {
+// renderIdleCard is the roomy zero-state: the installer's gradient banner,
+// the version bar styled like the install progress bar, then the status and
+// actions boxes over an idle status line.
+func renderIdleCard(b *screenBuf, m *psModel, ox, oy, innerW, innerH int, art []string) {
 	e := m.snap.Ps.Engine
 
-	cardW := emptyCardW
+	// Compact horizontally: the bar and boxes hug the banner's width instead
+	// of stretching across a wide terminal. The one-line text fallback has no
+	// real width of its own, so it borrows the stacked art's.
+	cardW := logoWidth(art)
+	if len(art) == 1 {
+		cardW = logoWidth(bannerStacked)
+	}
 	if cardW > innerW {
 		cardW = innerW
 	}
-	cardX := ox + (innerW-cardW)/2
-	cardY := oy + (innerH-emptyCardH)/2
-	b.box(cardX, cardY, cardW, emptyCardH, ansiBorder, "", "")
+	cx := ox + (innerW-cardW)/2 // stack floats centered
 
-	logoW := logoWidth(logoSplash)
-	for i, row := range logoSplash {
-		b.text(cardX+3, cardY+2+i, ansiMagenta, row)
+	// The inline catalog takes the leftover rows below the boxes, capped so
+	// the stack stays composed; too little room drops it for this frame size.
+	catH, catExtra := 0, 0
+	if m.idleCat != nil {
+		if room := innerH - idleStackH(len(art)) - 1; room >= idleCatMinH {
+			catH = room
+			if catH > 14 {
+				catH = 14
+			}
+			catExtra = catH + 1 // box plus its gap row before the idle line
+		}
+	}
+	y := oy + (innerH-idleStackH(len(art))-catExtra)/2
+
+	// Banner rows in the installer gradient; a stacked art's second block
+	// restarts the ramp at its own first row.
+	gi := 0
+	for _, row := range art {
+		if row == "" {
+			gi = 0
+			y++
+			continue
+		}
+		sgr := bannerRowSGR(gi)
+		if len(art) == 1 {
+			sgr = ansiMagenta // plain-text fallback line
+		}
+		b.text(cx, y, sgr, row)
+		gi++
+		y++
+	}
+	y++
+
+	right := ""
+	if e.PID != 0 {
+		right = fmt.Sprintf("pid %d", e.PID)
+	}
+	b.renderGradientBar(cx, y, cardW, orDefault(e.Version, "dev"), right)
+	y += 2
+
+	statusW := (cardW - 2) / 2
+	renderIdleStatusBox(b, m, cx, y, statusW)
+	renderIdleQuietBlock(b, m, cx+statusW+4, y+1, cardW-statusW-4)
+	y += idleBoxH + 1
+
+	if catH > 0 {
+		renderIdleCatalogBox(b, m, cx, y, cardW, catH)
+		y += catH + 1
 	}
 
-	rx := cardX + 3 + logoW + 3
-	rEnd := cardX + cardW - 3
-	roomFor := func(used int) int { return rEnd - rx - used }
-	put := func(ry int, segs []struct{ sgr, s string }) {
-		px := rx
-		for _, seg := range segs {
-			b.text(px, cardY+ry, seg.sgr, seg.s)
-			px += len([]rune(seg.s))
+	b.text(cx, y, ansiDim, "idle — waiting for work")
+}
+
+// clipEll bounds s to w cells, marking a cut with a trailing ellipsis.
+func clipEll(s string, w int) string {
+	r := []rune(s)
+	if w <= 0 {
+		return ""
+	}
+	if len(r) <= w {
+		return s
+	}
+	return string(r[:w-1]) + "…"
+}
+
+// psSpinnerFrames is the braille spinner the catalog box shows while a fetch
+// or install is in flight; the event loop advances the phase.
+var psSpinnerFrames = []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+
+// renderIdleCatalogBox paints the idle card's searchable catalog: a bordered
+// filter input on top carrying the "catalog · N packs" title, the pack list
+// box below it (name, tags, description columns, full-row selection
+// highlight), and the key hint riding the list's bottom border.
+func renderIdleCatalogBox(b *screenBuf, m *psModel, x, y, w, h int) {
+	c, spin := m.idleCat, m.spin
+	title := "catalog"
+	if !c.loading {
+		title += fmt.Sprintf(" · %d packs", len(c.packs))
+	}
+
+	// Filter input box, titled; the pack list box sits directly under it.
+	b.box(x, y, w, 3, ansiBorder, ansiMagenta, title)
+	switch {
+	case c.searching:
+		b.text(x+2, y+1, ansiYellow, "/")
+		b.text(x+4, y+1, "", clipCells(string(c.query)+"█", w-8))
+	case len(c.query) > 0:
+		b.text(x+2, y+1, ansiYellow, "/")
+		b.text(x+4, y+1, "", clipCells(string(c.query), w-8))
+	default:
+		b.text(x+2, y+1, ansiDim, clipCells("/ type to filter — name, tag, text", w-6))
+	}
+
+	m.addClick(psClick{x: x, y: y, w: w, h: 3, kind: psClickCatalogFilter})
+	b.box(x, y+3, w, h-3, ansiBorder, "", "")
+
+	// Key hint spliced into the list's bottom border, right-aligned. With
+	// circles picked it becomes the clickable apply affordance.
+	if n := len(c.batch()); n > 0 {
+		button := fmt.Sprintf("▶ apply %d marked", n)
+		if hx := x + w - 3 - len([]rune(button)); hx > x+2 {
+			b.text(hx, y+h-1, ansiMagenta, " "+button+" ")
+			m.addClick(psClick{x: hx, y: y + h - 1, w: len([]rune(button)) + 2, kind: psClickCatalogApply})
+		}
+	} else {
+		hint := "␣/○ pick · + source · ↑↓ browse · ⏎ apply picked"
+		if hx := x + w - 3 - len([]rune(hint)); hx > x+2 {
+			b.text(hx, y+h-1, ansiDim, " "+hint+" ")
 		}
 	}
 
-	version := e.Version
-	if room := roomFor(len("IRIS Engine  ")); len([]rune(version)) > room && room > 3 {
-		version = string([]rune(version)[:room-1]) + "…"
+	listY := y + 4
+	listH := h - 5
+	banner := c.banner
+	switch {
+	case c.addingURL:
+		banner = "add source url: " + string(c.urlInput) + "█  · ⏎ add · esc cancel"
+	case c.busy != "":
+		banner = string(psSpinnerFrames[spin%len(psSpinnerFrames)]) + " " + c.busy
 	}
-	put(2, []struct{ sgr, s string }{
-		{ansiMagenta, "IRIS"}, {"", " Engine"}, {ansiDim, "  " + version},
-	})
-	put(4, []struct{ sgr, s string }{{ansiAccent, "Engine is quiet."}})
-	put(5, []struct{ sgr, s string }{{ansiDim, "It lights up when work lands."}})
+	if banner != "" {
+		listH--
+		b.text(x+3, y+h-2, ansiYellow, clipCells(banner, w-6))
+	}
+	if listH < 1 {
+		return
+	}
 
-	actionY := 7
-	for i, a := range emptyActions {
-		ry := cardY + actionY + i
-		b.text(rx, ry, "", a.label)
-		kx := rEnd - len([]rune(a.key))
-		if kx >= rx+len([]rune(a.label))+2 {
-			b.text(kx, ry, ansiAccent, a.key)
+	vis := c.visible()
+	switch {
+	case c.loading:
+		b.text(x+3, listY, ansiCyan, string(psSpinnerFrames[spin%len(psSpinnerFrames)]))
+		b.text(x+5, listY, ansiDim, "loading catalog…")
+		return
+	case len(vis) == 0 && len(c.query) > 0:
+		b.text(x+3, listY, ansiDim, clipCells("no packs match "+string(c.query), w-6))
+		return
+	case len(vis) == 0:
+		b.text(x+3, listY, ansiDim, "no packs")
+		return
+	}
+
+	// Column layout: name, tags, description, each sized to its widest cell.
+	nameW, tagsW := 0, 0
+	rowTags := func(p api.CatalogPack) string { return strings.Join(p.Tags, ",") }
+	for _, p := range vis {
+		n := len([]rune(p.Name))
+		if p.Installed {
+			n += 2 // " ●"
 		}
+		if n > nameW {
+			nameW = n
+		}
+		if t := len([]rune(rowTags(p))); t > tagsW {
+			tagsW = t
+		}
+	}
+	// Leading mark circles: ○ unpicked, ● picked; clicking one toggles it.
+	const markW = 2
+	nameX := x + 3 + markW
+	tagsX := nameX + nameW + 6
+	descX := tagsX + tagsW + 6
+	right := x + w - 3
+
+	// Full-row selection highlight: soft violet backdrop, bright bold name.
+	const selBG = "\033[48;2;44;40;66m"
+	top := 0
+	if c.sel >= listH {
+		top = c.sel - listH + 1
+	}
+	for i := top; i < len(vis) && i-top < listH; i++ {
+		p := vis[i]
+		ry := listY + (i - top)
+		m.addClick(psClick{x: x + 1, y: ry, w: w - 2, kind: psClickCatalogRow, idx: i})
+		nameSGR, metaSGR := "", ansiDim
+		if i == c.sel {
+			for cxx := x + 2; cxx < x+w-2; cxx++ {
+				b.text(cxx, ry, selBG, " ")
+			}
+			nameSGR = selBG + "\033[1;38;2;235;235;245m"
+			metaSGR = selBG + "\033[38;2;154;150;174m"
+		}
+		if c.marked[p.Name] {
+			b.text(x+3, ry, ansiMagenta, "●")
+		} else {
+			b.text(x+3, ry, metaSGR, "○")
+		}
+		m.addClick(psClick{x: x + 3, y: ry, w: 1, kind: psClickMarkPack, idx: i})
+		nx := nameX
+		b.text(nx, ry, nameSGR, clipEll(p.Name, right-nx))
+		nx += len([]rune(p.Name))
+		if p.Installed && nx+2 <= right {
+			b.text(nx, ry, ansiGreen, " ●")
+		}
+		if tags := rowTags(p); tags != "" && tagsX < right {
+			b.text(tagsX, ry, metaSGR, clipEll(tags, min(tagsW, right-tagsX)))
+		}
+		if p.Description != "" && descX < right {
+			b.text(descX, ry, metaSGR, clipEll(p.Description, right-descX))
+		}
+	}
+	if more := len(vis) - top - listH; more > 0 {
+		b.text(x+3, y+h-1, ansiDim, fmt.Sprintf("─ %d more ─", more))
+	}
+}
+
+// renderIdleStatusBox paints the idle card's left box: state, queue depth,
+// CPU mini-bar, memory, last run.
+func renderIdleStatusBox(b *screenBuf, m *psModel, x, y, w int) {
+	e := m.snap.Ps.Engine
+	b.box(x, y, w, idleBoxH, ansiBorder, ansiMagenta, "status")
+	lx, vx := x+2, x+12
+	row := 0
+	put := func(label, sgr, val string) {
+		b.text(lx, y+1+row, ansiDim, label)
+		b.text(vx, y+1+row, sgr, clipCells(val, x+w-2-vx))
+		row++
+	}
+	put("state", ansiGreen, "idle")
+	queue := "empty"
+	if e.QueuedRuns > 0 {
+		queue = fmt.Sprintf("%d", e.QueuedRuns)
+	}
+	put("queue", "", queue)
+
+	b.text(lx, y+1+row, ansiDim, "cpu")
+	pct := 0.0
+	if e.Load != nil {
+		pct = e.Load.CPUPercent
+	}
+	barW := 14
+	if max := x + w - 2 - vx - len(" 100.0%"); barW > max {
+		barW = max
+	}
+	if barW > 0 {
+		b.renderMiniBar(vx, y+1+row, barW, pct)
+		b.text(vx+barW+1, y+1+row, "", cpuText(e.Load))
+	} else {
+		b.text(vx, y+1+row, "", cpuText(e.Load))
+	}
+	row++
+	put("mem", "", memText(e.Load))
+	put("up", "", orDefault(e.Uptime, "—"))
+}
+
+// renderIdleQuietBlock paints the borderless block beside the status box,
+// aligned with its first content row: a ceremony quote and the clickable
+// action key rows.
+func renderIdleQuietBlock(b *screenBuf, m *psModel, x, y, w int) {
+	lines := wrapWords("“"+m.quote.Text+"”", w)
+	if len(lines) > 2 {
+		lines = lines[:2]
+		lines[1] = clipEll(lines[1], w-1) + "”"
+	}
+	for i, ln := range lines {
+		b.text(x, y+i, ansiAccent, ln)
+	}
+	ay := y + len(lines)
+	b.text(x, ay, ansiDim, clipCells("- "+m.quote.Author, w))
+	ay++
+	if len(lines) == 1 {
+		ay++ // breathing room when the quote is short
+	}
+	lx := x + 12 // label column clears the widest key (":logs <id>")
+	for i, a := range idleActions {
+		b.text(x, ay+i, ansiYellow, a.key)
+		b.text(lx, ay+i, "", clipCells(a.label, x+w-lx))
+		kind := psClickActionLogs
+		if a.key == "q" {
+			kind = psClickActionQuit
+		}
+		m.addClick(psClick{x: x, y: ay + i, w: w, kind: kind})
 	}
 }
 
@@ -650,9 +930,8 @@ func renderPsHeader(b *screenBuf, m *psModel) {
 }
 
 // renderPsHeaderCard paints rows 0..2: a full-width bordered card with one
-// content row — identity left, live CPU/MEM (and run counts when work exists)
-// right-aligned. A quiet engine keeps the load readout (real data) but drops
-// the run counts (the hollow part).
+// content row — identity left, live CPU/MEM and run counts right-aligned.
+// The empty workspace does not use this chrome (see renderWelcomeCard).
 func renderPsHeaderCard(b *screenBuf, m *psModel) {
 	e := m.snap.Ps.Engine
 	b.box(0, 0, b.w, psHeaderCardH, ansiBorder, "", "")
@@ -677,10 +956,6 @@ func renderPsHeaderCard(b *screenBuf, m *psModel) {
 	put(ansiDim, fmt.Sprintf("  ·  pid %d", e.PID))
 	idEnd := x
 
-	if psIsEmptyWorkspace(m) {
-		renderHeaderLoad(b, m, 1, idEnd, b.w-3, 0)
-		return
-	}
 	counts := fmt.Sprintf(" · %d running · %d queued", e.RunningRuns, e.QueuedRuns)
 	nx, ok := renderHeaderLoad(b, m, 1, idEnd, b.w-3, len([]rune(counts)))
 	if !ok {
@@ -701,31 +976,13 @@ func renderPsHeaderCard(b *screenBuf, m *psModel) {
 }
 
 // renderPsHeaderLine paints the one-line header: identity left, live CPU/MEM
-// right. A quiet engine keeps the load readout but drops the run counts.
+// and run counts right. The empty workspace does not use this chrome.
 func renderPsHeaderLine(b *screenBuf, m *psModel) {
 	e := m.snap.Ps.Engine
 	x := 1
 	put := func(sgr, s string) {
 		b.text(x, 0, sgr, s)
 		x += len([]rune(s))
-	}
-
-	if psIsEmptyWorkspace(m) {
-		// Quiet identity left; CPU/MEM right — real load even with no work
-		// registered. Run counts stay off (they are the hollow part).
-		put(ansiMagenta, "iris")
-		if e.Version != "" {
-			put(ansiDim, "  ")
-			put(ansiDim, e.Version)
-		}
-		put(ansiDim, "  ·  ")
-		put(psRoleSGR(e.Role), strings.ToUpper(orDefault(e.Role, "engine")))
-		if e.Uptime != "" {
-			put(ansiDim, "  ·  up ")
-			put("", e.Uptime)
-		}
-		renderHeaderLoad(b, m, 0, x, b.w-1, 0)
-		return
 	}
 
 	put(ansiDim, "ENGINE ")
@@ -803,43 +1060,33 @@ func (r *psRing) cpuSamples() []float64 {
 	return r.cpu
 }
 
-// footerHint is one Grok-style shortcuts-bar entry: accent key + dim label.
+// footerHint is one shortcuts-bar entry: accent key + dim label.
 type footerHint struct {
 	key, desc string
 }
 
-// renderPsFooter paints the last row: a compact contextual shortcuts bar
-// (key in magenta, desc in dim) on the left, watched target on the right.
-// Notes and warnings take the bar's slot when set.
+// psFooterNeeded reports whether the bottom row should be reserved for a
+// transient message or mode-specific key hints. Idle browsing has no footer.
+func psFooterNeeded(m *psModel) bool {
+	if m.command != nil || m.search != nil || m.catalog != nil {
+		return true
+	}
+	if m.confirmCancel || m.confirmBulk || m.frozen {
+		return true
+	}
+	if len(m.markedPipes) > 0 {
+		return true
+	}
+	return m.note != "" || m.warn != ""
+}
+
+// renderPsFooter paints the last row for transient state only: command palette
+// hints/errors, freeze/confirm/search/catalog keys, or note/warn text.
 func renderPsFooter(b *screenBuf, m *psModel) {
 	y := b.h - 1
-	target := m.target
-	// Bracketed role tag after the target, receding further than the dim
-	// target itself; sheds first when the bar tightens.
-	tag := ""
-	if role := m.snap.Ps.Engine.Role; role != "" && target != "" {
-		tag = " [" + strings.ToLower(role) + "]"
-	}
-	tx := b.w - 1 - len([]rune(target+tag))
-	if tx < 1+8+2 && tag != "" {
-		tag = ""
-		tx = b.w - 1 - len([]rune(target))
-	}
-	if tx < 1 {
-		tx = 1
-	}
-	maxHints := tx - 2
+	maxHints := b.w - 2
 	if maxHints < 8 {
-		maxHints = b.w - 2
-	}
-	paintTarget := func() {
-		if target == "" || tx <= 1 {
-			return
-		}
-		b.text(tx, y, ansiDim, target)
-		if tag != "" {
-			b.text(tx+len([]rune(target)), y, ansiBorder, tag)
-		}
+		maxHints = b.w - 1
 	}
 
 	if m.command != nil {
@@ -859,12 +1106,10 @@ func renderPsFooter(b *screenBuf, m *psModel) {
 	}
 	if advisory != "" {
 		b.text(1, y, ansiYellow, clipCells(advisory, maxHints))
-		paintTarget()
 		return
 	}
 
 	paintFooterHints(b, 1, y, maxHints, psFooterHints(m))
-	paintTarget()
 }
 
 // paintFooterHints draws "key desc · key desc …" with accent keys, clipping
@@ -913,8 +1158,8 @@ func paintFooterHints(b *screenBuf, x, y, maxW int, hints []footerHint) {
 	}
 }
 
-// psFooterHints returns the few keys that matter for the current focus —
-// Grok shortcuts-bar style, not a full key dump.
+// psFooterHints returns mode-specific keys for transient footer states.
+// Idle browsing has no footer (see psFooterNeeded).
 func psFooterHints(m *psModel) []footerHint {
 	if m.frozen {
 		return []footerHint{
@@ -927,47 +1172,22 @@ func psFooterHints(m *psModel) []footerHint {
 	if m.confirmCancel {
 		return []footerHint{{"y", "cancel " + m.logsTarget()}, {"N", "keep"}}
 	}
+	if m.confirmBulk {
+		runs := len(m.bulkCancelRuns())
+		return []footerHint{
+			{"y", fmt.Sprintf("cancel %d running runs in %d marked pipelines", runs, len(m.markedPipes))},
+			{"N", "keep"},
+		}
+	}
 	if m.catalog != nil {
 		return []footerHint{{"↑↓", "move"}, {"⏎", "install"}, {"esc", "close"}}
 	}
-	if psIsEmptyWorkspace(m) {
+	if n := len(m.markedPipes); n > 0 {
 		return []footerHint{
-			{"c", "catalog"}, {":", "cmds"}, {"p", "freeze"}, {"?", "help"}, {"q", "quit"},
+			{"␣", "mark"}, {"c", fmt.Sprintf("cancel %d marked", n)},
 		}
 	}
-	switch m.pane {
-	case psPaneLanes:
-		if m.selPipeline == "" {
-			return []footerHint{
-				{"tab", "panes"}, {"↑↓", "move"}, {"⏎", "unfold"}, {"p", "freeze"}, {"/", "search"}, {"q", "quit"},
-			}
-		}
-		return []footerHint{
-			{"tab", "panes"}, {"↑↓", "move"}, {"⏎", "runs"}, {"p", "freeze"}, {"←", "back"}, {"q", "quit"},
-		}
-	case psPaneTable:
-		if m.selPipeline == "" {
-			return []footerHint{
-				{"tab", "panes"}, {"↑↓", "move"}, {"⏎", "runs"}, {"p", "freeze"}, {"q", "quit"},
-			}
-		}
-		all := "all"
-		if m.showAll {
-			all = "live"
-		}
-		return []footerHint{
-			{"tab", "panes"}, {"↑↓", "move"}, {"⏎", "logs"}, {"a", all}, {"p", "freeze"}, {"q", "quit"},
-		}
-	default: // logs
-		if m.follow {
-			return []footerHint{
-				{"tab", "panes"}, {"f", "unfollow"}, {"p", "freeze"}, {"c", "cancel"}, {"q", "quit"},
-			}
-		}
-		return []footerHint{
-			{"tab", "panes"}, {"f", "follow"}, {"p", "freeze"}, {"j/k", "scroll"}, {"q", "quit"},
-		}
-	}
+	return nil
 }
 
 // railEntry is one display row of the lanes rail.
@@ -983,6 +1203,7 @@ type railEntry struct {
 func renderRailPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 	borderSGR, titleSGR, title := paneChrome(m.pane == psPaneLanes, colorless, "LANES")
 	b.box(x, y, w, h, borderSGR, titleSGR, title)
+	m.addClick(psClick{x: x, y: y, w: w, h: h, kind: psClickPane, pane: psPaneLanes})
 
 	// Resident turn tallies (#206): a quiet loop records no rows, so the rail
 	// badges its idle pipelines with turns since the last recorded run.
@@ -1028,6 +1249,7 @@ func renderRailPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 		e := entries[i]
 		switch e.kind {
 		case 0:
+			m.addClick(psClick{x: x + 1, y: ry, w: w - 2, kind: psClickLane, lane: e.lane.name})
 			fold := "▸"
 			if m.expanded[e.lane.name] {
 				fold = "▾"
@@ -1046,6 +1268,14 @@ func renderRailPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 			sw := x + w - 2 - sx
 			b.renderHeatStrip(sx, ry, sw, m.stripCPU("l:"+e.lane.name, sw))
 		case 2:
+			m.addClick(psClick{x: x + 1, y: ry, w: w - 2, kind: psClickRailPipeline, lane: e.lane.name, name: e.pipeline.name})
+			// Mark circle: ○ unpicked, ● picked; clicking one toggles it.
+			if m.markedPipes[e.pipeline.name] {
+				b.text(x+2, ry, ansiMagenta, "●")
+			} else {
+				b.text(x+2, ry, ansiDim, "○")
+			}
+			m.addClick(psClick{x: x + 2, y: ry, w: 1, kind: psClickMarkPipeline, name: e.pipeline.name})
 			b.text(x+4, ry, psStateSGR(e.pipeline.latest), "●")
 			b.text(x+6, ry, "", e.pipeline.name)
 			badge, badgeSGR := "", ""
@@ -1067,19 +1297,29 @@ func renderRailPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 	}
 }
 
-// pipelinesColumns builds the pipelines table's columns. The timing columns
-// render dashes until the engine records run timestamps (issue #200), and a
-// narrow pane sheds them whole rather than clipping their headers.
-func pipelinesColumns(rows []psPipelineRow, wide bool) []psColumn {
+// pipelinesColumns builds the pipelines table's columns behind the leading
+// mark-circle column. The timing columns render dashes until the engine
+// records run timestamps (issue #200), and a narrow pane sheds them whole
+// rather than clipping their headers.
+func pipelinesColumns(rows []psPipelineRow, wide bool, marked map[string]bool) []psColumn {
 	n := len(rows)
+	// Leading mark circles: ○ unpicked, ● picked; clicking one toggles it.
 	cols := []psColumn{
+		psColStyled("", n, func(i int) (string, string) {
+			if marked[rows[i].name] {
+				return "●", ansiMagenta
+			}
+			return "○", ansiDim
+		}),
+	}
+	cols = append(cols,
 		psCol("PIPELINE", n, func(i int) string { return rows[i].name }),
 		psColStyled("LATEST", n, func(i int) (string, string) { return rows[i].latest, psStateSGR(rows[i].latest) }),
 		psCol("Q", n, func(i int) string { return fmt.Sprintf("%d", rows[i].queued) }),
 		psCol("R", n, func(i int) string { return fmt.Sprintf("%d", rows[i].running) }),
 		psCol("CPU", n, func(i int) string { return cpuText(rows[i].load) }),
 		psCol("MEM", n, func(i int) string { return memText(rows[i].load) }),
-	}
+	)
 	if wide {
 		cols = append(cols,
 			psCol("ELAPSED", n, func(int) string { return "-" }),
@@ -1130,7 +1370,7 @@ func renderTablePane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 			title = "PIPELINES"
 		}
 		rows := derivePipelines(m.snap, m.selLane)
-		cols = pipelinesColumns(rows, w >= 90)
+		cols = pipelinesColumns(rows, w >= 90, m.markedPipes)
 		sel = selIndex(m.tblPipeline, m.pipelineKeys())
 		if len(rows) == 0 {
 			empty = "no pipelines in this lane · :catalog to install a pack"
@@ -1138,6 +1378,7 @@ func renderTablePane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 	}
 	borderSGR, titleSGR, title := paneChrome(m.pane == psPaneTable, colorless, title)
 	b.box(x, y, w, h, borderSGR, titleSGR, title)
+	m.addClick(psClick{x: x, y: y, w: w, h: h, kind: psClickPane, pane: psPaneTable})
 	if h < 4 {
 		return
 	}
@@ -1148,6 +1389,24 @@ func renderTablePane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 	sub := newScreenBuf(w-4, h-3)
 	renderTable(sub, 0, sub.h, cols, sel, colorless)
 	b.blit(sub, x+2, y+2)
+
+	// Row click regions mirror renderTable's windowing over the keys.
+	keys := m.pipelineKeys()
+	if m.selPipeline != "" {
+		keys = m.runKeys()
+	}
+	visible := (h - 3) - 1
+	top := 0
+	if sel >= visible {
+		top = sel - visible + 1
+	}
+	for r := top; r < len(keys) && r-top < visible; r++ {
+		m.addClick(psClick{x: x + 1, y: y + 3 + (r - top), w: w - 2, kind: psClickTableRow, name: keys[r]})
+		if m.selPipeline == "" {
+			// The pipelines table's leading mark circle wins over the row.
+			m.addClick(psClick{x: x + 2, y: y + 3 + (r - top), w: 1, kind: psClickMarkPipeline, name: keys[r]})
+		}
+	}
 }
 
 // renderDetailPane paints the selected pipeline's chart box: CPU and MEM heat
@@ -1223,6 +1482,7 @@ func renderLogsPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 	}
 	borderSGR, titleSGR, title := paneChrome(m.pane == psPaneLogs, colorless, title)
 	b.box(x, y, w, h, borderSGR, titleSGR, title)
+	m.addClick(psClick{x: x, y: y, w: w, h: h, kind: psClickPane, pane: psPaneLogs})
 
 	innerH := h - 2
 	if target == "" {
@@ -1490,7 +1750,7 @@ func renderSearchPreview(b *screenBuf, m *psModel, h psHit, x, y, w, ph int) {
 	sub := newScreenBuf(w, ph)
 	switch h.kind {
 	case psHitLane:
-		renderTable(sub, 0, ph, pipelinesColumns(derivePipelines(m.snap, h.lane), w >= 90), -1, false)
+		renderTable(sub, 0, ph, pipelinesColumns(derivePipelines(m.snap, h.lane), w >= 90, nil), -1, false)
 	case psHitPipeline:
 		renderTable(sub, 0, ph, runsColumns(deriveRuns(m.snap, h.pipeline, true)), -1, false)
 	case psHitRun:
@@ -1584,7 +1844,14 @@ func renderCatalogOverlay(b *screenBuf, m *psModel) {
 			label += "  " + strings.Join(p.Tags, ",")
 		}
 		row := oy + 1 + (i - top)
-		b.text(ox+2, row, "", clipCells(label, leftW-4))
+		// Mark circle: ○ unpicked, ● picked; clicking one toggles it.
+		if c.marked[p.Name] {
+			b.text(ox+2, row, ansiMagenta, "●")
+		} else {
+			b.text(ox+2, row, ansiDim, "○")
+		}
+		m.addClick(psClick{x: ox + 2, y: row, w: 1, kind: psClickMarkPack, idx: i})
+		b.text(ox+4, row, "", clipCells(label, leftW-6))
 		if i == c.sel {
 			paintSelAccent(b, ox+1, row, false)
 		}
@@ -1643,21 +1910,29 @@ func renderCatalogOverlay(b *screenBuf, m *psModel) {
 
 	// Bottom band: banner (yellow) above the key hints.
 	b.box(ox, oy+listH, ow, footH, ansiBorder, ansiDim, "")
-	hint := "⏎ install · a install+apply · esc close"
+	hint := "␣/○ pick · ⏎ apply picked · + source · esc close"
+	button := "" // the clickable select-then-apply affordance, when circles are picked
+	if n := len(c.batch()); n > 0 {
+		hint = "␣ mark · esc close"
+		button = fmt.Sprintf("▶ apply %d marked", n)
+	}
 	switch {
+	case c.addingURL:
+		hint, button = "add source url: "+string(c.urlInput)+"█  · ⏎ add · esc cancel", ""
 	case c.busy != "":
-		hint = c.busy
-	case c.offer:
-		hint = "f overwrites existing paths · esc close"
-	case c.armed:
-		if p := c.selected(); p != nil {
-			hint = "install " + p.Name + "? ⏎ confirms · any move disarms"
-		}
+		hint, button = c.busy, ""
 	}
+	hintY := oy + listH + 1
 	if c.banner != "" {
-		b.text(ox+2, oy+listH+1, ansiYellow, clipCells(c.banner, ow-4))
-		b.text(ox+2, oy+listH+footH-1, ansiDim, clipCells(hint, ow-4))
-	} else {
-		b.text(ox+2, oy+listH+1, ansiDim, clipCells(hint, ow-4))
+		b.text(ox+2, hintY, ansiYellow, clipCells(c.banner, ow-4))
+		hintY = oy + listH + footH - 1
 	}
+	hx := ox + 2
+	if button != "" {
+		b.text(hx, hintY, ansiMagenta, button)
+		m.addClick(psClick{x: hx, y: hintY, w: len([]rune(button)), kind: psClickCatalogApply})
+		hx += len([]rune(button)) + 3
+		b.text(hx-3, hintY, ansiDim, " · ")
+	}
+	b.text(hx, hintY, ansiDim, clipCells(hint, ox+ow-2-hx))
 }

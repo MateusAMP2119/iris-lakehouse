@@ -26,14 +26,14 @@ const (
 // usage line, a one-sentence description, and optional key chords that do the
 // same thing outside the palette.
 type psCmdSpec struct {
-	name        string
-	usage       string
-	summary     string
-	detail      string
-	category    psCmdCategory
-	keys        string // display-only chords, e.g. "/  :"
-	needsArg    bool   // true when Enter on a bare name parks usage, not dispatch
-	argHint     string // completion mode after "name "
+	name     string
+	usage    string
+	summary  string
+	detail   string
+	category psCmdCategory
+	keys     string // display-only chords, e.g. "/  :"
+	needsArg bool   // true when Enter on a bare name parks usage, not dispatch
+	argHint  string // completion mode after "name "
 }
 
 // psCommandRoster is the closed, stable-order command set the palette lists.
@@ -41,47 +41,47 @@ type psCmdSpec struct {
 var psCommandRoster = []psCmdSpec{
 	{
 		name: "catalog", usage: ":catalog", summary: "Browse and install pipeline packs",
-		detail: "Opens the catalog overlay over the dashboard: pack list on the left, README and tree on the right. Install and apply without leaving iris ps.",
+		detail:   "Opens the catalog overlay over the dashboard: pack list on the left, README and tree on the right. Install and apply without leaving iris ps.",
 		category: psCmdNav, keys: ":catalog",
 	},
 	{
 		name: "logs", usage: ":logs <run>", summary: "Pin the logs pane on a run",
-		detail: "Selects the run's lane and pipeline, pins the log tail, and focuses the LOGS pane. Tab after `:logs ` cycles run ids from the current snapshot.",
+		detail:   "Selects the run's lane and pipeline, pins the log tail, and focuses the LOGS pane. Tab after `:logs ` cycles run ids from the current snapshot.",
 		category: psCmdWatch, keys: "⏎ on a run", needsArg: true, argHint: "run",
 	},
 	{
 		name: "search", usage: ":search [query]", summary: "Fuzzy-find lanes, pipelines, runs",
-		detail: "Opens the telescope search overlay. An optional query is applied immediately. Outside the palette, press /.",
+		detail:   "Opens the telescope search overlay. An optional query is applied immediately. Outside the palette, press /.",
 		category: psCmdNav, keys: "/",
 	},
 	{
 		name: "all", usage: ":all", summary: "Toggle full run history in the table",
-		detail: "When a pipeline's runs table is open, flip between live (queued + running) and the whole history. Same as the a key in that pane.",
+		detail:   "When a pipeline's runs table is open, flip between live (queued + running) and the whole history. Same as the a key in that pane.",
 		category: psCmdWatch, keys: "a",
 	},
 	{
 		name: "follow", usage: ":follow", summary: "Toggle log-tail follow mode",
-		detail: "When following, the logs pane sticks to the newest lines. When paused, j/k scroll the buffer. Same as the f key in the logs pane.",
+		detail:   "When following, the logs pane sticks to the newest lines. When paused, j/k scroll the buffer. Same as the f key in the logs pane.",
 		category: psCmdWatch, keys: "f",
 	},
 	{
 		name: "history", usage: ":history", summary: "Toggle hours-deep load strips",
-		detail: "Swaps every heat strip between the live fine ring and the coarse per-bucket history the daemon keeps. Same as the h key.",
+		detail:   "Swaps every heat strip between the live fine ring and the coarse per-bucket history the daemon keeps. Same as the h key.",
 		category: psCmdWatch, keys: "h",
 	},
 	{
 		name: "cancel", usage: ":cancel", summary: "Cancel the watched running run",
-		detail: "Arms a y/N confirm for the run the logs pane is watching, when that run is still running. Same as the c key in the logs pane.",
+		detail:   "Arms a y/N confirm for the run the logs pane is watching, when that run is still running. Same as the c key in the logs pane.",
 		category: psCmdAction, keys: "c",
 	},
 	{
 		name: "help", usage: ":help", summary: "Keyboard reference",
-		detail: "Highlights this entry and parks the key map in the detail pane. Scroll the list for every command's chords.",
+		detail:   "Highlights this entry and parks the key map in the detail pane. Scroll the list for every command's chords.",
 		category: psCmdMeta, keys: "?",
 	},
 	{
 		name: "q", usage: ":q", summary: "Quit iris ps",
-		detail: "Leaves the live view and restores the terminal. Same as q or Ctrl-C.",
+		detail:   "Leaves the live view and restores the terminal. Same as q or Ctrl-C.",
 		category: psCmdMeta, keys: "q  Ctrl-C",
 	},
 }
@@ -101,11 +101,11 @@ func init() {
 type psCommand struct {
 	input   []rune
 	err     string
-	sel     int      // index into filtered()
-	cycling bool     // a tab cycle is live; any edit ends it
-	base    string   // the input captured when the cycle started
-	comp    int      // next completion index
-	browse  bool     // opened via '?' — start focused on help, empty input ok
+	sel     int    // index into filtered()
+	cycling bool   // a tab cycle is live; any edit ends it
+	base    string // the input captured when the cycle started
+	comp    int    // next completion index
+	browse  bool   // opened via '?' — start focused on help, empty input ok
 }
 
 // openCommand opens the ':' palette with an empty prompt.
@@ -485,8 +485,10 @@ func commandDetailBody(spec psCmdSpec, width int) []string {
 		lines = append(lines, "  h          history strips")
 		lines = append(lines, "  q          quit")
 		lines = append(lines, "")
-		lines = append(lines, "TABLE")
+		lines = append(lines, "TABLE / LANES")
 		lines = append(lines, "  a          all / live runs")
+		lines = append(lines, "  ␣          mark pipeline")
+		lines = append(lines, "  c          cancel marked runs")
 		lines = append(lines, "")
 		lines = append(lines, "LOGS")
 		lines = append(lines, "  f          follow on/off")

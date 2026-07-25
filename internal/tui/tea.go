@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"time"
 
 	"github.com/charmbracelet/bubbles/help"
 	bkey "github.com/charmbracelet/bubbles/key"
@@ -92,6 +93,7 @@ type teaProgram struct {
 	cancelCh   chan<- string
 	runCatalog func(psCatalogReq)
 	sentFocus  string
+	spinning   bool // one spinner tick chain at a time
 	err        error
 	quitting   bool
 }
@@ -127,7 +129,41 @@ func (t teaProgram) Init() tea.Cmd {
 	// No textinput.Blink here: the blink tick re-renders the whole frame and
 	// would wipe a terminal text selection every half-second. Blink starts only
 	// while the COMMANDS palette is open (see Update).
-	return tea.EnterAltScreen
+	// The model may have parked a catalog fetch at construction (the idle
+	// card's inline catalog); fire it now — the key path alone would leave it
+	// waiting for the first keypress.
+	return tea.Batch(tea.EnterAltScreen, t.drainCatalog())
+}
+
+// drainCatalog fires the model's parked catalog request, if any, and starts
+// the spinner tick while catalog work is in flight.
+func (t *teaProgram) drainCatalog() tea.Cmd {
+	if req := t.m.takeCatalogReq(); req != nil && t.runCatalog != nil {
+		t.runCatalog(*req)
+	}
+	if t.catalogBusy() && !t.spinning {
+		t.spinning = true
+		return spinTick()
+	}
+	return nil
+}
+
+// catalogBusy reports in-flight catalog work on either surface.
+func (t *teaProgram) catalogBusy() bool {
+	if c := t.m.idleCat; c != nil && (c.loading || c.busy != "") {
+		return true
+	}
+	if c := t.m.catalog; c != nil && (c.loading || c.busy != "") {
+		return true
+	}
+	return false
+}
+
+// teaSpinMsg advances the catalog spinner.
+type teaSpinMsg struct{}
+
+func spinTick() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return teaSpinMsg{} })
 }
 
 func (t *teaProgram) pushFocus() {
@@ -182,28 +218,51 @@ func (t teaProgram) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if k.kind == psKeyNone {
 			return t, nil
 		}
-		cancelID := t.m.update(k)
+		cancelIDs := t.m.update(k)
 		if t.m.quit {
 			t.quitting = true
 			return t, tea.Quit
 		}
-		if cancelID != "" && t.cancelCh != nil {
-			select {
-			case t.cancelCh <- cancelID:
-			default:
-				t.m.note = "cancel already in flight"
+		if t.cancelCh != nil {
+			for _, id := range cancelIDs {
+				select {
+				case t.cancelCh <- id:
+				default:
+					t.m.note = "cancel already in flight"
+				}
 			}
 		}
-		if req := t.m.takeCatalogReq(); req != nil && t.runCatalog != nil {
-			t.runCatalog(*req)
-		}
+		spin := t.drainCatalog()
 		t.pushFocus()
 		t.syncCmdInput()
 		// Start cursor blink only once the palette opens (not in Init).
 		if t.m.command != nil {
-			return t, textinput.Blink
+			return t, tea.Batch(textinput.Blink, spin)
 		}
-		return t, nil
+		return t, spin
+	case tea.MouseMsg:
+		if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
+			return t, nil
+		}
+		t.m.click(msg.X, msg.Y)
+		if t.m.quit {
+			t.quitting = true
+			return t, tea.Quit
+		}
+		spin := t.drainCatalog()
+		t.pushFocus()
+		t.syncCmdInput()
+		if t.m.command != nil {
+			return t, tea.Batch(textinput.Blink, spin)
+		}
+		return t, spin
+	case teaSpinMsg:
+		if !t.catalogBusy() {
+			t.spinning = false // work finished; the tick chain ends here
+			return t, nil
+		}
+		t.m.spin++
+		return t, spinTick()
 	case teaPollMsg:
 		pm := psPollMsg(msg)
 		if pm.err != nil {
@@ -226,7 +285,9 @@ func (t teaProgram) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		t.m.warn = pm.warn
 		t.m.absorb(pm.snap)
 		t.pushFocus()
-		return t, nil
+		// absorb can open the idle catalog (workspace just emptied) and park
+		// its list fetch; fire it without waiting for a keypress.
+		return t, t.drainCatalog()
 	case teaNoteMsg:
 		t.m.note = string(msg)
 		return t, nil
@@ -236,7 +297,7 @@ func (t teaProgram) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		t.m.absorbCatalog(psCatalogMsg(msg))
 		t.pushFocus()
-		return t, nil
+		return t, t.drainCatalog()
 	}
 	// Ignore textinput blink ticks (and any other noise) when the palette is
 	// closed so they do not re-paint and clear a terminal selection.
@@ -385,7 +446,7 @@ func RunLive(ctx context.Context, out io.Writer, color bool, c *Client, first Sn
 	polls := make(chan psPollMsg, 1)
 	notes := make(chan string, 1)
 	focusCh := make(chan string, 4)
-	cancelCh := make(chan string, 4)
+	cancelCh := make(chan string, 32) // roomy enough for a bulk cancel burst
 	catalogMsgs := make(chan psCatalogMsg, 4)
 	go pollPs(ctx, c, psPollInterval, focusCh, cancelCh, polls, notes)
 
@@ -404,12 +465,13 @@ func RunLive(ctx context.Context, out io.Writer, color bool, c *Client, first Sn
 		}()
 	}
 
-	// No WithMouseCellMotion: mouse reporting steals drags from the terminal
-	// and makes text unselectable. Native select/copy works; press p to freeze
-	// live updates so a poll does not wipe the highlight mid-drag.
+	// Mouse reporting is on for click targets (panes, rows, catalog). It
+	// captures plain drags, so terminal text selection needs Shift (or Fn/⌥
+	// per terminal) — or press p to freeze and select without modifiers.
 	prog := tea.NewProgram(model,
 		tea.WithOutput(out),
 		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
 		tea.WithContext(ctx),
 	)
 	startChannelPumps(prog, polls, notes, catalogMsgs)

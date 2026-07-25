@@ -268,11 +268,49 @@ func (c *Client) catalogAction(ctx context.Context, req psCatalogReq) psCatalogM
 	switch req.kind {
 	case psCatalogList:
 		return c.fetchCatalog(ctx)
-	case psCatalogInstall:
-		return c.installPack(ctx, req, false)
+	case psCatalogAddSource:
+		return c.addCatalogSource(ctx, req)
 	default:
-		return c.installPack(ctx, req, true)
+		return c.installPack(ctx, req)
 	}
+}
+
+// addCatalogSource POSTs /catalog/sources for the '+' add-source prompt.
+func (c *Client) addCatalogSource(ctx context.Context, req psCatalogReq) psCatalogMsg {
+	msg := psCatalogMsg{kind: psCatalogAddSource}
+	body, _ := json.Marshal(api.CatalogSourceRequest{URL: req.url})
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/catalog/sources", bytes.NewReader(body))
+	if err != nil {
+		msg.err = "catalog source: " + err.Error()
+		return msg
+	}
+	hreq.Header.Set("Content-Type", "application/json")
+	if c.overTCP && c.token != "" {
+		hreq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.client.Do(hreq)
+	if err != nil {
+		msg.err = "catalog source: engine unreachable: " + err.Error()
+		return msg
+	}
+	defer drainClose(resp)
+	if resp.StatusCode != http.StatusOK {
+		var env struct {
+			Error errBody `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&env)
+		msg.err = catalogFailText("catalog source add", resp.StatusCode, env.Error.Message, "")
+		return msg
+	}
+	var env struct {
+		Data api.CatalogSourceResult `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		msg.err = "decode /catalog/sources response: " + err.Error()
+		return msg
+	}
+	msg.sources = env.Data.Sources
+	return msg
 }
 
 // fetchCatalog reads GET /catalog for the overlay's pack list.
@@ -303,14 +341,10 @@ func (c *Client) fetchCatalog(ctx context.Context) psCatalogMsg {
 	return msg
 }
 
-// installPack POSTs /catalog/install for the overlay ('a' rides apply=true).
-func (c *Client) installPack(ctx context.Context, req psCatalogReq, apply bool) psCatalogMsg {
-	kind := psCatalogInstall
-	if apply {
-		kind = psCatalogApply
-	}
-	msg := psCatalogMsg{kind: kind}
-	body, _ := json.Marshal(api.CatalogInstallRequest{Pack: req.pack, Apply: apply, Force: req.force})
+// installPack POSTs /catalog/install for the batch apply (always install+apply).
+func (c *Client) installPack(ctx context.Context, req psCatalogReq) psCatalogMsg {
+	msg := psCatalogMsg{kind: psCatalogApply}
+	body, _ := json.Marshal(api.CatalogInstallRequest{Pack: req.pack, Apply: true, Force: req.force})
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/catalog/install", bytes.NewReader(body))
 	if err != nil {
 		msg.err = "catalog install: " + err.Error()
@@ -518,7 +552,15 @@ func runPsLoop(ctx context.Context, v *psView, m *psModel) error {
 			}
 		}
 	}
+	// Catalog fetches can be parked outside a keypress too (the idle card's
+	// inline catalog opens with the model or on a poll), so drain everywhere.
+	drainCatalog := func() {
+		if req := m.takeCatalogReq(); req != nil && v.runCatalog != nil {
+			v.runCatalog(*req)
+		}
+	}
 	syncFocus()
+	drainCatalog()
 	for {
 		w, h := v.size()
 		if _, err := v.out.Write(renderPsFrame(m, w, h, !v.p.enabled).render(v.p)); err != nil {
@@ -531,20 +573,18 @@ func runPsLoop(ctx context.Context, v *psView, m *psModel) error {
 			if !ok {
 				return nil
 			}
-			cancelID := m.update(k)
+			cancelIDs := m.update(k)
 			if m.quit {
 				return nil
 			}
-			if cancelID != "" {
+			for _, id := range cancelIDs {
 				select {
-				case v.cancelCh <- cancelID:
+				case v.cancelCh <- id:
 				default:
 					m.note = "cancel already in flight"
 				}
 			}
-			if req := m.takeCatalogReq(); req != nil && v.runCatalog != nil {
-				v.runCatalog(*req)
-			}
+			drainCatalog()
 			syncFocus()
 		case pm := <-v.polls:
 			if pm.err != nil {
@@ -558,17 +598,19 @@ func runPsLoop(ctx context.Context, v *psView, m *psModel) error {
 			}
 			m.warn = pm.warn
 			m.absorb(pm.snap)
+			drainCatalog()
 			syncFocus()
 		case note := <-v.notes:
 			m.note = note
 		case cm := <-v.catalogMsgs:
 			m.absorbCatalog(cm)
+			drainCatalog() // a batch apply chains its next pack off the absorb
 			syncFocus()
 		}
 	}
 }
 
-// TargetLabel names the watched engine for the footer's right slot.
+// TargetLabel names the watched engine for cache keys and connection identity.
 func TargetLabel(s config.Settings, overTCP bool) string {
 	if overTCP {
 		return "remote " + strings.TrimPrefix(strings.TrimPrefix(s.Host, "https://"), "http://")

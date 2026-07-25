@@ -1,11 +1,13 @@
 package tui
 
 import (
+	"math/rand/v2"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
+	"github.com/MateusAMP2119/iris-lakehouse/internal/quotes"
 )
 
 // This file is the state of the `iris ps` dashboard: the polled snapshot, the
@@ -105,20 +107,27 @@ type psModel struct {
 	// the target follow the selection automatically.
 	pinnedRun string
 
-	showAll       bool   // runs table: 'a' toggled the whole history in
-	follow        bool   // logs pane: tail follows new output
-	scroll        int    // logs pane: lines scrolled back when not following
-	confirmCancel bool   // logs pane: y/N cancel confirm armed
-	histView      bool   // strips: 'h' toggled the coarse hours-deep history in
-	note          string // transient action outcome, cleared on the next key
-	warn          string // standing soft-fetch warning, cleared by the next good poll
-	frozen        bool   // live polls paused so terminal select/copy is stable
+	showAll       bool // runs table: 'a' toggled the whole history in
+	follow        bool // logs pane: tail follows new output
+	scroll        int  // logs pane: lines scrolled back when not following
+	confirmCancel bool // logs pane: y/N cancel confirm armed
+	confirmBulk   bool // y/N bulk-cancel confirm armed over the marked pipelines
+
+	// markedPipes is the space-marked pipeline set a bulk cancel acts on;
+	// marks outlive selection moves and are pruned when their pipeline leaves
+	// the snapshot.
+	markedPipes map[string]bool
+	histView    bool   // strips: 'h' toggled the coarse hours-deep history in
+	note        string // transient action outcome, cleared on the next key
+	warn        string // standing soft-fetch warning, cleared by the next good poll
+	frozen      bool   // live polls paused so terminal select/copy is stable
 
 	search  *psSearch  // non-nil while the search overlay is open
 	command *psCommand // non-nil while the ':' command prompt is open (#218)
 
 	catalog    *psCatalog    // non-nil while the catalog overlay is open (#219)
-	catalogReq *psCatalogReq // overlay action parked for the loop, consumed via takeCatalogReq
+	idleCat    *psCatalog    // the idle card's inline searchable catalog; nil once work registers
+	catalogReq *psCatalogReq // catalog action parked for the loop, consumed via takeCatalogReq
 	catalogSeq int           // monotonic request correlation counter (stale outcomes drop)
 
 	// rings holds every heat strip's fine history: key "" is the engine,
@@ -132,8 +141,12 @@ type psModel struct {
 	coarse   map[string]*psRing
 	lastTick uint64
 
+	spin   int          // spinner phase, advanced by the event loop while catalog work is in flight
+	quote  quotes.Quote // the idle card's ceremony quote, picked once per view
+	clicks []psClick    // clickable regions of the last rendered frame
+
 	snap   Snapshot
-	target string // footer right slot: "remote <host>" or "local <socket>"
+	target string // watched engine id for the disk cache ("remote <host>" / "local <socket>")
 	quit   bool
 }
 
@@ -157,6 +170,10 @@ func newPsModel(first Snapshot, target string) *psModel {
 	m.clampTable()
 	if first.StaleAge > 0 {
 		m.warn = psUnreachableWarn + " · cached " + first.StaleAge.Truncate(time.Second).String() + " ago"
+	}
+	m.quote = quotes.Farewell[rand.IntN(len(quotes.Farewell))] //nolint:gosec // G404: cosmetic quote pick.
+	if psIsEmptyWorkspace(m) {
+		m.openIdleCatalog()
 	}
 	return m
 }
@@ -396,6 +413,29 @@ func (m *psModel) absorb(s Snapshot) {
 	if m.search != nil {
 		m.search.rematch(m.snap)
 	}
+	// The inline idle catalog lives exactly as long as the empty workspace.
+	if psIsEmptyWorkspace(m) {
+		if m.idleCat == nil {
+			m.openIdleCatalog()
+		}
+	} else if m.idleCat != nil {
+		m.idleCat = nil
+	}
+	// Pipeline marks live only as long as their pipeline stays in the snapshot.
+	if len(m.markedPipes) > 0 {
+		alive := map[string]bool{}
+		for _, p := range s.Pipelines {
+			alive[p.Name] = true
+		}
+		for _, r := range s.Ps.Runs {
+			alive[r.Pipeline] = true
+		}
+		for name := range m.markedPipes {
+			if !alive[name] {
+				delete(m.markedPipes, name)
+			}
+		}
+	}
 }
 
 // logsTargetIn resolves the logs target against a candidate snapshot, so
@@ -628,41 +668,63 @@ func moveSel(sel string, keys []string, delta int) string {
 	return keys[at]
 }
 
-// update advances the model by one keypress and returns the run the loop
-// should ask the poller to cancel ("" almost always). The loop reads its two
-// other signals off the model after the call: m.quit to exit, and m.focus()
-// to re-point the poller's log tail when it changed.
-func (m *psModel) update(k psKey) (cancelRun string) {
+// update advances the model by one keypress and returns the runs the loop
+// should ask the poller to cancel (nil almost always; several only on a
+// confirmed bulk cancel). The loop reads its two other signals off the model
+// after the call: m.quit to exit, and m.focus() to re-point the poller's log
+// tail when it changed.
+func (m *psModel) update(k psKey) (cancelRuns []string) {
 	m.note = ""
 
 	// The search overlay owns the keyboard while open (Esc lives only here).
 	if m.search != nil {
 		m.updateSearch(k)
-		return ""
+		return nil
 	}
 
 	// The ':' command prompt owns the keyboard while open (#218).
 	if m.command != nil {
 		m.updateCommand(k)
-		return ""
+		return nil
 	}
 
 	// The catalog overlay owns the keyboard while open (#219).
 	if m.catalog != nil {
 		m.updateCatalog(k)
-		return ""
+		return nil
+	}
+
+	// The idle card's inline catalog gets first pick at keys on the empty
+	// workspace; unclaimed keys fall through to the normal bindings.
+	if m.idleCat != nil && psIsEmptyWorkspace(m) && m.updateIdleCatalog(k) {
+		return nil
 	}
 
 	// An armed cancel confirm consumes the next key: y confirms, all else disarms.
 	if m.confirmCancel {
 		m.confirmCancel = false
 		if k.kind == psKeyRune && (k.r == 'y' || k.r == 'Y') {
-			return m.logsTarget()
+			return []string{m.logsTarget()}
 		}
 		if k.kind == psKeyCtrlC {
 			m.quit = true
 		}
-		return ""
+		return nil
+	}
+
+	// An armed bulk confirm likewise: y cancels every marked pipeline's
+	// running runs and drops the marks, all else disarms and keeps them.
+	if m.confirmBulk {
+		m.confirmBulk = false
+		if k.kind == psKeyRune && (k.r == 'y' || k.r == 'Y') {
+			runs := m.bulkCancelRuns()
+			m.markedPipes = nil
+			return runs
+		}
+		if k.kind == psKeyCtrlC {
+			m.quit = true
+		}
+		return nil
 	}
 
 	switch k.kind {
@@ -681,7 +743,52 @@ func (m *psModel) update(k psKey) (cancelRun string) {
 	case psKeyLeft:
 		m.back()
 	}
-	return ""
+	return nil
+}
+
+// bulkCancelRuns lists every running run belonging to a marked pipeline.
+func (m *psModel) bulkCancelRuns() []string {
+	var out []string
+	for _, r := range m.snap.Ps.Runs {
+		if r.State == "running" && m.markedPipes[r.Pipeline] {
+			out = append(out, r.ID)
+		}
+	}
+	return out
+}
+
+// toggleMarkPipeline flips the bulk mark on the pipeline row under the cursor:
+// the rail's pipeline row, or the pipelines table's cursor.
+func (m *psModel) toggleMarkPipeline() {
+	name := ""
+	switch m.pane {
+	case psPaneLanes:
+		name = m.selPipeline
+	case psPaneTable:
+		if m.selPipeline == "" {
+			name = m.tblPipeline
+		}
+	}
+	if name == "" {
+		return
+	}
+	m.togglePipeMark(name)
+}
+
+// togglePipeMark flips the bulk mark on one pipeline by name (the ○/● circle's
+// click target).
+func (m *psModel) togglePipeMark(name string) {
+	if m.markedPipes == nil {
+		m.markedPipes = map[string]bool{}
+	}
+	if m.markedPipes[name] {
+		delete(m.markedPipes, name)
+	} else {
+		m.markedPipes[name] = true
+	}
+	if len(m.markedPipes) == 0 {
+		m.markedPipes = nil
+	}
 }
 
 // cyclePane advances the pane focus: lanes, table, logs, around.
@@ -732,11 +839,22 @@ func (m *psModel) updateRune(r rune) {
 		} else {
 			m.note = "live"
 		}
+	case ' ':
+		m.toggleMarkPipeline()
 	case 'c':
 		// Quiet engine: c is the one-key jump into the catalog (the empty
-		// card's primary action). With work registered it stays cancel-in-logs.
+		// card's primary action). With work registered it stays cancel-in-logs,
+		// or the bulk confirm when pipelines are marked.
 		if psIsEmptyWorkspace(m) {
 			m.openCatalog()
+			return
+		}
+		if len(m.markedPipes) > 0 {
+			if len(m.bulkCancelRuns()) == 0 {
+				m.note = "no running runs in the marked pipelines"
+				return
+			}
+			m.confirmBulk = true
 			return
 		}
 		if m.pane == psPaneLogs {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/golden"
+	"github.com/MateusAMP2119/iris-lakehouse/internal/quotes"
 )
 
 // framePlain renders a model at a fixed geometry and joins the plain rune
@@ -87,6 +88,7 @@ func TestPsFrameGoldens(t *testing.T) {
 			m := newPsModel(Snapshot{Ps: api.PsPayload{
 				Engine: api.PsEngine{Version: "dev", Role: "leader", PID: 7, Uptime: "12s"},
 			}}, "unix:///home/tiger/.iris/engine.sock")
+			m.quote = quotes.Farewell[0] // pin the random pick for the golden
 			golden.Assert(t, []byte(framePlain(m, 100, 30)), "testdata/psv_empty_100x30.txt")
 		})
 
@@ -249,23 +251,38 @@ func TestPsFrameStyling(t *testing.T) {
 			}
 		})
 
-		t.Run("empty workspace header keeps load but drops run counts", func(t *testing.T) {
+		t.Run("empty workspace shows banner, version bar, and status/actions boxes", func(t *testing.T) {
 			m := newPsModel(Snapshot{Ps: api.PsPayload{
 				Engine: api.PsEngine{Version: "dev", Role: "leader", PID: 7, Uptime: "12s"},
 			}}, "")
-			top := strings.Join(renderPsFrame(m, 100, 30, false).plainLines()[:psHeaderCardH], "\n")
-			if !strings.Contains(top, "IRIS") || !strings.Contains(top, "LEADER") {
-				t.Fatalf("empty header %q missing identity", top)
-			}
-			for _, want := range []string{"CPU", "MEM"} {
-				if !strings.Contains(top, want) {
-					t.Errorf("empty header missing live load %q: %q", want, top)
+			m.quote = quotes.Farewell[0] // pin the random pick
+			lines := renderPsFrame(m, 100, 30, false).plainLines()
+			frame := strings.Join(lines, "\n")
+			for _, want := range []string{
+				"IRIS LAKEHOUSE", // 100x30 leaves art no room beside the catalog
+				"state", "idle", "queue", "empty", "mem", "12s",
+				quotes.Farewell[0].Text, quotes.Farewell[0].Author, ":logs <id>", "quit",
+				"catalog", "type to filter", "loading catalog…", "⏎ apply picked",
+				"idle — waiting for work",
+			} {
+				if !strings.Contains(frame, want) {
+					t.Errorf("empty frame missing %q:\n%s", want, frame)
 				}
 			}
 			for _, bad := range []string{"running", "queued"} {
-				if strings.Contains(top, bad) {
-					t.Errorf("empty header must not show hollow count %q: %q", bad, top)
+				if strings.Contains(frame, bad) {
+					t.Errorf("empty frame must not show hollow count %q:\n%s", bad, frame)
 				}
+			}
+			// Version bar: one row carries version left and role/uptime/pid right.
+			barOK := false
+			for _, ln := range lines {
+				if strings.Contains(ln, "dev") && strings.Contains(ln, "pid 7") {
+					barOK = true
+				}
+			}
+			if !barOK {
+				t.Fatalf("no version bar row with identity in:\n%s", frame)
 			}
 		})
 	})

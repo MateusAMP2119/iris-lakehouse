@@ -4,9 +4,9 @@
 ╭─ LA╭─ COMMANDS ───────────────────────╮i╭─ ABOUT · catalog ─────────────────────────────────╮────╮
 │▌▾ i│▌▸ catalog · Browse and install … │ │ Browse and install pipeline packs                 │    │
 │   5│   logs · Pin the logs pane on a… │ │                                                   │    │
-│   ●│   search · Fuzzy-find lanes, pi… │ │ Opens the catalog overlay over the dashboard:     │    │
-│   ●│   all · Toggle full run history… │ │ pack list on the left, README and tree on the     │    │
-│   ●│   follow · Toggle log-tail foll… │ │ right. Install and apply without leaving iris ps. │    │
+│ ○ ●│   search · Fuzzy-find lanes, pi… │ │ Opens the catalog overlay over the dashboard:     │    │
+│ ○ ●│   all · Toggle full run history… │i│ pack list on the left, README and tree on the     │    │
+│ ○ ●│   follow · Toggle log-tail foll… │e│ right. Install and apply without leaving iris ps. │    │
 │    │   history · Toggle hours-deep l… │ │                                                   │    │
 │ ▸ r│   cancel · Cancel the watched r… │─│ Usage  :catalog                                   │────╯
 │   -│   help · Keyboard reference      │o│ Keys   :catalog                                   │────╮

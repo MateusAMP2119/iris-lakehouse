@@ -14,17 +14,17 @@ import (
 func psvFixture() Snapshot {
 	exit0, exit3 := 0, 3
 	return Snapshot{Ps: api.PsPayload{
-			Engine: api.PsEngine{Version: "dev", Role: "leader", PID: 42, Uptime: "2h13m",
-				QueuedRuns: 1, RunningRuns: 1, Load: &api.PsLoad{CPUPercent: 3.2, RSSBytes: 126 << 20}},
-			Runs: []api.PsRun{
-				{ID: "14", Pipeline: "load_orders", Lane: "ingest", State: "running",
-					Load: &api.PsLoad{CPUPercent: 51, RSSBytes: 24 << 20}},
-				{ID: "12", Pipeline: "extract", Lane: "ingest", State: "queued"},
-				{ID: "9", Pipeline: "load_orders", Lane: "ingest", State: "succeeded", ExitCode: &exit0},
-				{ID: "6", Pipeline: "load_orders", Lane: "ingest", State: "dead_lettered", ExitCode: &exit3},
-				{ID: "2", Pipeline: "solo", State: "succeeded", ExitCode: &exit0},
-			},
+		Engine: api.PsEngine{Version: "dev", Role: "leader", PID: 42, Uptime: "2h13m",
+			QueuedRuns: 1, RunningRuns: 1, Load: &api.PsLoad{CPUPercent: 3.2, RSSBytes: 126 << 20}},
+		Runs: []api.PsRun{
+			{ID: "14", Pipeline: "load_orders", Lane: "ingest", State: "running",
+				Load: &api.PsLoad{CPUPercent: 51, RSSBytes: 24 << 20}},
+			{ID: "12", Pipeline: "extract", Lane: "ingest", State: "queued"},
+			{ID: "9", Pipeline: "load_orders", Lane: "ingest", State: "succeeded", ExitCode: &exit0},
+			{ID: "6", Pipeline: "load_orders", Lane: "ingest", State: "dead_lettered", ExitCode: &exit3},
+			{ID: "2", Pipeline: "solo", State: "succeeded", ExitCode: &exit0},
 		},
+	},
 		Pipelines: []api.PipelineListItem{
 			{Name: "extract", Active: true, Lane: "ingest"},
 			{Name: "hello_iris", Active: false, Lane: "ingest"},
@@ -246,11 +246,11 @@ func TestPsModelUpdate(t *testing.T) {
 			if !m.confirmCancel {
 				t.Fatal("c on a running target did not arm the confirm")
 			}
-			if got := m.update(key('n')); got != "" || m.confirmCancel {
+			if got := m.update(key('n')); len(got) != 0 || m.confirmCancel {
 				t.Fatalf("n must disarm without cancelling, got %q", got)
 			}
 			m.update(key('c'))
-			if got := m.update(key('y')); got != "14" {
+			if got := m.update(key('y')); len(got) != 1 || got[0] != "14" {
 				t.Fatalf("y must confirm the cancel, got %q", got)
 			}
 			m.pinnedRun = "9" // terminal target: c never arms
@@ -501,6 +501,97 @@ func TestPsSearch(t *testing.T) {
 			}
 			if m.selLane != "ingest" || m.selPipeline != "" {
 				t.Error("j/k moved the backdrop selection while the overlay was open")
+			}
+		})
+	})
+}
+
+// TestPsBulkCancel proves the space-marked bulk cancel: marks toggle on
+// pipeline rows in the rail and the table, c arms one y/N confirm over every
+// marked pipeline's running runs, y returns them all, and marks are pruned
+// with their pipelines.
+func TestPsBulkCancel(t *testing.T) {
+	t.Run("ps-bulk-cancel", func(t *testing.T) {
+		t.Run("space marks the pipelines-table cursor", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			m.update(psKey{kind: psKeyTab}) // table pane, cursor on extract
+			m.update(key(' '))
+			if !m.markedPipes["extract"] {
+				t.Fatalf("marked = %v, want extract", m.markedPipes)
+			}
+			m.update(key(' '))
+			if len(m.markedPipes) != 0 {
+				t.Fatalf("marked = %v, want the second space to unmark", m.markedPipes)
+			}
+		})
+
+		t.Run("space marks the rail's pipeline row", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			m.update(psKey{kind: psKeyDown}) // first pipeline row of the unfolded lane
+			if m.selPipeline == "" {
+				t.Fatal("fixture cursor did not land on a pipeline row")
+			}
+			m.update(key(' '))
+			if !m.markedPipes[m.selPipeline] {
+				t.Fatalf("marked = %v, want %s", m.markedPipes, m.selPipeline)
+			}
+		})
+
+		t.Run("c without running runs among the marks just notes", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			m.update(psKey{kind: psKeyTab})
+			m.update(key(' ')) // extract: queued only
+			m.update(key('c'))
+			if m.confirmBulk || m.note == "" {
+				t.Fatalf("confirmBulk=%v note=%q, want the no-running-runs note", m.confirmBulk, m.note)
+			}
+		})
+
+		t.Run("c arms, y cancels every marked running run and clears marks", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			m.update(psKey{kind: psKeyTab})
+			m.update(key(' '))               // extract
+			m.update(psKey{kind: psKeyDown}) // hello_iris
+			m.update(psKey{kind: psKeyDown}) // load_orders (running run 14)
+			m.update(key(' '))
+			m.update(key('c'))
+			if !m.confirmBulk {
+				t.Fatal("c with marked running pipelines must arm the bulk confirm")
+			}
+			got := m.update(key('y'))
+			if len(got) != 1 || got[0] != "14" {
+				t.Fatalf("y returned %v, want [14]", got)
+			}
+			if m.markedPipes != nil || m.confirmBulk {
+				t.Fatalf("marks = %v, want cleared after the confirmed cancel", m.markedPipes)
+			}
+		})
+
+		t.Run("anything but y disarms and keeps the marks", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			m.update(psKey{kind: psKeyTab})
+			m.update(psKey{kind: psKeyDown})
+			m.update(psKey{kind: psKeyDown}) // load_orders
+			m.update(key(' '))
+			m.update(key('c'))
+			if got := m.update(key('n')); len(got) != 0 || m.confirmBulk {
+				t.Fatalf("n returned %v, want a disarm without cancels", got)
+			}
+			if !m.markedPipes["load_orders"] {
+				t.Fatal("disarming must keep the marks")
+			}
+		})
+
+		t.Run("absorb prunes marks whose pipelines vanished", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			m.update(psKey{kind: psKeyTab})
+			m.update(key(' ')) // extract
+			s := psvFixture()
+			s.Pipelines = s.Pipelines[2:] // drop extract and hello_iris from the listing
+			s.Ps.Runs = s.Ps.Runs[:1]     // keep only load_orders' running run
+			m.absorb(s)
+			if len(m.markedPipes) != 0 {
+				t.Fatalf("marked = %v, want extract pruned with its pipeline", m.markedPipes)
 			}
 		})
 	})
