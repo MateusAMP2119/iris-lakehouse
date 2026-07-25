@@ -488,7 +488,7 @@ func (m *manualExec) runNow(ctx context.Context, rec store.RunRecord) (dispatch.
 
 	var src *sourceFrame
 	if acc.source != nil {
-		src = m.sources.fetch(ctx, rec.Pipeline, acc.source.HTTP, sink)
+		src = m.sources.fetch(ctx, rec.Pipeline, acc.source.HTTP, acc.source.EffectiveEvery(), sink)
 	}
 	res := driveTurn(ctx, ses, ses.nextTurn(), src, feed.Rows, acc.writes, rp, sink, sink)
 	if res.kind != turnShutdown && rp != nil {

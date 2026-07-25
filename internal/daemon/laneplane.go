@@ -442,7 +442,7 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 
 	var src *sourceFrame
 	if acc.source != nil {
-		src = m.sources.fetch(ctx, rec.Pipeline, acc.source.HTTP, buf)
+		src = m.sources.fetch(ctx, rec.Pipeline, acc.source.HTTP, acc.source.EffectiveEvery(), buf)
 	}
 	res := driveTurn(ctx, ses, ses.nextTurn(), src, feed.Rows, acc.writes, rp, tr, buf)
 	trec.Calls = res.calls
@@ -763,7 +763,7 @@ func (m *laneExec) runToTerminal(ctx context.Context, pipeline string, target st
 
 	var src *sourceFrame
 	if acc.source != nil {
-		src = m.sources.fetch(ctx, pipeline, acc.source.HTTP, sink)
+		src = m.sources.fetch(ctx, pipeline, acc.source.HTTP, acc.source.EffectiveEvery(), sink)
 	}
 	res := driveTurn(ctx, ses, ses.nextTurn(), src, feed.Rows, acc.writes, rp, sink, sink)
 	if res.kind != turnShutdown {

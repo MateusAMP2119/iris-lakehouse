@@ -83,9 +83,12 @@ type sourceFrame struct {
 	summary string
 }
 
-// sourceValidator caches one pipeline's conditional-GET validators.
+// sourceValidator caches one pipeline's conditional-GET validators, its last
+// body digest, and when it last went to the network.
 type sourceValidator struct {
 	url, etag, lastModified string
+	bodySHA                 [32]byte
+	fetchedAt               time.Time
 }
 
 // sourceFetcher fetches declared sources over one shared client, caching each
@@ -102,19 +105,39 @@ func newSourceFetcher() *sourceFetcher {
 }
 
 // fetch returns the pipeline's prepared source frame, or nil when the turn
-// should carry none: an unchanged source (304 against the cached validators)
-// or a failed fetch. A failure never refuses the turn — it is noted in the
-// turn's log sink and the pipeline runs without external input.
-func (f *sourceFetcher) fetch(ctx context.Context, pipeline, url string, sink io.Writer) *sourceFrame {
+// should carry none: the declared every interval has not elapsed since the
+// last fetch (no network at all -- the spin breaker: a wake caused by the
+// pipeline's own produce never re-fetches early), the source is unchanged
+// (304, or a 200 whose body digest matches the last -- an origin without
+// validators still quiets), or the fetch failed. A failure never refuses the
+// turn — it is noted in the turn's log sink and the pipeline runs without
+// external input.
+func (f *sourceFetcher) fetch(ctx context.Context, pipeline, url string, every time.Duration, sink io.Writer) *sourceFrame {
+	f.mu.Lock()
+	last := f.cache[pipeline]
+	f.mu.Unlock()
+	if last.url == url && !last.fetchedAt.IsZero() && time.Since(last.fetchedAt) < every {
+		return nil
+	}
 	body, status, unchanged, err := f.do(ctx, pipeline, url)
 	switch {
 	case err != nil:
+		// A failed attempt still stamps the pace window: an erroring origin
+		// (429, outage) is retried at the declared every, never hammered.
+		f.mu.Lock()
+		last.url, last.fetchedAt = url, time.Now()
+		f.cache[pipeline] = last
+		f.mu.Unlock()
 		if sink != nil {
 			fmt.Fprintf(sink, "[iris: source fetch %s failed: %v]\n", url, err)
 		}
 		return nil
 	case unchanged:
 		return nil
+	}
+	sum := sha256.Sum256(body)
+	if last.url == url && sum == last.bodySHA {
+		return nil // a 200 with the same bytes: unchanged in every way that matters
 	}
 	line, err := dispatch.EncodeSourceFrame(url, status, body)
 	if err != nil {
@@ -123,7 +146,6 @@ func (f *sourceFetcher) fetch(ctx context.Context, pipeline, url string, sink io
 		}
 		return nil
 	}
-	sum := sha256.Sum256(body)
 	summary, _ := json.Marshal(struct {
 		Event  string `json:"event"`
 		URL    string `json:"url"`
@@ -159,6 +181,10 @@ func (f *sourceFetcher) do(ctx context.Context, pipeline, url string) (body []by
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotModified {
+		f.mu.Lock()
+		v.fetchedAt = time.Now()
+		f.cache[pipeline] = v
+		f.mu.Unlock()
 		return nil, resp.StatusCode, true, nil
 	}
 	body, err = io.ReadAll(io.LimitReader(resp.Body, sourceBodyCap+1))
@@ -168,8 +194,14 @@ func (f *sourceFetcher) do(ctx context.Context, pipeline, url string) (body []by
 	if len(body) > sourceBodyCap {
 		return nil, 0, false, fmt.Errorf("source body exceeds %d bytes", sourceBodyCap)
 	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, 0, false, fmt.Errorf("source answered status %d", resp.StatusCode)
+	}
 	f.mu.Lock()
-	f.cache[pipeline] = sourceValidator{url: url, etag: resp.Header.Get("ETag"), lastModified: resp.Header.Get("Last-Modified")}
+	f.cache[pipeline] = sourceValidator{
+		url: url, etag: resp.Header.Get("ETag"), lastModified: resp.Header.Get("Last-Modified"),
+		bodySHA: sha256.Sum256(body), fetchedAt: time.Now(),
+	}
 	f.mu.Unlock()
 	return body, resp.StatusCode, false, nil
 }
