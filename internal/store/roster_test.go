@@ -31,8 +31,8 @@ func TestEighteenTableRoster(t *testing.T) {
 	}
 
 	total := len(meta.Tables) + 1
-	if total != 25 {
-		t.Errorf("engine table roster = %d, want exactly 25 (24 meta + data_journal)", total)
+	if total != 26 {
+		t.Errorf("engine table roster = %d, want exactly 26 (25 meta + data_journal)", total)
 	}
 
 	// data_journal is not a meta control table: it lives on the

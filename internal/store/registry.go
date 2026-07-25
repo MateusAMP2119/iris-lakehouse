@@ -170,6 +170,16 @@ ON CONFLICT (pipeline) DO UPDATE SET split = EXCLUDED.split, stamp = EXCLUDED.st
 	// insertLaneSQL writes one name-keyed lane row at its walk position.
 	insertLaneSQL = `INSERT INTO lanes (lane, pipeline, pos) VALUES ($1, $2, $3)`
 
+	// headUpsertSQL records a declaration file's last-applied checksum.
+	headUpsertSQL = `INSERT INTO declaration_heads (path, checksum) VALUES ($1, $2)
+ON CONFLICT (path) DO UPDATE SET checksum = EXCLUDED.checksum`
+
+	// headDeleteSQL forgets a declaration file's head (its declaration was destroyed).
+	headDeleteSQL = `DELETE FROM declaration_heads WHERE path = $1`
+
+	// selectHeadsSQL reads every recorded declaration head.
+	selectHeadsSQL = `SELECT path, checksum FROM declaration_heads ORDER BY path`
+
 	// selectPipelineNamesSQL reads the registered pipeline names.
 	selectPipelineNamesSQL = `SELECT name FROM pipelines ORDER BY name`
 
@@ -228,6 +238,54 @@ func (w *Writer) RewriteLane(ctx context.Context, lane string, order []string) e
 		return fmt.Errorf("store: writer rewrite lane %q: %w", lane, err)
 	}
 	return nil
+}
+
+// RecordDeclarationHead persists a declaration file's last-applied checksum,
+// keyed by its workspace-relative path. It is a leader-only meta write, riding
+// the single Writer.
+func (w *Writer) RecordDeclarationHead(ctx context.Context, path, checksum string) error {
+	if err := w.conn.Exec(ctx, headUpsertSQL, path, checksum); err != nil {
+		return fmt.Errorf("store: writer record declaration head %q: %w", path, err)
+	}
+	return nil
+}
+
+// DeleteDeclarationHead forgets a destroyed declaration's head; deleting an
+// unrecorded path is a no-op.
+func (w *Writer) DeleteDeclarationHead(ctx context.Context, path string) error {
+	if err := w.conn.Exec(ctx, headDeleteSQL, path); err != nil {
+		return fmt.Errorf("store: writer delete declaration head %q: %w", path, err)
+	}
+	return nil
+}
+
+// DeclarationHeadReader reads the recorded declaration heads so the workspace
+// sync can diff on-disk files against what was last applied.
+type DeclarationHeadReader interface {
+	// DeclarationHeads returns every recorded head as path -> checksum.
+	DeclarationHeads(ctx context.Context) (map[string]string, error)
+}
+
+// DeclarationHeads reads the recorded heads in one plain MVCC query.
+func (r *pgxRegistryReader) DeclarationHeads(ctx context.Context) (map[string]string, error) {
+	rows, err := r.pool.query(ctx, selectHeadsSQL)
+	if err != nil {
+		return nil, fmt.Errorf("store: read declaration heads: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]string{}
+	for rows.Next() {
+		var path, checksum string
+		if err := rows.Scan(&path, &checksum); err != nil {
+			return nil, fmt.Errorf("store: scan declaration head: %w", err)
+		}
+		out[path] = checksum
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: read declaration heads: %w", err)
+	}
+	return out, nil
 }
 
 // execTx runs stmts as one atomic transaction through the write connection's

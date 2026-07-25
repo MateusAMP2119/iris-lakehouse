@@ -79,16 +79,29 @@ func (a *app) declareDestroy() runE {
 // with leader guidance; any other error is operation-failed (exit 4); a 200 is success,
 // emitted with any warnings.
 func (a *app) postControl(cmd *cobra.Command, route string, req api.ControlRequest, op string) error {
+	resp, err := a.postJSON(cmd, route, req, op)
+	if err != nil {
+		return err
+	}
+	defer drainCloseBody(resp)
+	return a.classifyControlResponse(cmd, resp, op)
+}
+
+// postJSON POSTs one JSON body to a daemon route, resolving the target through
+// the configuration precedence and attaching the PAT over TCP. A transport
+// failure is the no-daemon fault; the caller owns response classification and
+// closing.
+func (a *app) postJSON(cmd *cobra.Command, route string, req any, op string) (*http.Response, error) {
 	settings := a.resolveTarget(cmd)
 	client, base, overTCP := a.daemonHTTPClient(settings)
 
 	body, err := json.Marshal(req)
 	if err != nil {
-		return &fault{code: exitOpFailed, codeStr: "encode", message: fmt.Sprintf("%s: encode request: %v", op, err)}
+		return nil, &fault{code: exitOpFailed, codeStr: "encode", message: fmt.Sprintf("%s: encode request: %v", op, err)}
 	}
 	hreq, err := http.NewRequestWithContext(cmd.Context(), http.MethodPost, base+route, bytes.NewReader(body))
 	if err != nil {
-		return &fault{code: exitOpFailed, codeStr: "request", message: fmt.Sprintf("%s: build request: %v", op, err)}
+		return nil, &fault{code: exitOpFailed, codeStr: "request", message: fmt.Sprintf("%s: build request: %v", op, err)}
 	}
 	hreq.Header.Set("Content-Type", "application/json")
 	if overTCP && settings.Token != "" {
@@ -98,17 +111,19 @@ func (a *app) postControl(cmd *cobra.Command, route string, req api.ControlReque
 	resp, err := client.Do(hreq)
 	if err != nil {
 		a.logger.Debug("no iris daemon reachable", "op", op, "socket", settings.Socket, "host", settings.Host, "err", err)
-		return &fault{
+		return nil, &fault{
 			code:    exitNoDaemon,
 			codeStr: "no_daemon",
 			message: `Cannot connect to the iris engine. Is the engine running? Start it with "iris engine start", or target a running engine with --socket or --host`,
 		}
 	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-	}()
-	return a.classifyControlResponse(cmd, resp, op)
+	return resp, nil
+}
+
+// drainCloseBody drains and closes a response body so the connection is reusable.
+func drainCloseBody(resp *http.Response) {
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 }
 
 // classifyControlResponse maps a control-route HTTP response to a command outcome. A
@@ -116,8 +131,7 @@ func (a *app) postControl(cmd *cobra.Command, route string, req api.ControlReque
 // the leader; every other status is operation-failed (exit 4) carrying the daemon's
 // message.
 func (a *app) classifyControlResponse(cmd *cobra.Command, resp *http.Response, op string) error {
-	switch resp.StatusCode {
-	case http.StatusOK:
+	if resp.StatusCode == http.StatusOK {
 		var env struct {
 			Data api.ControlResult `json:"data"`
 		}
@@ -125,6 +139,15 @@ func (a *app) classifyControlResponse(cmd *cobra.Command, resp *http.Response, o
 			return &fault{code: exitOpFailed, codeStr: "decode", message: fmt.Sprintf("%s: decode daemon response: %v", op, err)}
 		}
 		return a.emitControlSuccess(cmd, env.Data)
+	}
+	return a.controlErrorFault(resp, op)
+}
+
+// controlErrorFault maps a non-200 control-route response to its exit fault: a
+// not_leader rejection is exit 6 naming the leader, anything else is
+// operation-failed carrying the daemon's message.
+func (a *app) controlErrorFault(resp *http.Response, op string) error {
+	switch resp.StatusCode {
 	case api.StatusNotLeader:
 		var env struct {
 			Error struct {

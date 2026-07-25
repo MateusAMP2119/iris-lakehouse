@@ -46,6 +46,12 @@ CREATE TABLE IF NOT EXISTS lanes (
     UNIQUE (lane, pos)
 );
 
+CREATE TABLE IF NOT EXISTS declaration_heads (
+    path text,
+    checksum text NOT NULL,
+    PRIMARY KEY (path)
+);
+
 CREATE TABLE IF NOT EXISTS artifacts (
     hash text,
     pipeline text NOT NULL,

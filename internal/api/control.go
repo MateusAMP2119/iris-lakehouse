@@ -62,6 +62,9 @@ type ControlHandler interface {
 	Apply(ctx context.Context, req ControlRequest) (ControlResult, error)
 	// Destroy tears down the one declaration named by req.
 	Destroy(ctx context.Context, req ControlRequest) (ControlResult, error)
+	// ApplyWorkspace diffs the whole workspace tree against the recorded
+	// declaration heads and applies what changed, in dependency order.
+	ApplyWorkspace(ctx context.Context, req WorkspaceApplyRequest) (WorkspaceApplyResult, error)
 }
 
 // The control-plane error codes and statuses. Like not_leader they are distinct
@@ -104,6 +107,10 @@ func (noControl) Apply(context.Context, ControlRequest) (ControlResult, error) {
 
 func (noControl) Destroy(context.Context, ControlRequest) (ControlResult, error) {
 	return ControlResult{}, ErrControlUnavailable
+}
+
+func (noControl) ApplyWorkspace(context.Context, WorkspaceApplyRequest) (WorkspaceApplyResult, error) {
+	return WorkspaceApplyResult{}, ErrControlUnavailable
 }
 
 // serveApply handles POST /apply: decode the request, run the leader's apply,

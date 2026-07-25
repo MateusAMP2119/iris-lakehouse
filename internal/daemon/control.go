@@ -287,6 +287,7 @@ func (o *controlOrchestrator) destroy(ctx context.Context, req api.ControlReques
 			if err := o.destroyer.DestroyPipeline(ctx, decl.Pipeline.Name); err != nil {
 				return api.ControlResult{}, err
 			}
+			o.forgetHead(ctx, target)
 		}
 		return api.ControlResult{Kind: decl.Kind.String(), Target: decl.Pipeline.Name, DryRun: req.DryRun}, nil
 	case declare.KindComposer:
@@ -301,6 +302,7 @@ func (o *controlOrchestrator) destroy(ctx context.Context, req api.ControlReques
 			if err := o.destroyer.DestroyComposer(ctx, decl.Composer.Lane, members); err != nil {
 				return api.ControlResult{}, err
 			}
+			o.forgetHead(ctx, target)
 		}
 		return api.ControlResult{Kind: decl.Kind.String(), Target: decl.Composer.Lane, DryRun: req.DryRun}, nil
 	default:

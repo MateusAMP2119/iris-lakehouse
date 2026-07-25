@@ -89,6 +89,7 @@ func (a *app) newRootCommand() *cobra.Command {
 	pf.String("token", "", "PAT presented to a remote engine over TCP")
 
 	root.AddCommand(
+		a.applyCmd(),
 		a.declareCmd(),
 		a.pipelineCmd(),
 		a.runCmd(),
