@@ -84,7 +84,7 @@ type Candidate struct {
 	// catalogs is the pack-install plane (#217), riding the control orchestrator's apply
 	// seam; catalogResolver spans the configured remote catalogs (#220).
 	catalogs        *catalogPlane
-	catalogResolver catalog.Resolver
+	catalogResolver resolverFn
 
 	// Manual-run wiring, installed on winning leadership and cleared on demotion so
 	// the api mux's POST /pipeline/run reaches the single meta writer and the exec
@@ -269,8 +269,8 @@ func WithControlPlane(cp *controlPlane, workspace string, reg store.RegistryRead
 	}
 }
 
-// WithCatalogPlane wires the leader-side catalog plane (#217): its orchestrator installs with the control plane's, so pack installs ride the same workspace, registry reader, and apply path. resolver spans the configured remote catalogs (#220). A nil cp leaves installs unwired.
-func WithCatalogPlane(cp *catalogPlane, resolver catalog.Resolver) CandidateOption {
+// WithCatalogPlane wires the leader-side catalog plane (#217): its orchestrator installs with the control plane's, so pack installs ride the same workspace, registry reader, and apply path. resolver snapshots the live configured remote catalogs (#220). A nil cp leaves installs unwired.
+func WithCatalogPlane(cp *catalogPlane, resolver func() catalog.Resolver) CandidateOption {
 	return func(c *Candidate) {
 		c.catalogs = cp
 		c.catalogResolver = resolver

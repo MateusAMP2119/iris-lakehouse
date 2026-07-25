@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
-	"github.com/MateusAMP2119/iris-lakehouse/internal/catalog"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/config"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/dispatch"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/exec"
@@ -216,11 +215,13 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// The resolver spans the iris.toml catalogs list (#220); the client names packs,
 	// never URLs, so all catalog egress is daemon-side.
 	catalogCtl := newCatalogPlane()
-	catalogRemotes := make([]catalog.Remote, 0, len(s.Catalogs))
-	for _, u := range s.Catalogs {
-		catalogRemotes = append(catalogRemotes, catalog.Remote{URL: u})
-	}
-	catalogResolver := catalog.Resolver{Catalogs: catalogRemotes}
+	// The live source set behind every catalog plane: iris.toml's catalogs list,
+	// growable at runtime through POST /catalog/sources with the grown list
+	// persisted back to iris.toml.
+	catalogSrc := newCatalogSources(s.Catalogs, func(urls []string) error {
+		return config.UpsertTOML(filepath.Join(home, config.FileName), nil, map[string][]string{"catalogs": urls})
+	}, logger)
+	catalogResolver := catalogSrc.resolver
 	// The pipeline plane serves iris pipeline list from the reader pool (any node) and,
 	// once this daemon leads, POST /pipeline/run through the single writer and exec seam.
 	pipelines := newPipelinePlane(client.PipelineLister(), logger)
@@ -329,6 +330,7 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 		api.WithRuns(runs), api.WithRunTrace(runTrace), api.WithPipelineGate(pipelineGate),
 		api.WithRunLogs(NewRunLogsPlane(runLogs)), api.WithCatalog(catalogCtl),
 		api.WithCatalogList(NewCatalogReadPlane(client.RegistryReader(), catalogResolver, logger)),
+		api.WithCatalogSources(catalogSrc),
 	), WithServerLogger(logger), WithVerifier(verifier))
 	if err := srv.Start(ctx); err != nil {
 		return err

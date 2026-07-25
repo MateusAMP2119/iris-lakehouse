@@ -21,15 +21,16 @@ import (
 // catalogReadPlane is the daemon's api.CatalogListHandler.
 type catalogReadPlane struct {
 	registry store.RegistryReader
-	resolver catalog.Resolver
+	resolver resolverFn
 	logger   *slog.Logger
 }
 
 // compile-time proof the plane is the mux's catalog listing reader.
 var _ api.CatalogListHandler = (*catalogReadPlane)(nil)
 
-// NewCatalogReadPlane builds the pack-listing reader; a nil registry skips the installed badges.
-func NewCatalogReadPlane(registry store.RegistryReader, resolver catalog.Resolver, logger *slog.Logger) api.CatalogListHandler {
+// NewCatalogReadPlane builds the pack-listing reader over a live resolver
+// snapshot; a nil registry skips the installed badges.
+func NewCatalogReadPlane(registry store.RegistryReader, resolver func() catalog.Resolver, logger *slog.Logger) api.CatalogListHandler {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -38,7 +39,8 @@ func NewCatalogReadPlane(registry store.RegistryReader, resolver catalog.Resolve
 
 // ListPacks answers every visible pack with badges and preview material.
 func (p *catalogReadPlane) ListPacks(ctx context.Context) (api.CatalogListResult, error) {
-	listings, lerr := p.resolver.List(ctx)
+	resolver := p.resolver()
+	listings, lerr := resolver.List(ctx)
 	registered := map[string]bool{}
 	if p.registry != nil {
 		names, rerr := p.registry.RegisteredPipelines(ctx)
@@ -52,7 +54,7 @@ func (p *catalogReadPlane) ListPacks(ctx context.Context) (api.CatalogListResult
 	res := api.CatalogListResult{Packs: make([]api.CatalogPack, 0, len(listings))}
 	var enrichWarns []string
 	for _, l := range listings {
-		entry, w := p.describeListing(ctx, l, registered)
+		entry, w := p.describeListing(ctx, resolver, l, registered)
 		res.Packs = append(res.Packs, entry)
 		if w != "" {
 			enrichWarns = append(enrichWarns, w)
@@ -68,7 +70,7 @@ func (p *catalogReadPlane) ListPacks(ctx context.Context) (api.CatalogListResult
 // describeListing renders one listing entry. Shadowed rows stay index-only;
 // winners are resolved for full preview and installed badges. A resolve failure
 // keeps the index facts and returns a soft warning (never fails the list).
-func (p *catalogReadPlane) describeListing(ctx context.Context, l catalog.Listing, registered map[string]bool) (api.CatalogPack, string) {
+func (p *catalogReadPlane) describeListing(ctx context.Context, resolver catalog.Resolver, l catalog.Listing, registered map[string]bool) (api.CatalogPack, string) {
 	entry := api.CatalogPack{
 		Name: l.Name, Description: l.Description, Tags: l.Tags,
 		Requires: l.Requires, SHA256: l.SHA256, Source: l.Source, Shadowed: l.Shadowed,
@@ -76,7 +78,7 @@ func (p *catalogReadPlane) describeListing(ctx context.Context, l catalog.Listin
 	if l.Shadowed {
 		return entry, ""
 	}
-	pk, ok, err := p.resolver.Resolve(ctx, l.Name)
+	pk, ok, err := resolver.Resolve(ctx, l.Name)
 	if err != nil {
 		return entry, "catalog pack " + l.Name + " preview unavailable: " + err.Error()
 	}

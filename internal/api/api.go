@@ -83,29 +83,30 @@ func WithRole(r RoleReporter) MuxOption {
 // mutations are rejected until election confirms a leader.
 func NewMux(opts ...MuxOption) http.Handler {
 	m := &mux{
-		role:         unknownRole{},
-		control:      noControl{},
-		pipelines:    noPipelines{},
-		build:        noBuild{},
-		promote:      noPromote{},
-		wipe:         noWipe{},
-		runCancel:    noRunCancel{},
-		ps:           noPs{},
-		inspect:      noInspect{},
-		pipelineShow: noPipelineShow{},
-		workloadShow: noWorkloadShow{},
-		provenance:   noProvenance{},
-		runs:         noRuns{},
-		runTrace:     noRunTrace{},
-		runLogs:      noRunLogs{},
-		pipelineGate: noPipelineGate{},
-		deadImpact:   noDeadImpact{},
-		endpointCtl:  noEndpointControl{},
-		patMint:      noPATMint{},
-		replay:       noReplay{},
-		drain:        noDrain{},
-		catalog:      noCatalog{},
-		catalogList:  noCatalogList{},
+		role:           unknownRole{},
+		control:        noControl{},
+		pipelines:      noPipelines{},
+		build:          noBuild{},
+		promote:        noPromote{},
+		wipe:           noWipe{},
+		runCancel:      noRunCancel{},
+		ps:             noPs{},
+		inspect:        noInspect{},
+		pipelineShow:   noPipelineShow{},
+		workloadShow:   noWorkloadShow{},
+		provenance:     noProvenance{},
+		runs:           noRuns{},
+		runTrace:       noRunTrace{},
+		runLogs:        noRunLogs{},
+		pipelineGate:   noPipelineGate{},
+		deadImpact:     noDeadImpact{},
+		endpointCtl:    noEndpointControl{},
+		patMint:        noPATMint{},
+		replay:         noReplay{},
+		drain:          noDrain{},
+		catalog:        noCatalog{},
+		catalogList:    noCatalogList{},
+		catalogSources: noCatalogSources{},
 	}
 	for _, o := range opts {
 		o(m)
@@ -153,9 +154,11 @@ type mux struct {
 	replay ReplayHandler
 	drain  DrainHandler
 	// catalog runs the leader-side POST /catalog/install (catalog.go, #217);
-	// catalogList serves the GET /catalog pack listing on any role (catalogread.go, #219).
-	catalog     CatalogHandler
-	catalogList CatalogListHandler
+	// catalogList serves the GET /catalog pack listing on any role (catalogread.go, #219);
+	// catalogSources grows the configured source list via POST /catalog/sources.
+	catalog        CatalogHandler
+	catalogList    CatalogListHandler
+	catalogSources CatalogSourcesHandler
 	// endpoints and qreader are the /q serving seams (endpoint.go): the live
 	// compiled-shape source and the read executor. Both default nil (unwired):
 	// /q then answers the internal-fault envelope, per the unwired-seam doctrine.
@@ -209,6 +212,8 @@ func (m *mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.serveEndpointApply(w, r)
 	case "/catalog/install":
 		m.serveCatalogInstall(w, r)
+	case "/catalog/sources":
+		m.serveCatalogSources(w, r)
 	case "/catalog":
 		m.serveCatalogList(w, r)
 	case "/pat/create":

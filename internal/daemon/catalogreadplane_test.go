@@ -47,7 +47,7 @@ func TestCatalogReadPlane(t *testing.T) {
 
 	t.Run("remote packs carry full previews and installed badges", func(t *testing.T) {
 		reg := &regNamesFake{names: []string{"quake_feed", "quake_report"}}
-		p := NewCatalogReadPlane(reg, catalog.Resolver{Catalogs: []catalog.Remote{live}}, nil)
+		p := NewCatalogReadPlane(reg, fixedResolver(catalog.Resolver{Catalogs: []catalog.Remote{live}}), nil)
 		res, err := p.ListPacks(ctx)
 		if err != nil {
 			t.Fatalf("ListPacks: %v", err)
@@ -82,7 +82,7 @@ func TestCatalogReadPlane(t *testing.T) {
 		dead := catalog.Remote{URL: "https://dead.example/catalog.json", Fetch: func(context.Context, string) ([]byte, error) {
 			return nil, errors.New("dial timeout")
 		}}
-		p := NewCatalogReadPlane(nil, catalog.Resolver{Catalogs: []catalog.Remote{live, second, dead}}, nil)
+		p := NewCatalogReadPlane(nil, fixedResolver(catalog.Resolver{Catalogs: []catalog.Remote{live, second, dead}}), nil)
 		res, err := p.ListPacks(ctx)
 		if err != nil {
 			t.Fatalf("ListPacks: %v", err)
@@ -109,7 +109,7 @@ func TestCatalogReadPlane(t *testing.T) {
 	})
 
 	t.Run("empty catalogs yield an empty listing", func(t *testing.T) {
-		p := NewCatalogReadPlane(nil, catalog.Resolver{}, nil)
+		p := NewCatalogReadPlane(nil, fixedResolver(catalog.Resolver{}), nil)
 		res, err := p.ListPacks(ctx)
 		if err != nil {
 			t.Fatalf("ListPacks: %v", err)

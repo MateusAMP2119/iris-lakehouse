@@ -71,7 +71,7 @@ func starterResolver(t *testing.T) catalog.Resolver {
 // workspace, answer the derived apply order, and (with apply) run the declare sequence in order.
 func TestCatalogOrchestratorInstall(t *testing.T) {
 	t.Run("an unknown pack refuses", func(t *testing.T) {
-		o := newCatalogOrchestrator(t.TempDir(), nil, catalog.Resolver{}, nil, nil)
+		o := newCatalogOrchestrator(t.TempDir(), nil, fixedResolver(catalog.Resolver{}), nil, nil)
 		if _, err := o.installPack(context.Background(), api.CatalogInstallRequest{Pack: "nope"}); err == nil || !strings.Contains(err.Error(), "no such pack") {
 			t.Fatalf("installPack = %v, want the no-such-pack refusal", err)
 		}
@@ -79,7 +79,7 @@ func TestCatalogOrchestratorInstall(t *testing.T) {
 
 	t.Run("materialize answers files and order without applying", func(t *testing.T) {
 		ws := t.TempDir()
-		o := newCatalogOrchestrator(ws, nil, starterResolver(t), nil, nil)
+		o := newCatalogOrchestrator(ws, nil, fixedResolver(starterResolver(t)), nil, nil)
 		res, err := o.installPack(context.Background(), api.CatalogInstallRequest{Pack: catalog.StarterPack})
 		if err != nil {
 			t.Fatalf("installPack: %v", err)
@@ -98,7 +98,7 @@ func TestCatalogOrchestratorInstall(t *testing.T) {
 			applied = append(applied, req.Path)
 			return api.ControlResult{Warnings: []string{"w:" + req.Path}}, nil
 		}
-		o := newCatalogOrchestrator(t.TempDir(), nil, starterResolver(t), fake, nil)
+		o := newCatalogOrchestrator(t.TempDir(), nil, fixedResolver(starterResolver(t)), fake, nil)
 		res, err := o.installPack(context.Background(), api.CatalogInstallRequest{Pack: catalog.StarterPack, Apply: true})
 		if err != nil {
 			t.Fatalf("installPack: %v", err)
@@ -121,7 +121,7 @@ func TestCatalogOrchestratorInstall(t *testing.T) {
 			}
 			return api.ControlResult{}, nil
 		}
-		o := newCatalogOrchestrator(t.TempDir(), nil, starterResolver(t), fake, nil)
+		o := newCatalogOrchestrator(t.TempDir(), nil, fixedResolver(starterResolver(t)), fake, nil)
 		_, err := o.installPack(context.Background(), api.CatalogInstallRequest{Pack: catalog.StarterPack, Apply: true})
 		if err == nil || !strings.Contains(err.Error(), "quake_report") || !errors.Is(err, fail) {
 			t.Fatalf("installPack = %v, want the failing target named", err)
@@ -161,7 +161,7 @@ func TestCatalogOrchestratorInstall(t *testing.T) {
 		}
 		ws := t.TempDir()
 		resolver := catalog.Resolver{Catalogs: []catalog.Remote{{URL: "https://cat.example/catalog.json", Fetch: fake}}}
-		o := newCatalogOrchestrator(ws, nil, resolver, nil, nil)
+		o := newCatalogOrchestrator(ws, nil, fixedResolver(resolver), nil, nil)
 		o.engine = "v0.5.6" // a release build: the dev bypass must not mask the gate
 		_, err := o.installPack(context.Background(), api.CatalogInstallRequest{Pack: "future-pack"})
 		if err == nil || !strings.Contains(err.Error(), "requires engine v99.0.0") {
@@ -174,7 +174,7 @@ func TestCatalogOrchestratorInstall(t *testing.T) {
 
 	t.Run("a reinstall refuses without force and lands with it", func(t *testing.T) {
 		ws := t.TempDir()
-		o := newCatalogOrchestrator(ws, nil, starterResolver(t), nil, nil)
+		o := newCatalogOrchestrator(ws, nil, fixedResolver(starterResolver(t)), nil, nil)
 		if _, err := o.installPack(context.Background(), api.CatalogInstallRequest{Pack: catalog.StarterPack}); err != nil {
 			t.Fatalf("first install: %v", err)
 		}

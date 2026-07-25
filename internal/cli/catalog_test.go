@@ -52,7 +52,7 @@ func startCatalogDaemon(t *testing.T, sock string, resolver catalog.Resolver) {
 		t.Fatalf("listen unix %s: %v", sock, err)
 	}
 	srv := &http.Server{
-		Handler:           api.NewMux(api.WithCatalogList(daemon.NewCatalogReadPlane(nil, resolver, nil))),
+		Handler:           api.NewMux(api.WithCatalogList(daemon.NewCatalogReadPlane(nil, func() catalog.Resolver { return resolver }, nil))),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() { _ = srv.Serve(ln) }()
