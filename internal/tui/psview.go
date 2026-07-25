@@ -228,7 +228,7 @@ func mergeLogTail(acc, win []string) []string {
 		return acc
 	}
 	if len(acc) == 0 {
-		return append(acc, win...)
+		return capLogTail(append(acc, win...))
 	}
 	if k := tailOverlap(acc, win); k > 0 {
 		acc = append(acc, win[k:]...)

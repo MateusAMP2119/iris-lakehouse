@@ -60,6 +60,15 @@ func LevelRank(code string) int {
 	}
 }
 
+// MinLevelRank resolves a minimum-level name (any case; "warning" accepted)
+// to its rank; empty or unknown keeps all (rank 0).
+func MinLevelRank(name string) int {
+	if code, ok := levelTokens[strings.ToUpper(name)]; ok {
+		return LevelRank(code)
+	}
+	return 0
+}
+
 // ParseLogLevel splits one log line into its level code and message. The
 // level is whatever the writing logger stated, in any of the shapes native
 // loggers emit -- the level lives at the logging call, never hand-written

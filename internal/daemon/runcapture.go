@@ -33,6 +33,10 @@ type frameRecorder interface {
 // without bound.
 const captureLineCap = 64 << 10
 
+// captureStampLayout is the UTC stamp format shared by capture writes and the
+// run-logs parser.
+const captureStampLayout = "2006-01-02T15:04:05.000Z"
+
 // captureStamp is the shape of a #| stamp line: the open stamp carries the run
 // identity and start, the close stamp the end and outcome.
 type captureStamp struct {
@@ -112,7 +116,7 @@ func (c *runCapture) levelStamp(line []byte) []byte {
 	out := make([]byte, 0, len(msg)+32)
 	out = append(out, lvl...)
 	out = append(out, '|')
-	out = append(out, c.now().UTC().Format("2006-01-02T15:04:05.000Z")...)
+	out = append(out, c.now().UTC().Format(captureStampLayout)...)
 	out = append(out, '|')
 	return append(out, msg...)
 }

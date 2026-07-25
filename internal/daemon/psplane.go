@@ -50,9 +50,9 @@ type psPlane struct {
 	role     api.RoleReporter
 	runs     RunSnapshotReader
 	loads    *loadHistory
-	counters *turnCounters // resident turn tallies (#206); nil renders none
-	runLogs  *RunLogWriter // local capture files for the per-run log metadata; nil renders none
-	sources  *sourceFetcher // declared-source health; nil renders none
+	counters *turnCounters  // resident turn tallies (#206); nil renders none
+	runLogs  *RunLogWriter  // local capture files for the per-run log metadata; nil renders none
+	sources  *sourceWatcher // declared-source health; nil renders none
 	logger   *slog.Logger
 	pid      int
 	started  time.Time
@@ -68,7 +68,7 @@ var _ api.PsHandler = (*psPlane)(nil)
 // history). The plane records its own pid at construction and counts uptime
 // from it: the plane is built at daemon start, so its age is the daemon's. A
 // nil logger discards output.
-func NewPsPlane(role api.RoleReporter, runs RunSnapshotReader, loads *loadHistory, counters *turnCounters, runLogs *RunLogWriter, sources *sourceFetcher, logger *slog.Logger) api.PsHandler {
+func NewPsPlane(role api.RoleReporter, runs RunSnapshotReader, loads *loadHistory, counters *turnCounters, runLogs *RunLogWriter, sources *sourceWatcher, logger *slog.Logger) api.PsHandler {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -170,7 +170,7 @@ func (p *psPlane) Ps(ctx context.Context, all, history bool) (api.PsPayload, err
 	}
 	payload := api.PsPayload{Engine: engine, Runs: rows, Residents: p.counters.snapshot(), SampleTick: tick}
 	if p.sources != nil {
-		payload.Sources = p.sources.Health()
+		payload.Sources = p.sources.health()
 	}
 	if history {
 		payload.History = p.loads.snapshot()

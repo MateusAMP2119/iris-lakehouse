@@ -246,8 +246,8 @@ func WithEvents(e *Events) LoopOption {
 }
 
 // WithBackground sets a companion the loop runs for its lifetime: Run spawns
-// it with its own ctx and never waits on it. The daemon wires the declared-
-// source poll clock here.
+// it with its own ctx and joins it before returning. The daemon wires the
+// declared-source watcher here.
 func WithBackground(fn func(context.Context)) LoopOption {
 	return func(l *Loop) { l.background = fn }
 }

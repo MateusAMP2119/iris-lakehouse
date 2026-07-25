@@ -131,7 +131,7 @@ func (p PluginUse) EffectiveLifetime() string {
 	return p.Lifetime
 }
 
-// Pipeline is a parsed pipeline declaration: the ten-field declaration shape.
+// Pipeline is a parsed pipeline declaration: the eleven-field declaration shape.
 // name and run are required; the rest are optional.
 type Pipeline struct {
 	// Name is the pipeline name; required, and must match its folder.
@@ -150,9 +150,10 @@ type Pipeline struct {
 	// Plugins are the pipeline's declared plugin bindings by alias: the only
 	// external capabilities its runs may call, each digest-pinned at run start.
 	Plugins map[string]PluginUse `yaml:"plugins"`
-	// Source is the pipeline's declared external input: the engine fetches it
-	// each turn and feeds the body as a source frame, so the script does no
-	// network I/O of its own. Nil means no external input.
+	// Source is the pipeline's declared external input: the engine's watcher
+	// fetches it as the origin's own HTTP freshness allows and feeds a changed
+	// body to the next turn as a source frame, so the script does no network
+	// I/O of its own. Nil means no external input.
 	Source *Source `yaml:"source"`
 	// Reads are the pipeline's declared read access entries.
 	Reads []Access `yaml:"reads"`
@@ -298,7 +299,8 @@ func checkLogsShape(raw map[string]any) error {
 
 // Source is a pipeline's declared external input (the source block).
 type Source struct {
-	// HTTP is the http(s) URL the engine fetches each turn.
+	// HTTP is the http(s) URL the engine's watcher fetches, paced by the
+	// origin's own HTTP freshness declarations.
 	HTTP string `yaml:"http"`
 	// Every is DEPRECATED and ignored: the engine paces source fetches from
 	// the origin's own HTTP freshness declarations (max-age, Expires,

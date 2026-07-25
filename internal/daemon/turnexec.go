@@ -37,8 +37,9 @@ type turnData interface {
 }
 
 // declaredAccess is a pipeline's declared access resolved for the turn protocol:
-// the reads the feed covers, the writes the collector enforces, and the declared
-// plugin bindings the turn resolves at start (#215).
+// the reads the feed covers, the writes the collector enforces, the declared
+// plugin bindings the turn resolves at start (#215), and the declared source
+// block whose watcher-fetched body the turn takes.
 type declaredAccess struct {
 	reads   []pg.TurnRead
 	writes  dispatch.WriteSet
@@ -179,8 +180,10 @@ type turnResult struct {
 	status    exec.ExitStatus
 }
 
-// driveTurn runs one turn over a live session: it writes the go/row/run frames,
-// feeds every stdout line to the turn collector, services declared-plugin calls
+// driveTurn runs one turn over a live session: it writes the go frame, any
+// declared-source frame, and the row/run frames, feeds every frame-shaped
+// stdout line to the turn collector (plain lines join the log sink), services
+// declared-plugin calls
 // (answering each with a res frame before reading on), and classifies the
 // ending. A send failure is not an ending of its own -- the process is gone, and
 // its exit reports through the session's exited channel. On process exit the

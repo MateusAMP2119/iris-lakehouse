@@ -33,8 +33,9 @@ import (
 // a failed turn mints its run directly dead-lettered (the worklist is the
 // product); a quiet turn writes nothing at all -- no run row, no watermark bump --
 // so the lane parks until the next cause lands. The pipeline process receives no
-// database credentials: the engine feeds declared-read input over stdin and
-// performs declared-write output itself with exact run attribution.
+// database credentials: the engine feeds declared-read input (and any declared
+// source's watcher-fetched body) over stdin and performs declared-write output
+// itself with exact run attribution.
 
 // runCancelDetail is the dead-letter text an operator cancel writes; the lane gate parks on exactly it (#192: a manual stop is not resurrected), while other stopped details (crash reconciliation) never park.
 const runCancelDetail = "run cancelled by iris run cancel"
@@ -202,7 +203,7 @@ func newLaneLoop(
 	retention store.RetentionReader,
 	retain int64,
 	runLogs *RunLogWriter,
-	sources *sourceFetcher,
+	sources *sourceWatcher,
 	logger *slog.Logger,
 ) *dispatch.Loop {
 	if logger == nil {
@@ -362,9 +363,9 @@ type laneExec struct {
 	queued      store.QueuedManualReader // enqueued lane-member manual runs; nil skips pickup (shape tests)
 	runner      exec.Runner
 	journal     dispatch.JournalHighWatermark
-	data        turnData     // data-database turn seam; nil composes shape tests (no feed, producing turns fault)
+	data        turnData       // data-database turn seam; nil composes shape tests (no feed, producing turns fault)
 	access      *accessCache   // per-pipeline declared-access cache keyed by declaration checksum
-	sources     *sourceFetcher // declared-source conditional fetcher, engine-side input
+	sources     *sourceWatcher // declared-source watcher, engine-side input
 	objects     *store.ObjectStore
 	counters    *turnCounters // resident turn tallies for the ps readout; nil skips
 	runLogs     *RunLogWriter // per-run output capture; nil discards (shape tests)
@@ -447,14 +448,6 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 	}
 	res := driveTurn(ctx, ses, ses.nextTurn(), src, feed.Rows, acc.writes, rp, tr, buf)
 	trec.Calls = res.calls
-	// A cleanly completed turn is the body's delivery: only then does the
-	// watcher stop offering it, so a failed turn (or its replay) re-takes the
-	// same bytes. markDelivered fires on each turnDone success return below.
-	markDelivered := func() {
-		if src != nil {
-			m.sources.delivered(rec.Pipeline)
-		}
-	}
 	switch res.kind {
 	case turnShutdown:
 		// Term over: end the session outright (the runner's ctx watcher kills the
@@ -466,7 +459,7 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 	case turnDone:
 		if len(res.rows) == 0 && len(res.calls) == 0 && !feed.Advanced {
 			m.counters.bump(rec.Pipeline, false)
-			markDelivered() // a clean quiet answer consumed the body (nothing row-worthy in it)
+			m.sources.delivered(src)      // a clean quiet answer consumed the body (nothing row-worthy in it)
 			return dispatch.RunQuiet, nil // the quiet turn: two JSON lines, zero writes
 		}
 		if len(res.rows) == 0 && len(res.calls) == 0 {
@@ -509,7 +502,7 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 			}); err != nil {
 				return dispatch.RunSucceeded, fmt.Errorf("lane turn %s: record succeeded: %w", runID, err)
 			}
-			markDelivered()
+			m.sources.delivered(src)
 			return dispatch.RunSucceeded, nil
 		}
 		if m.data == nil {
@@ -551,7 +544,7 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 		}); err != nil {
 			return dispatch.RunSucceeded, fmt.Errorf("lane turn %s: record succeeded: %w", runID, err)
 		}
-		markDelivered()
+		m.sources.delivered(src)
 		return dispatch.RunSucceeded, nil
 
 	case turnErrored:
@@ -826,9 +819,7 @@ func (m *laneExec) runToTerminal(ctx context.Context, pipeline string, target st
 			return deadLetter(fmt.Sprintf("turn commit failed: %v", cerr))
 		}
 	}
-	if src != nil {
-		m.sources.delivered(pipeline)
-	}
+	m.sources.delivered(src)
 	sink.SetOutcome("succeeded")
 	if serr := m.submit.Submit(ctx, func(w *store.Writer) error { return w.MarkRunSucceeded(ctx, runID) }); serr != nil {
 		return dispatch.RunSucceeded, fmt.Errorf("lane run %s: record succeeded: %w", runID, serr)

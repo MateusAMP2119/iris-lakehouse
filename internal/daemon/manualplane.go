@@ -140,7 +140,7 @@ type manualOrchestrator struct {
 // is the turn seam (#206): an immediate manual run executes as one
 // protocol turn -- the engine feeds the declared-read delta and performs the declared
 // writes itself with the run's exact attribution; the subprocess holds no credentials.
-func newManualOrchestrator(workspace, pluginsRoot string, services *pluginServices, submit dispatch.Submitter, registry store.RegistryReader, manual store.ManualReader, objects *store.ObjectStore, runner exec.Runner, journal dispatch.JournalHighWatermark, data turnData, inflight *inflightRuns, sealer *journalSealer, runLogs *RunLogWriter, sources *sourceFetcher, logger *slog.Logger) *manualOrchestrator {
+func newManualOrchestrator(workspace, pluginsRoot string, services *pluginServices, submit dispatch.Submitter, registry store.RegistryReader, manual store.ManualReader, objects *store.ObjectStore, runner exec.Runner, journal dispatch.JournalHighWatermark, data turnData, inflight *inflightRuns, sealer *journalSealer, runLogs *RunLogWriter, sources *sourceWatcher, logger *slog.Logger) *manualOrchestrator {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -317,7 +317,7 @@ type manualExec struct {
 	journal     dispatch.JournalHighWatermark
 	data        turnData       // data-database turn seam (#206); nil composes shape tests (no feed, producing turns dead-letter)
 	access      *accessCache   // per-pipeline declared-access cache keyed by declaration checksum
-	sources     *sourceFetcher // declared-source conditional fetcher, engine-side input
+	sources     *sourceWatcher // declared-source watcher, engine-side input
 	inflight    *inflightRuns  // tracks this run's live process group so a self-demotion kills it; nil in the shape tests
 	sealer      *journalSealer // the opportunistic post-pass seal step; nil in the shape tests leaves sealing off
 	runLogs     *RunLogWriter  // per-run output capture; nil discards (shape tests)
@@ -531,9 +531,7 @@ func (m *manualExec) runNow(ctx context.Context, rec store.RunRecord) (dispatch.
 		}
 	}
 
-	if src != nil {
-		m.sources.delivered(rec.Pipeline)
-	}
+	m.sources.delivered(src)
 	sink.SetOutcome("succeeded")
 	if serr := m.submitter.Submit(ctx, func(w *store.Writer) error { return w.MarkRunSucceeded(ctx, runID) }); serr != nil {
 		return dispatch.RunSucceeded, fmt.Errorf("record manual run %s succeeded: %w", runID, serr)

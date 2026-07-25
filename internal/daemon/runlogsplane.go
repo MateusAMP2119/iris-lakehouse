@@ -26,8 +26,10 @@ import (
 // A framed capture (declared logs block; #| identity header first) is rendered
 // per the requested view: naturalized by default (tags stripped, frames and
 // stamps marked), filtered to one stream, or streamed verbatim under
-// format=tagged. A legacy raw capture is byte-for-byte and refuses filters
-// honestly (there is nothing to filter by).
+// format=tagged. Leveled log lines render clock and level and honor a
+// minimum-level filter, and a tailbytes request seeks near the end and serves
+// only the capture's last bytes as whole lines. A legacy raw capture is
+// byte-for-byte and refuses filters honestly (there is nothing to filter by).
 
 // runLogsPlane implements api.RunLogsHandler over the per-run log writer's
 // naming convention.
@@ -179,13 +181,13 @@ func renderCaptureLine(line, stream, minLevel string) (string, bool) {
 func renderLogLine(payload, minLevel string) (string, bool) {
 	code, stamp, msg, ok := splitLeveledLog(payload)
 	if !ok {
-		return payload, minRank(minLevel) <= dispatch.LevelRank(dispatch.LevelInfo)
+		return payload, dispatch.MinLevelRank(minLevel) <= dispatch.LevelRank(dispatch.LevelInfo)
 	}
-	if dispatch.LevelRank(code) < minRank(minLevel) {
+	if dispatch.LevelRank(code) < dispatch.MinLevelRank(minLevel) {
 		return "", false
 	}
 	clock := stamp
-	if t, err := time.Parse("2006-01-02T15:04:05.000Z", stamp); err == nil {
+	if t, err := time.Parse(captureStampLayout, stamp); err == nil {
 		clock = t.Format("15:04:05.000")
 	}
 	return fmt.Sprintf("%s %-5s %s", clock, dispatch.LevelName(code), msg), true
@@ -195,28 +197,17 @@ func renderLogLine(payload, minLevel string) (string, bool) {
 // message, reporting whether the payload carries the leveled shape.
 func splitLeveledLog(payload string) (code, stamp, msg string, ok bool) {
 	code, rest, cut := strings.Cut(payload, "|")
-	if !cut || dispatch.LevelName(code) == "INFO" && code != dispatch.LevelInfo {
+	switch code {
+	case dispatch.LevelDebug, dispatch.LevelInfo, dispatch.LevelWarn, dispatch.LevelError:
+	default:
+		return "", "", "", false
+	}
+	if !cut {
 		return "", "", "", false
 	}
 	stamp, msg, cut = strings.Cut(rest, "|")
-	if !cut || len(stamp) != len("2006-01-02T15:04:05.000Z") {
+	if !cut || len(stamp) != len(captureStampLayout) {
 		return "", "", "", false
 	}
 	return code, stamp, msg, true
-}
-
-// minRank resolves a minimum-level name to its rank; empty or unknown keeps all.
-func minRank(minLevel string) int {
-	switch strings.ToLower(minLevel) {
-	case "debug":
-		return 0
-	case "info":
-		return 1
-	case "warn", "warning":
-		return 2
-	case "error":
-		return 3
-	default:
-		return 0
-	}
 }

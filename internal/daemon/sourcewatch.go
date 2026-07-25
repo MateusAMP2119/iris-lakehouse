@@ -56,8 +56,9 @@ const sourceFetchTimeout = 60 * time.Second
 // the pipe and the digest summary line for the capture (the body itself never
 // lands in the run log).
 type sourceFrame struct {
-	line    string
-	summary string
+	pipeline string
+	line     string
+	summary  string
 }
 
 // sourceState is one watched source's whole state: identity, conditional-GET
@@ -80,39 +81,39 @@ type sourceState struct {
 // engine-wide instance the lane loop's companion goroutine drives, the turn
 // paths (loop and manual alike) take bodies from, and the ps plane reads
 // health from.
-type sourceFetcher struct {
+type sourceWatcher struct {
 	mu        sync.Mutex
 	client    *http.Client
 	states    map[string]*sourceState // keyed by pipeline
 	workspace string
 	registry  store.RegistryReader
 	events    *dispatch.Events
-	refresh   chan struct{}
+	refreshCh chan struct{}
 	logger    *slog.Logger
 }
 
 // newSourceFetcher builds the watcher over one shared HTTP client. registry
 // may be nil in compositions that never run the watcher (take and Health
 // still work). A nil logger discards.
-func newSourceFetcher(workspace string, registry store.RegistryReader, logger *slog.Logger) *sourceFetcher {
+func newSourceWatcher(workspace string, registry store.RegistryReader, logger *slog.Logger) *sourceWatcher {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	return &sourceFetcher{
+	return &sourceWatcher{
 		client:    &http.Client{Timeout: sourceFetchTimeout},
 		states:    map[string]*sourceState{},
 		workspace: workspace,
 		registry:  registry,
-		refresh:   make(chan struct{}, 1),
+		refreshCh: make(chan struct{}, 1),
 		logger:    logger,
 	}
 }
 
-// Refresh signals the watcher to re-read its roster (a declaration applied or
+// refresh signals the watcher to re-read its roster (a declaration applied or
 // destroyed). Non-blocking and coalescing; safe before the watcher runs.
-func (f *sourceFetcher) Refresh() {
+func (f *sourceWatcher) refresh() {
 	select {
-	case f.refresh <- struct{}{}:
+	case f.refreshCh <- struct{}{}:
 	default:
 	}
 }
@@ -120,7 +121,7 @@ func (f *sourceFetcher) Refresh() {
 // run is the watcher loop the lane loop spawns beside itself: one goroutine
 // multiplexing every declared source. It exits promptly on cancellation
 // (in-flight fetches ride ctx, and the loop joins it before returning).
-func (f *sourceFetcher) run(ctx context.Context, events *dispatch.Events) {
+func (f *sourceWatcher) run(ctx context.Context, events *dispatch.Events) {
 	f.mu.Lock()
 	f.events = events
 	f.mu.Unlock()
@@ -136,7 +137,7 @@ func (f *sourceFetcher) run(ctx context.Context, events *dispatch.Events) {
 		case <-ctx.Done():
 			timer.Stop()
 			return
-		case <-f.refresh:
+		case <-f.refreshCh:
 			timer.Stop()
 			f.rescanRoster(ctx)
 		case <-timer.C:
@@ -148,7 +149,7 @@ func (f *sourceFetcher) run(ctx context.Context, events *dispatch.Events) {
 // pipelines INTERSECTED with the registered roster -- a destroyed pipeline's
 // files stay on disk, and its origin must not keep being polled. A vanished
 // entry's state drops whole; an in-place URL change restarts the state fresh.
-func (f *sourceFetcher) rescanRoster(ctx context.Context) {
+func (f *sourceWatcher) rescanRoster(ctx context.Context) {
 	ws, err := declare.DiscoverWorkspace(f.workspace)
 	if err != nil {
 		f.logger.Debug("source watcher: workspace scan failed", "err", err)
@@ -187,7 +188,7 @@ func (f *sourceFetcher) rescanRoster(ctx context.Context) {
 
 // fetchDue fetches every source whose next attempt is due and returns the
 // earliest next attempt across the roster (a no-signal wait when empty).
-func (f *sourceFetcher) fetchDue(ctx context.Context) time.Time {
+func (f *sourceWatcher) fetchDue(ctx context.Context) time.Time {
 	now := time.Now()
 	f.mu.Lock()
 	var due []*sourceState
@@ -215,10 +216,9 @@ func (f *sourceFetcher) fetchDue(ctx context.Context) time.Time {
 	return earliest
 }
 
-// fetchOne runs one conditional GET for st, storing a changed body for
-// delivery (store first, THEN bump -- the woken turn must find it) and pacing
-// the next attempt from the answer's own freshness declarations.
-func (f *sourceFetcher) fetchOne(ctx context.Context, st *sourceState) {
+// fetchOne runs one conditional GET for st and hands the answer to
+// noteAnswer, which stores a changed body and paces the next attempt.
+func (f *sourceWatcher) fetchOne(ctx context.Context, st *sourceState) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, st.url, nil)
 	if err != nil {
 		f.noteFailure(st, err, 0)
@@ -242,7 +242,7 @@ func (f *sourceFetcher) fetchOne(ctx context.Context, st *sourceState) {
 
 	switch {
 	case resp.StatusCode == http.StatusNotModified:
-		f.noteAnswer(st, resp, nil, false)
+		f.noteAnswer(st, resp, nil, [32]byte{}, false)
 		return
 	case resp.StatusCode != http.StatusOK:
 		wait := time.Duration(0)
@@ -265,22 +265,14 @@ func (f *sourceFetcher) fetchOne(ctx context.Context, st *sourceState) {
 		return
 	}
 	sum := sha256.Sum256(body)
-	changed := sum != st.seenSHA
-	f.noteAnswer(st, resp, body, changed)
-	if changed {
-		f.mu.Lock()
-		st.seenSHA, st.pendingBody, st.pendingSHA = sum, body, sum
-		events := f.events
-		f.mu.Unlock()
-		if events != nil {
-			events.Bump() // fresh bytes are the event; the parked lane wakes to them
-		}
-	}
+	f.noteAnswer(st, resp, body, sum, sum != st.seenSHA)
 }
 
-// noteAnswer records a successful answer: validators, health, and the pace
-// the origin's own freshness declarations set for the next attempt.
-func (f *sourceFetcher) noteAnswer(st *sourceState, resp *http.Response, body []byte, changed bool) {
+// noteAnswer records a successful answer: validators, health, the pace the
+// origin's own freshness declarations set for the next attempt, and -- for a
+// changed body -- the pending store and watermark bump (store first, THEN
+// bump: the woken turn must find it).
+func (f *sourceWatcher) noteAnswer(st *sourceState, resp *http.Response, body []byte, sum [32]byte, changed bool) {
 	fresh := boundWait(originFreshness(resp))
 	f.mu.Lock()
 	hadFails := st.fails
@@ -293,19 +285,26 @@ func (f *sourceFetcher) noteAnswer(st *sourceState, resp *http.Response, body []
 	st.status, st.errMsg, st.fails = resp.StatusCode, "", 0
 	st.freshFor = fresh
 	st.nextAttempt = time.Now().Add(fresh)
+	if changed {
+		st.seenSHA, st.pendingBody, st.pendingSHA = sum, body, sum
+	}
+	events := f.events
 	f.mu.Unlock()
 	if hadFails > 0 {
 		f.logger.Info("declared source recovered", "pipeline", st.pipeline, "after_failures", hadFails)
 	}
 	if changed {
 		f.logger.Info("declared source changed", "pipeline", st.pipeline, "bytes", len(body), "fresh_for", fresh)
+		if events != nil {
+			events.Bump() // fresh bytes are the event; the parked lane wakes to them
+		}
 	}
 }
 
 // noteFailure records a failed attempt: doubling backoff, overridden by a
 // longer origin-declared Retry-After. Every failure lands in the DAEMON log
 // -- a failing source's turns are quiet, so the turn sink cannot carry this.
-func (f *sourceFetcher) noteFailure(st *sourceState, ferr error, retryAfter time.Duration) {
+func (f *sourceWatcher) noteFailure(st *sourceState, ferr error, retryAfter time.Duration) {
 	f.mu.Lock()
 	st.fails++
 	st.errMsg = ferr.Error()
@@ -328,7 +327,7 @@ func (f *sourceFetcher) noteFailure(st *sourceState, ferr error, retryAfter time
 // should carry none. It does NOT consume: the body stays takeable until
 // delivered() records a committed turn, so a failed turn (or its replay)
 // re-takes the same bytes instead of losing the captured change forever.
-func (f *sourceFetcher) take(pipeline string, sink io.Writer) *sourceFrame {
+func (f *sourceWatcher) take(pipeline string, sink io.Writer) *sourceFrame {
 	f.mu.Lock()
 	st, ok := f.states[pipeline]
 	if !ok || st.pendingBody == nil || st.pendingSHA == st.deliveredSHA {
@@ -352,22 +351,27 @@ func (f *sourceFetcher) take(pipeline string, sink io.Writer) *sourceFrame {
 		Bytes  int    `json:"bytes"`
 		SHA256 string `json:"sha256"`
 	}{Event: dispatch.TurnEventSource, URL: url, Status: status, Bytes: len(body), SHA256: hex.EncodeToString(sum[:])})
-	return &sourceFrame{line: line, summary: string(summary)}
+	return &sourceFrame{pipeline: pipeline, line: line, summary: string(summary)}
 }
 
-// delivered records that a turn COMMITTED the pipeline's pending body: only
-// now does it stop being takeable. The turn paths call it on commit success.
-func (f *sourceFetcher) delivered(pipeline string) {
+// delivered records that a turn COMMITTED the frame's body: only now does it
+// stop being takeable, so a failed turn (or its replay) re-takes the same
+// bytes. A nil frame (the turn carried no source) is a no-op; the turn paths
+// call it on commit success.
+func (f *sourceWatcher) delivered(src *sourceFrame) {
+	if src == nil {
+		return
+	}
 	f.mu.Lock()
-	if st, ok := f.states[pipeline]; ok {
+	if st, ok := f.states[src.pipeline]; ok {
 		st.deliveredSHA = st.pendingSHA
 		st.pendingBody = nil
 	}
 	f.mu.Unlock()
 }
 
-// Health snapshots every watched source's operator-visible state, sorted.
-func (f *sourceFetcher) Health() []api.SourceHealth {
+// health snapshots every watched source's operator-visible state, sorted.
+func (f *sourceWatcher) health() []api.SourceHealth {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	names := make([]string, 0, len(f.states))

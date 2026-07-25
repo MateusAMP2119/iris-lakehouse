@@ -142,7 +142,7 @@ type Candidate struct {
 	// sources is the shared declared-source watcher: the manual path takes
 	// bodies from the same instance the lane loop's watcher fills, and the
 	// control planes poke its roster on apply/destroy.
-	sources *sourceFetcher
+	sources *sourceWatcher
 
 	// patGrantLedger is the meta read of every data-PAT role's ledgered grants:
 	// the authoritative set the leader reconciles each role's live Postgres
@@ -414,16 +414,16 @@ func WithWipePlane(wp *wipePlane, reader store.Reader, data dataPlane) Candidate
 // stdout/stderr into the writer's run-id-keyed logs and record runs.log_ref
 // (the lane loop receives the same writer through its build closure). Absent,
 // run output is discarded (shape-test compositions).
-// WithSourceWatcher shares the declared-source watcher with the leadership
-// term's planes (manual turns take from it; apply/destroy refresh its roster).
-func WithSourceWatcher(f *sourceFetcher) CandidateOption {
-	return func(c *Candidate) { c.sources = f }
-}
-
 func WithRunLogs(logs *RunLogWriter) CandidateOption {
 	return func(c *Candidate) {
 		c.runLogs = logs
 	}
+}
+
+// WithSourceWatcher shares the declared-source watcher with the leadership
+// term's planes (manual turns take from it; apply/destroy refresh its roster).
+func WithSourceWatcher(f *sourceWatcher) CandidateOption {
+	return func(c *Candidate) { c.sources = f }
 }
 
 // WithGrantDrift wires data-PAT grant-drift reconciliation: on winning
@@ -752,7 +752,7 @@ func (c *Candidate) lead(ctx context.Context) (demoted bool, err error) {
 			c.logger,
 		)
 		if c.sources != nil {
-			orch.sourcesRefresh = c.sources.Refresh
+			orch.sourcesRefresh = c.sources.refresh
 		}
 		c.control.install(orch)
 		defer c.control.clear()

@@ -66,7 +66,8 @@ type DeadImpactHandler interface {
 // frames and stamps marked, a legacy raw capture byte-for-byte.
 type LogsOptions struct {
 	// Stream filters a framed capture to one stream: "log" (the pipeline's
-	// stderr lines) or "frames" (the protocol transcript). Empty keeps all.
+	// application-log lines -- stderr plus plain stdout prints) or "frames"
+	// (the protocol transcript). Empty keeps all.
 	Stream string
 	// Format selects the wire rendering: "tagged" streams the framed file
 	// verbatim (the TUI parses the tags itself). Empty naturalizes.
@@ -267,7 +268,10 @@ func (m *mux) serveRunTrace(w http.ResponseWriter, r *http.Request, id string) {
 // serveRunLogs handles GET /runs/{id}/logs: the run's captured output,
 // streamed as plain text -- raw process output, never a JSON envelope. The
 // optional ?stream=log|frames filters a framed capture; ?format=tagged streams
-// the framed file verbatim (mutually exclusive with a stream filter). An
+// the framed file verbatim (mutually exclusive with a stream filter);
+// ?level=<debug|info|warn|error> serves only application-log lines at or above
+// that level; ?tailbytes=N serves only the capture's last N bytes, trimmed to
+// whole lines. An
 // unwired reader is a 500 internal fault; a run with no captured output is an
 // operation failure naming why.
 func (m *mux) serveRunLogs(w http.ResponseWriter, r *http.Request, id string) {

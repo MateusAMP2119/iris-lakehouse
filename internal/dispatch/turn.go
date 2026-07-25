@@ -9,15 +9,16 @@ import (
 // This file is the turn protocol model (#206): the pure frame codec and per-turn
 // collection state machine for resident pipelines. A turn is one engine-fed
 // iteration over the JSON Lines protocol -- stdin carries the engine half
-// (go, input rows, run), stdout the pipeline half (output rows, then exactly one
+// (go, an optional source frame, input rows, run), stdout the pipeline half (output rows, then exactly one
 // terminal done or error frame echoing the turn number), stderr stays free-form
 // log. The model here is pure: it renders engine frames, parses pipeline frames,
 // and enforces the protocol's frame discipline (rows inside the declared writes,
 // one terminal frame, correct turn echo) with no I/O; the daemon's resident
 // session owns the pipes and drives this model line by line.
 
-// The turn protocol frame events. Engine to pipeline: go (turn header), row
-// (input row), run (input complete), res (a call's reply). Pipeline to engine:
+// The turn protocol frame events. Engine to pipeline: go (turn header), source
+// (the declared source's fetched body), row (input row), run (input complete),
+// res (a call's reply). Pipeline to engine:
 // row (output row), call (a declared-plugin verb call, #215), done (turn
 // succeeded), error (turn failed, declared by the pipeline).
 const (

@@ -31,10 +31,9 @@ func (c *controlPlane) ApplyWorkspace(ctx context.Context, req api.WorkspaceAppl
 	return o.applyWorkspace(ctx, req)
 }
 
-// syncTarget is one discovered declaration file: its workspace-relative path,
-// bytes, checksum, and declared identity.
+// syncTarget is one discovered declaration file: bytes, checksum, and
+// declared identity (its workspace-relative path keys the targets map).
 type syncTarget struct {
-	relPath  string
 	data     []byte
 	checksum string
 	kind     string
@@ -135,7 +134,7 @@ func (o *controlOrchestrator) collectSyncTargets(ws *declare.Workspace) (map[str
 			return fmt.Errorf("workspace apply: read %s: %w", rel, err)
 		}
 		sum := sha256.Sum256(data)
-		targets[rel] = syncTarget{relPath: rel, data: data, checksum: hex.EncodeToString(sum[:]), kind: kind, target: target, detail: detail}
+		targets[rel] = syncTarget{data: data, checksum: hex.EncodeToString(sum[:]), kind: kind, target: target, detail: detail}
 		return nil
 	}
 	for _, c := range ws.Composers {
