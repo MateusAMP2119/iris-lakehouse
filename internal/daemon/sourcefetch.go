@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/MateusAMP2119/iris-lakehouse/internal/declare"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/dispatch"
 )
 
@@ -22,6 +24,53 @@ import (
 
 // sourceBodyCap bounds one fetched source body.
 const sourceBodyCap = 8 << 20
+
+// sourceClockGranularity bounds how often the source clock re-reads the
+// workspace for declared sources and their due times.
+const sourceClockGranularity = 10 * time.Second
+
+// SourcePollClock is the declared-source clock the lane loop runs beside it:
+// the one sanctioned timer (clock doctrine otherwise holds -- events initiate
+// work). Every granularity tick it scans the workspace for pipelines
+// declaring a source, and when any is due per its every interval it bumps the
+// watermark once, waking the parked lanes; the turn's conditional GET keeps a
+// no-news wake nearly free (304, no source frame, quiet turn, re-park).
+func SourcePollClock(workspace string, events *dispatch.Events, logger *slog.Logger) func(context.Context) {
+	return func(ctx context.Context) {
+		lastDue := map[string]time.Time{}
+		tick := time.NewTicker(sourceClockGranularity)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-tick.C:
+				ws, err := declare.DiscoverWorkspace(workspace)
+				if err != nil {
+					if logger != nil {
+						logger.Debug("source clock: workspace scan failed", "err", err)
+					}
+					continue
+				}
+				due := false
+				for _, p := range ws.Pipelines {
+					src := p.Declaration.Source
+					if src == nil {
+						continue
+					}
+					name := p.Declaration.Name
+					if last, seen := lastDue[name]; !seen || now.Sub(last) >= src.EffectiveEvery() {
+						lastDue[name] = now
+						due = true
+					}
+				}
+				if due {
+					events.Bump()
+				}
+			}
+		}
+	}
+}
 
 // sourceFetchTimeout bounds one source fetch.
 const sourceFetchTimeout = 60 * time.Second

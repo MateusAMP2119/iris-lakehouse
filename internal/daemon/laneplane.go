@@ -255,6 +255,10 @@ func newLaneLoop(
 	}
 	if events != nil {
 		opts = append(opts, dispatch.WithEvents(events))
+		// The declared-source poll clock runs beside the loop: it wakes parked
+		// lanes on each source's every interval, and the turn's conditional GET
+		// keeps a no-news wake nearly free.
+		opts = append(opts, dispatch.WithBackground(SourcePollClock(workspace, events, logger)))
 	}
 	return dispatch.NewLoop(walk, gate, runnerSeam, logger, opts...)
 }

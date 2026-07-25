@@ -213,6 +213,12 @@ type Loop struct {
 	// completes: an observability hook the daemon and tests synchronize on. It never
 	// influences dispatch.
 	onPass func(PassReport)
+
+	// background, when set, runs beside the loop for its lifetime (spawned by Run,
+	// cancelled with its ctx). The daemon uses it for the declared-source poll
+	// clock -- the one sanctioned timer: declared external input is inherently
+	// time-paced, so its ticks land as watermark bumps like any other cause.
+	background func(context.Context)
 }
 
 // LoopOption configures a Loop at construction.
@@ -235,6 +241,13 @@ func WithOnPass(hook func(PassReport)) LoopOption {
 // Absent it, every walk lane re-spawns at each pass boundary.
 func WithEvents(e *Events) LoopOption {
 	return func(l *Loop) { l.events = e }
+}
+
+// WithBackground sets a companion the loop runs for its lifetime: Run spawns
+// it with its own ctx and never waits on it. The daemon wires the declared-
+// source poll clock here.
+func WithBackground(fn func(context.Context)) LoopOption {
+	return func(l *Loop) { l.background = fn }
 }
 
 // WithQueuedStarter sets the queued-manual pickup seam: at each member's turn the
@@ -387,6 +400,9 @@ func memberInFlight(running map[string][]string, pipelines []string) bool {
 // their run seam and drain themselves -- so shutdown is not delayed by a
 // still-running (or hung) lane.
 func (l *Loop) Run(ctx context.Context) error {
+	if l.background != nil {
+		go l.background(ctx)
+	}
 	// running maps each in-flight pass's lane name to its member pipelines. The
 	// members matter: a pipeline's lane identity can change between walk reads
 	// (mid-apply, a pipeline is its own anonymous lane until the composer row

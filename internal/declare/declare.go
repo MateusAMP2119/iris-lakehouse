@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/goccy/go-yaml"
 )
@@ -195,10 +196,16 @@ var pipelineFields = map[string]bool{
 const pipelineFieldList = "name, run, env, env_file, lane, logs, plugins, source, reads, writes, depends_on"
 
 // sourceFields is the whitelist for the source block inside a pipeline declaration.
-var sourceFields = map[string]bool{"http": true}
+var sourceFields = map[string]bool{"http": true, "every": true}
 
 // sourceFieldList is the human-readable rendering of sourceFields.
-const sourceFieldList = "http"
+const sourceFieldList = "http, every"
+
+// sourceEveryFloor is the shortest declared source poll interval accepted.
+const sourceEveryFloor = 10 * time.Second
+
+// SourceEveryDefault is the poll interval an every-less source block gets.
+const SourceEveryDefault = 5 * time.Minute
 
 // logsFields is the whitelist for the logs block inside a pipeline declaration.
 var logsFields = map[string]bool{"split": true, "stamp": true}
@@ -296,6 +303,23 @@ func checkLogsShape(raw map[string]any) error {
 type Source struct {
 	// HTTP is the http(s) URL the engine fetches each turn.
 	HTTP string `yaml:"http"`
+	// Every is the declared poll interval ("2m", "1h"); empty means
+	// SourceEveryDefault. The engine's source clock wakes the lane on it --
+	// the one sanctioned timer, since external input is inherently time-paced.
+	Every string `yaml:"every"`
+}
+
+// EffectiveEvery resolves the declared poll interval: the parsed duration,
+// floored at sourceEveryFloor, defaulting to SourceEveryDefault.
+func (s *Source) EffectiveEvery() time.Duration {
+	if s == nil || s.Every == "" {
+		return SourceEveryDefault
+	}
+	d, err := time.ParseDuration(s.Every)
+	if err != nil || d < sourceEveryFloor {
+		return SourceEveryDefault
+	}
+	return d
 }
 
 // checkSourceShape validates an optional source block: a mapping carrying one
@@ -322,6 +346,19 @@ func checkSourceShape(raw map[string]any) error {
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("declare: source http url %q must be http or https", rawURL)
+	}
+	if ev, present := block["every"]; present {
+		s, ok := ev.(string)
+		if !ok {
+			return fmt.Errorf("declare: source %q must be a duration string (\"2m\", \"1h\")", "every")
+		}
+		d, derr := time.ParseDuration(s)
+		if derr != nil {
+			return fmt.Errorf("declare: source every %q does not parse as a duration: %w", s, derr)
+		}
+		if d < sourceEveryFloor {
+			return fmt.Errorf("declare: source every %q is under the %s floor", s, sourceEveryFloor)
+		}
 	}
 	return nil
 }
