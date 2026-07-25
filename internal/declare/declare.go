@@ -15,6 +15,7 @@ package declare
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -148,6 +149,10 @@ type Pipeline struct {
 	// Plugins are the pipeline's declared plugin bindings by alias: the only
 	// external capabilities its runs may call, each digest-pinned at run start.
 	Plugins map[string]PluginUse `yaml:"plugins"`
+	// Source is the pipeline's declared external input: the engine fetches it
+	// each turn and feeds the body as a source frame, so the script does no
+	// network I/O of its own. Nil means no external input.
+	Source *Source `yaml:"source"`
 	// Reads are the pipeline's declared read access entries.
 	Reads []Access `yaml:"reads"`
 	// Writes are the pipeline's declared write access entries.
@@ -179,15 +184,21 @@ type Declaration struct {
 	Composer *Composer
 }
 
-// pipelineFields is the ten-field whitelist for a pipeline declaration.
+// pipelineFields is the eleven-field whitelist for a pipeline declaration.
 var pipelineFields = map[string]bool{
 	"name": true, "run": true, "env": true, "env_file": true, "lane": true,
-	"logs": true, "plugins": true, "reads": true, "writes": true, "depends_on": true,
+	"logs": true, "plugins": true, "source": true, "reads": true, "writes": true, "depends_on": true,
 }
 
 // pipelineFieldList is the human-readable rendering of pipelineFields, in
 // declaration order, for error messages.
-const pipelineFieldList = "name, run, env, env_file, lane, logs, plugins, reads, writes, depends_on"
+const pipelineFieldList = "name, run, env, env_file, lane, logs, plugins, source, reads, writes, depends_on"
+
+// sourceFields is the whitelist for the source block inside a pipeline declaration.
+var sourceFields = map[string]bool{"http": true}
+
+// sourceFieldList is the human-readable rendering of sourceFields.
+const sourceFieldList = "http"
 
 // logsFields is the whitelist for the logs block inside a pipeline declaration.
 var logsFields = map[string]bool{"split": true, "stamp": true}
@@ -244,6 +255,9 @@ func parsePipeline(raw map[string]any, data []byte) (*Declaration, error) {
 	if err := checkPluginsShape(raw); err != nil {
 		return nil, err
 	}
+	if err := checkSourceShape(raw); err != nil {
+		return nil, err
+	}
 	var p Pipeline
 	if err := yaml.Unmarshal(data, &p); err != nil {
 		return nil, fmt.Errorf("declare: parse pipeline declaration: %w", err)
@@ -274,6 +288,40 @@ func checkLogsShape(raw map[string]any) error {
 		if _, isBool := bv.(bool); !isBool {
 			return fmt.Errorf("declare: logs field %q must be a boolean", key)
 		}
+	}
+	return nil
+}
+
+// Source is a pipeline's declared external input (the source block).
+type Source struct {
+	// HTTP is the http(s) URL the engine fetches each turn.
+	HTTP string `yaml:"http"`
+}
+
+// checkSourceShape validates an optional source block: a mapping carrying one
+// non-empty http(s) URL. An absent block is valid (no external input).
+func checkSourceShape(raw map[string]any) error {
+	v, ok := raw["source"]
+	if !ok {
+		return nil
+	}
+	block, ok := v.(map[string]any)
+	if !ok {
+		return fmt.Errorf("declare: field %q must be a mapping of %s", "source", sourceFieldList)
+	}
+	if err := checkKeys(block, sourceFields, sourceFieldList); err != nil {
+		return err
+	}
+	rawURL, ok := block["http"].(string)
+	if !ok || strings.TrimSpace(rawURL) == "" {
+		return fmt.Errorf("declare: source needs a non-empty %q url", "http")
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("declare: source http url %q does not parse: %w", rawURL, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("declare: source http url %q must be http or https", rawURL)
 	}
 	return nil
 }

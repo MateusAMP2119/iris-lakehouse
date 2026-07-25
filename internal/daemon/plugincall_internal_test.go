@@ -141,7 +141,7 @@ func TestDriveTurnServicesPluginCalls(t *testing.T) {
 	defer ses.end()
 	ses.out.Set(stderr)
 
-	res := driveTurn(ctx, ses, ses.nextTurn(), nil, testTurnWrites(), rp, nil)
+	res := driveTurn(ctx, ses, ses.nextTurn(), nil, nil, testTurnWrites(), rp, nil)
 	if res.kind != turnDone {
 		t.Fatalf("turn = %+v, want done", res)
 	}

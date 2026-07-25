@@ -42,6 +42,7 @@ type declaredAccess struct {
 	reads   []pg.TurnRead
 	writes  dispatch.WriteSet
 	plugins map[string]declare.PluginUse
+	source  *declare.Source
 }
 
 // accessFromDeclaration resolves a pipeline's declared access straight from its
@@ -50,7 +51,7 @@ type declaredAccess struct {
 // (never the grants ledger) keeps the resolution free of any apply-ordering
 // race: a registered pipeline always has its declaration on disk.
 func accessFromDeclaration(decl *declare.Pipeline) declaredAccess {
-	acc := declaredAccess{writes: dispatch.WriteSet{}, plugins: decl.Plugins}
+	acc := declaredAccess{writes: dispatch.WriteSet{}, plugins: decl.Plugins, source: decl.Source}
 	for _, r := range decl.Reads {
 		schema, table, ok := strings.Cut(r.Table, ".")
 		if !ok {
@@ -184,7 +185,7 @@ type turnResult struct {
 // its exit reports through the session's exited channel. On process exit the
 // scanner's already-delivered lines are drained first, so a one-shot pipeline
 // that answers its frames and exits cleanly still ends in done, not death.
-func driveTurn(ctx context.Context, ses *residentSession, turn int64, feed []pg.FeedRow, writes dispatch.WriteSet, plugins *resolvedPlugins, rec frameRecorder) turnResult {
+func driveTurn(ctx context.Context, ses *residentSession, turn int64, src *sourceFrame, feed []pg.FeedRow, writes dispatch.WriteSet, plugins *resolvedPlugins, rec frameRecorder) turnResult {
 	var callSet dispatch.CallSet
 	var caller pluginCaller
 	if plugins != nil {
@@ -200,6 +201,15 @@ func driveTurn(ctx context.Context, ses *residentSession, turn int64, feed []pg.
 	}
 
 	alive := sendRecorded(dispatch.EncodeGoFrame(turn))
+	// The declared source's body rides between go and the input rows. The
+	// capture records its digest summary, never the body — the run log carries
+	// what was fed, not a copy of it.
+	if src != nil && alive {
+		if rec != nil {
+			rec.EngineFrame(src.summary)
+		}
+		alive = ses.send(src.line) == nil
+	}
 	for _, r := range feed {
 		if !alive {
 			break
