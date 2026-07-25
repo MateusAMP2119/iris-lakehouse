@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,6 +37,7 @@ func (a *app) setupCmd() *cobra.Command {
 	}
 	c.Flags().String("mode", "", "local|remote|skip (non-interactive; also IRIS_ENGINE_SETUP)")
 	c.Flags().String("catalogs", "", "public|skip|<index-url>[,url…] (non-interactive; also IRIS_SETUP_CATALOGS)")
+	c.Flags().String("existing", "", "reuse|restart|wipe when engine state already exists (non-interactive; also IRIS_SETUP_EXISTING)")
 	c.Flags().String("phase", "all", "engine|catalog|all (install.sh uses engine then catalog)")
 	return daemonless(c)
 }
@@ -69,6 +71,12 @@ func (a *app) setupRun() runE {
 		}
 		catalogsPre = strings.TrimSpace(catalogsPre)
 
+		existingPre, _ := cmd.Flags().GetString("existing")
+		if existingPre == "" {
+			existingPre = os.Getenv("IRIS_SETUP_EXISTING")
+		}
+		existingPre = strings.ToLower(strings.TrimSpace(existingPre))
+
 		p := a.newPainter(false)
 		log := newCeremonyLog(a.out)
 		done := func(label string) {
@@ -79,7 +87,7 @@ func (a *app) setupRun() runE {
 		var choice engineSetupChoice
 		if phase == "engine" || phase == "all" {
 			var err error
-			choice, err = a.runEngineSetupPhase(cmd, mode, log)
+			choice, err = a.runEngineSetupPhase(cmd, mode, existingPre, log)
 			if err != nil {
 				return err
 			}
@@ -102,7 +110,7 @@ func (a *app) setupRun() runE {
 // runEngineSetupPhase handles the engine menu and local install / remote connect.
 // Local mode installs only — start waits for the catalog phase so iris.toml
 // catalogs are in place before the daemon boots (no hot-reload).
-func (a *app) runEngineSetupPhase(cmd *cobra.Command, mode string, log *ceremonyLog) (engineSetupChoice, error) {
+func (a *app) runEngineSetupPhase(cmd *cobra.Command, mode, existingPre string, log *ceremonyLog) (engineSetupChoice, error) {
 	choice, err := selectEngineSetup(mode, a.out)
 	if err != nil {
 		return 0, &fault{code: exitOpFailed, codeStr: "setup_failed", message: fmt.Sprintf("iris setup: %v", err)}
@@ -114,6 +122,12 @@ func (a *app) runEngineSetupPhase(cmd *cobra.Command, mode string, log *ceremony
 	switch choice {
 	case setupLocal:
 		log.line("  • Selected: Local mode")
+		// State from a previous install is surfaced, never silently adopted.
+		if handled, herr := a.handleExistingEngine(cmd, existingPre, log); herr != nil {
+			return choice, herr
+		} else if handled {
+			return choice, nil
+		}
 		// Real progress: the nested install's stage lines (parsed live off its
 		// stderr) drive the bar — placing Postgres, starting it, privileges,
 		// meta database, schema, journal, turn positions, socket, engine key.
@@ -146,6 +160,121 @@ func (a *app) runEngineSetupPhase(cmd *cobra.Command, mode string, log *ceremony
 		log.line("    remote mode: 'iris engine connect <host>'.")
 		return choice, nil
 	}
+}
+
+// existingEngine is what the installer found under the engine home before a
+// local setup: a live daemon and/or durable state from a previous install.
+type existingEngine struct {
+	running bool
+	pid     int
+	state   bool
+}
+
+// detectExistingEngine probes the local daemon and the engine home for state a
+// fresh local setup would otherwise silently adopt.
+func (a *app) detectExistingEngine(cmd *cobra.Command) existingEngine {
+	var e existingEngine
+	settings := a.resolveTarget(cmd)
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	e.running = a.probeDaemon(ctx, settings) == nil
+	if data, err := os.ReadFile(daemon.PIDPath(settings)); err == nil { //nolint:gosec // G304: fixed name under the resolved engine home.
+		if pid, perr := strconv.Atoi(strings.TrimSpace(string(data))); perr == nil {
+			e.pid = pid
+		}
+	}
+	home, err := config.Home(os.Getenv)
+	if err != nil {
+		return e
+	}
+	for _, d := range []string{"pg", "workspace"} {
+		if _, serr := os.Stat(filepath.Join(home, d)); serr == nil {
+			e.state = true
+			break
+		}
+	}
+	return e
+}
+
+// handleExistingEngine surfaces pre-existing local engine state before a fresh
+// local install: reuse (default — nothing stopped, nothing touched), restart
+// (stop now, keep the data; the catalog phase relaunches on the new binary),
+// or wipe (stop and erase the local state for a truly clean install). It
+// reports handled=true when the nested engine install should be skipped
+// entirely — reuse with a live daemon, whose state is already complete.
+func (a *app) handleExistingEngine(cmd *cobra.Command, preselect string, log *ceremonyLog) (bool, error) {
+	e := a.detectExistingEngine(cmd)
+	if !e.running && !e.state {
+		return false, nil
+	}
+	action, err := selectExistingEngineAction(preselect, e.running, a.out)
+	if err != nil {
+		return false, &fault{code: exitOpFailed, codeStr: "setup_failed", message: fmt.Sprintf("iris setup: %v", err)}
+	}
+	switch action {
+	case existingRestart:
+		log.line("  • Existing engine detected · restarting on the new binary (data kept)")
+		if e.running {
+			if serr := a.runSelfQuiet(cmd, "engine", "stop"); serr != nil {
+				return false, serr
+			}
+		}
+		return false, nil // the idempotent install completes; the catalog phase starts the engine
+	case existingWipe:
+		if e.running {
+			if serr := a.runSelfQuiet(cmd, "engine", "stop"); serr != nil {
+				return false, serr
+			}
+		}
+		if werr := wipeEngineState(a.resolveTarget(cmd)); werr != nil {
+			return false, &fault{code: exitOpFailed, codeStr: "setup_failed", message: fmt.Sprintf("iris setup: %v", werr)}
+		}
+		log.line("  • Existing engine state erased (clean install)")
+		return false, nil
+	default: // reuse
+		if e.running {
+			label := "  • Existing engine detected (running"
+			if e.pid != 0 {
+				label += fmt.Sprintf(", pid %d", e.pid)
+			}
+			label += ") · reused, data preserved"
+			log.line(label)
+			log.line("    it keeps the old binary until: iris engine stop && iris engine start -d")
+			return true, nil
+		}
+		log.line("  • Existing engine data detected · preserved")
+		return false, nil
+	}
+}
+
+// wipeEngineState erases the engine home's durable state for a clean install —
+// Postgres, workspace, logs, cache, config, pidfile, socket — keeping only the
+// binary directory.
+func wipeEngineState(s config.Settings) error {
+	home, err := config.Home(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("resolve the engine home: %w", err)
+	}
+	targets := []string{
+		filepath.Join(home, "pg"),
+		filepath.Join(home, "workspace"),
+		filepath.Join(home, "logs"),
+		filepath.Join(home, "ps-cache"),
+		filepath.Join(home, config.FileName),
+		daemon.PIDPath(s),
+		s.Socket,
+	}
+	for _, t := range targets {
+		if t == "" {
+			continue
+		}
+		if err := os.RemoveAll(t); err != nil {
+			return fmt.Errorf("erase %s: %w", t, err)
+		}
+	}
+	return nil
 }
 
 // runCatalogSetupPhase is the [4/4] Catalog step: pick a pack source, record it,

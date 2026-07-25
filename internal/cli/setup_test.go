@@ -100,3 +100,46 @@ func TestSetupCatalogsSkipLeavesNoFile(t *testing.T) {
 		t.Errorf("output = %q, want Catalog: skipped", out.String())
 	}
 }
+
+// TestSelectExistingEngineActionPreselect proves the non-interactive
+// short-circuit of the existing-engine menu (IRIS_SETUP_EXISTING).
+func TestSelectExistingEngineActionPreselect(t *testing.T) {
+	for pre, want := range map[string]existingEngineAction{
+		"reuse": existingReuse, "restart": existingRestart, "wipe": existingWipe,
+	} {
+		got, err := selectExistingEngineAction(pre, true, nil)
+		if err != nil || got != want {
+			t.Fatalf("preselect %q: got %v err %v, want %v", pre, got, err, want)
+		}
+	}
+}
+
+// TestWipeEngineState proves the clean-install wipe erases exactly the durable
+// state — Postgres, workspace, logs, cache, config, pidfile, socket — and
+// keeps the binary directory.
+func TestWipeEngineState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("IRIS_HOME", home)
+	for _, d := range []string{"pg/data", "workspace/pipelines", "logs", "ps-cache", "bin"} {
+		if err := os.MkdirAll(filepath.Join(home, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{config.FileName, "iris.pid", "iris.sock", "bin/iris"} {
+		if err := os.WriteFile(filepath.Join(home, f), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := config.Settings{Socket: filepath.Join(home, "iris.sock")}
+	if err := wipeEngineState(s); err != nil {
+		t.Fatalf("wipeEngineState = %v", err)
+	}
+	for _, gone := range []string{"pg", "workspace", "logs", "ps-cache", config.FileName, "iris.pid", "iris.sock"} {
+		if _, err := os.Stat(filepath.Join(home, gone)); !os.IsNotExist(err) {
+			t.Errorf("%s survived the wipe (err %v)", gone, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, "bin", "iris")); err != nil {
+		t.Errorf("the binary must survive the wipe: %v", err)
+	}
+}

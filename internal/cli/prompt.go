@@ -178,6 +178,75 @@ func selectEngineSetup(preselect string, out io.Writer) (engineSetupChoice, erro
 	}
 }
 
+// existingEngineAction is the existing-state menu selection: what a fresh
+// local setup does with engine state already on this machine.
+type existingEngineAction int
+
+const (
+	existingReuse existingEngineAction = iota + 1
+	existingRestart
+	existingWipe
+)
+
+// selectExistingEngineAction runs the installer's existing-engine menu: local
+// engine state (and possibly a live daemon) already sits under the engine
+// home, and a fresh install must surface it, never silently adopt it.
+// preselect (IRIS_SETUP_EXISTING) short-circuits; headless defaults to reuse,
+// the one choice that stops nothing and destroys nothing.
+func selectExistingEngineAction(preselect string, running bool, out io.Writer) (existingEngineAction, error) {
+	switch preselect {
+	case "reuse":
+		return existingReuse, nil
+	case "restart":
+		return existingRestart, nil
+	case "wipe":
+		return existingWipe, nil
+	}
+	in, closer := ceremonyReviewInput()
+	if in == nil {
+		return existingReuse, nil
+	}
+	if closer != nil {
+		defer closer.Close()
+	}
+	desc := "This machine already has engine data under ~/.iris."
+	opts := []huh.Option[string]{
+		huh.NewOption("Keep it: reuse the engine and its data", "reuse"),
+	}
+	if running {
+		desc = "An engine is already running with data under ~/.iris."
+		opts = append(opts, huh.NewOption("Restart it: relaunch on the new binary (data kept)", "restart"))
+	}
+	opts = append(opts, huh.NewOption("Start clean: erase local engine state (data is lost)", "wipe"))
+	var choice string
+	form := newCeremonySetupForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Existing engine found").
+				Description(desc).
+				Options(opts...).
+				Value(&choice),
+		),
+	).WithInput(in)
+	if out != nil {
+		form = form.WithOutput(out)
+	}
+	if err := form.Run(); err != nil {
+		if errors.Is(err, huh.ErrUserAborted) {
+			return existingReuse, nil
+		}
+		return existingReuse, err
+	}
+	switch choice {
+	case "restart":
+		return existingRestart, nil
+	case "wipe":
+		return existingWipe, nil
+	default:
+		return existingReuse, nil
+	}
+}
+
 // promptRemoteEndpoint asks for host and optional PAT via huh.
 func promptRemoteEndpoint(out io.Writer) (host, token string, err error) {
 	in, closer := ceremonyReviewInput()
