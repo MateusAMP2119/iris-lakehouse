@@ -218,7 +218,18 @@ func (t teaProgram) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if k.kind == psKeyNone {
 			return t, nil
 		}
+		wasFrozen := t.m.frozen
 		cancelIDs := t.m.update(k)
+		// Freeze also releases mouse reporting, so the terminal's native
+		// drag-select works without modifiers; resume re-arms click targets.
+		var mouseCmd tea.Cmd
+		if t.m.frozen != wasFrozen {
+			if t.m.frozen {
+				mouseCmd = func() tea.Msg { return tea.DisableMouse() }
+			} else {
+				mouseCmd = func() tea.Msg { return tea.EnableMouseCellMotion() }
+			}
+		}
 		if t.m.quit {
 			t.quitting = true
 			return t, tea.Quit
@@ -237,9 +248,9 @@ func (t teaProgram) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		t.syncCmdInput()
 		// Start cursor blink only once the palette opens (not in Init).
 		if t.m.command != nil {
-			return t, tea.Batch(textinput.Blink, spin)
+			return t, tea.Batch(textinput.Blink, spin, mouseCmd)
 		}
-		return t, spin
+		return t, tea.Batch(spin, mouseCmd)
 	case tea.MouseMsg:
 		if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
 			return t, nil
