@@ -527,6 +527,14 @@ func pollPs(ctx context.Context, c *Client, every time.Duration,
 				warn = "run logs unavailable"
 			}
 		}
+		// A failing declared source outranks softer warnings: its turns stay
+		// quiet, so this line is the pane's only live trace of the failure.
+		for _, sh := range ps.Sources {
+			if sh.ConsecutiveFails > 0 {
+				warn = fmt.Sprintf("source %s failing ×%d (%s) · retrying every %s", sh.Pipeline, sh.ConsecutiveFails, sh.Error, sh.Every)
+				break
+			}
+		}
 		snap := Snapshot{Ps: ps, Pipelines: lastPipes}
 		if focus != "" {
 			snap.Logs, snap.LogsRun = humanizeCapture(lastLogs), focus

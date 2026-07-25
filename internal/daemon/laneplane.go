@@ -202,6 +202,7 @@ func newLaneLoop(
 	retention store.RetentionReader,
 	retain int64,
 	runLogs *RunLogWriter,
+	sources *sourceFetcher,
 	logger *slog.Logger,
 ) *dispatch.Loop {
 	if logger == nil {
@@ -228,7 +229,7 @@ func newLaneLoop(
 		journal:     journal,
 		data:        data,
 		access:      newAccessCache(),
-		sources:     newSourceFetcher(),
+		sources:     sources,
 		objects:     objects,
 		counters:    counters,
 		runLogs:     runLogs,

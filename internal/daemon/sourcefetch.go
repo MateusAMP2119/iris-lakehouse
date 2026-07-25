@@ -9,9 +9,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
+	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/declare"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/dispatch"
 )
@@ -84,24 +86,54 @@ type sourceFrame struct {
 }
 
 // sourceValidator caches one pipeline's conditional-GET validators, its last
-// body digest, and when it last went to the network.
+// body digest, when it last went to the network, and its health: the last
+// answer's status, error text, and the consecutive-failure count -- the
+// operator-visible source state.
 type sourceValidator struct {
 	url, etag, lastModified string
 	bodySHA                 [32]byte
 	fetchedAt               time.Time
+	every                   time.Duration
+	status                  int
+	errMsg                  string
+	fails                   int
 }
 
 // sourceFetcher fetches declared sources over one shared client, caching each
-// pipeline's response validators in memory (a restart refetches once).
+// pipeline's response validators and health in memory (a restart refetches
+// once). One instance serves the loop and the manual path, so pacing and
+// health are engine-wide facts.
 type sourceFetcher struct {
 	mu     sync.Mutex
 	client *http.Client
 	cache  map[string]sourceValidator
+	logger *slog.Logger
 }
 
-// newSourceFetcher builds the fetcher over one shared HTTP client.
-func newSourceFetcher() *sourceFetcher {
-	return &sourceFetcher{client: &http.Client{Timeout: sourceFetchTimeout}, cache: map[string]sourceValidator{}}
+// newSourceFetcher builds the fetcher over one shared HTTP client. A nil
+// logger discards.
+func newSourceFetcher(logger *slog.Logger) *sourceFetcher {
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	return &sourceFetcher{client: &http.Client{Timeout: sourceFetchTimeout}, cache: map[string]sourceValidator{}, logger: logger}
+}
+
+// Health snapshots every tracked source's operator-visible state, pipeline-sorted.
+func (f *sourceFetcher) Health() []api.SourceHealth {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	names := make([]string, 0, len(f.cache))
+	for name := range f.cache {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]api.SourceHealth, 0, len(names))
+	for _, name := range names {
+		v := f.cache[name]
+		out = append(out, api.SourceHealth{Pipeline: name, URL: v.url, Status: v.status, Error: v.errMsg, ConsecutiveFails: v.fails, Every: v.every.String()})
+	}
+	return out
 }
 
 // fetch returns the pipeline's prepared source frame, or nil when the turn
@@ -123,18 +155,25 @@ func (f *sourceFetcher) fetch(ctx context.Context, pipeline, url string, every t
 	switch {
 	case err != nil:
 		// A failed attempt still stamps the pace window: an erroring origin
-		// (429, outage) is retried at the declared every, never hammered.
+		// (429, outage) is retried at the declared every, never hammered. The
+		// failure lands in the DAEMON log too -- the turn sink dies with a
+		// quiet turn, and a failing source always quiets its turns.
 		f.mu.Lock()
-		last.url, last.fetchedAt = url, time.Now()
+		last.url, last.fetchedAt, last.every = url, time.Now(), every
+		last.errMsg, last.fails = err.Error(), last.fails+1
+		fails := last.fails
 		f.cache[pipeline] = last
 		f.mu.Unlock()
+		f.logger.Warn("declared source fetch failed", "pipeline", pipeline, "url", url, "err", err, "consecutive", fails, "retry_in", every)
 		if sink != nil {
 			fmt.Fprintf(sink, "[iris: source fetch %s failed: %v]\n", url, err)
 		}
 		return nil
 	case unchanged:
+		f.noteRecovery(pipeline, status, every, last.fails)
 		return nil
 	}
+	f.noteRecovery(pipeline, status, every, last.fails)
 	sum := sha256.Sum256(body)
 	if last.url == url && sum == last.bodySHA {
 		return nil // a 200 with the same bytes: unchanged in every way that matters
@@ -154,6 +193,19 @@ func (f *sourceFetcher) fetch(ctx context.Context, pipeline, url string, every t
 		SHA256 string `json:"sha256"`
 	}{Event: dispatch.TurnEventSource, URL: url, Status: status, Bytes: len(body), SHA256: hex.EncodeToString(sum[:])})
 	return &sourceFrame{line: line, summary: string(summary)}
+}
+
+// noteRecovery records a successful answer's health, logging the recovery
+// when it ends a failure streak.
+func (f *sourceFetcher) noteRecovery(pipeline string, status int, every time.Duration, prevFails int) {
+	f.mu.Lock()
+	v := f.cache[pipeline]
+	v.status, v.errMsg, v.fails, v.every = status, "", 0, every
+	f.cache[pipeline] = v
+	f.mu.Unlock()
+	if prevFails > 0 {
+		f.logger.Info("declared source recovered", "pipeline", pipeline, "after_failures", prevFails)
+	}
 }
 
 // do runs one conditional GET, updating the pipeline's cached validators.

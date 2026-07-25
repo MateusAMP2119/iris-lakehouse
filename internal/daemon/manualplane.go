@@ -155,7 +155,7 @@ func newManualOrchestrator(workspace, pluginsRoot string, services *pluginServic
 		journal:     journal,
 		data:        data,
 		access:      newAccessCache(),
-		sources:     newSourceFetcher(),
+		sources:     newSourceFetcher(logger),
 		inflight:    inflight,
 		sealer:      sealer,
 		runLogs:     runLogs,

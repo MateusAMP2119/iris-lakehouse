@@ -225,9 +225,9 @@ func (t teaProgram) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var mouseCmd tea.Cmd
 		if t.m.frozen != wasFrozen {
 			if t.m.frozen {
-				mouseCmd = func() tea.Msg { return tea.DisableMouse() }
+				mouseCmd = tea.DisableMouse
 			} else {
-				mouseCmd = func() tea.Msg { return tea.EnableMouseCellMotion() }
+				mouseCmd = tea.EnableMouseCellMotion
 			}
 		}
 		if t.m.quit {

@@ -32,6 +32,10 @@ type PsPayload struct {
 	// Residents are the leader's live resident workers' turn counters (#206):
 	// quiet-loop visibility held in memory, no rows. Present on the leader only.
 	Residents []PsResident `json:"residents,omitempty"`
+	// Sources are the declared sources' operator-visible health: a failing
+	// external feed shows here (and in the daemon log) even while its turns
+	// stay quiet. Present on the leader only, and only once a source fetched.
+	Sources []SourceHealth `json:"sources,omitempty"`
 	// SampleTick is the daemon load collector's monotonic sample counter: it
 	// advances once per collector sample, so a poller can tell a fresh load
 	// reading from a repeat of the last one. Zero before the first sample (or
@@ -104,6 +108,23 @@ type PsLoad struct {
 	CPUPercent float64 `json:"cpu_percent"`
 	// RSSBytes is the sampled resident set size in bytes.
 	RSSBytes int64 `json:"rss_bytes"`
+}
+
+// SourceHealth is one declared source's operator-visible state.
+type SourceHealth struct {
+	// Pipeline is the declaring pipeline.
+	Pipeline string `json:"pipeline"`
+	// URL is the declared source URL.
+	URL string `json:"url"`
+	// Status is the last answer's HTTP status (0 before any answer).
+	Status int `json:"status,omitempty"`
+	// Error is the last attempt's failure text; empty when healthy.
+	Error string `json:"error,omitempty"`
+	// ConsecutiveFails counts the unbroken failure streak; 0 when healthy.
+	// The retry cadence is Every, so "how stale" derives without a clock.
+	ConsecutiveFails int `json:"consecutive_fails,omitempty"`
+	// Every is the declared poll pace.
+	Every string `json:"every,omitempty"`
 }
 
 // PsEngine is the engine block of the ps readout: identity, leadership role,
