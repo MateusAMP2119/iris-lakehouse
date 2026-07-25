@@ -381,6 +381,7 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 		WithPromotePlane(promos, submitShim{}, client.PromoteStateReader(), &liveJournalPromoter{reader: client.Reader(), db: data}),
 		WithWipePlane(wipes, client.Reader(), data),
 		WithLaneLoop(laneBuild),
+		WithSourceWatcher(sources),
 		WithPluginsRoot(pluginsRoot),
 		WithPluginServices(pluginServicesReg),
 		WithLanePlane(lanes),
