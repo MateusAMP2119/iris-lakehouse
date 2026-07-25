@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 
@@ -185,7 +186,7 @@ type turnResult struct {
 // its exit reports through the session's exited channel. On process exit the
 // scanner's already-delivered lines are drained first, so a one-shot pipeline
 // that answers its frames and exits cleanly still ends in done, not death.
-func driveTurn(ctx context.Context, ses *residentSession, turn int64, src *sourceFrame, feed []pg.FeedRow, writes dispatch.WriteSet, plugins *resolvedPlugins, rec frameRecorder) turnResult {
+func driveTurn(ctx context.Context, ses *residentSession, turn int64, src *sourceFrame, feed []pg.FeedRow, writes dispatch.WriteSet, plugins *resolvedPlugins, rec frameRecorder, logs io.Writer) turnResult {
 	var callSet dispatch.CallSet
 	var caller pluginCaller
 	if plugins != nil {
@@ -261,6 +262,16 @@ func driveTurn(ctx context.Context, ses *residentSession, turn int64, src *sourc
 	}
 
 	feedLine := func(line string, dead bool) (turnResult, bool) {
+		// A stdout line not shaped like a frame is an application log line, not
+		// a violation: plain prints log, like any console program. It joins the
+		// stderr sink (leveled and stamped at capture); frames keep their
+		// discipline -- a line opening '{' must parse.
+		if trimmed := strings.TrimSpace(line); trimmed == "" || trimmed[0] != '{' {
+			if logs != nil && trimmed != "" {
+				_, _ = logs.Write([]byte(line + "\n"))
+			}
+			return turnResult{}, false
+		}
 		if rec != nil {
 			rec.PipelineFrame(line)
 		}

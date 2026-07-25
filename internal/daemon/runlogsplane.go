@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/dispatch"
@@ -69,7 +70,7 @@ func (p runLogsPlane) Logs(_ context.Context, id string, opts api.LogsOptions) (
 	if opts.Format == "tagged" {
 		return readCloser{Reader: br, Closer: f}, nil
 	}
-	return readCloser{Reader: &logViewReader{src: br, stream: opts.Stream}, Closer: f}, nil
+	return readCloser{Reader: &logViewReader{src: br, stream: opts.Stream, minLevel: opts.Level}, Closer: f}, nil
 }
 
 // readCloser joins a buffered reader with the file it wraps for closing.
@@ -82,10 +83,11 @@ type readCloser struct {
 // the whole capture naturalized, or one stream of it. It reads lazily, so a
 // large capture streams without loading whole.
 type logViewReader struct {
-	src     *bufio.Reader
-	stream  string // "", "log", or "frames"
-	pending []byte
-	done    bool
+	src      *bufio.Reader
+	stream   string // "", "log", or "frames"
+	minLevel string // minimum log-line level name ("warn"); empty keeps all
+	pending  []byte
+	done     bool
 }
 
 // Read serves the next rendered bytes, pulling source lines as needed.
@@ -93,7 +95,7 @@ func (v *logViewReader) Read(p []byte) (int, error) {
 	for len(v.pending) == 0 && !v.done {
 		line, err := v.src.ReadString('\n')
 		if line != "" {
-			if rendered, ok := renderCaptureLine(strings.TrimSuffix(line, "\n"), v.stream); ok {
+			if rendered, ok := renderCaptureLine(strings.TrimSuffix(line, "\n"), v.stream, v.minLevel); ok {
 				v.pending = append(v.pending, rendered...)
 				v.pending = append(v.pending, '\n')
 			}
@@ -114,7 +116,7 @@ func (v *logViewReader) Read(p []byte) (int, error) {
 // reporting whether the line belongs in it. The naturalized default keeps
 // everything: log lines bare, frames and stamps marked by origin. The log view
 // keeps only bare log lines; the frames view only marked protocol traffic.
-func renderCaptureLine(line, stream string) (string, bool) {
+func renderCaptureLine(line, stream, minLevel string) (string, bool) {
 	tag, payload := "", line
 	if len(line) >= 2 {
 		tag, payload = line[:2], line[2:]
@@ -124,7 +126,7 @@ func renderCaptureLine(line, stream string) (string, bool) {
 		if stream == "frames" {
 			return "", false
 		}
-		return payload, true
+		return renderLogLine(payload, minLevel)
 	case dispatch.LogLineEngineFrame:
 		if stream == "log" {
 			return "", false
@@ -144,5 +146,54 @@ func renderCaptureLine(line, stream string) (string, bool) {
 		// A line without a known tag inside a framed capture should not happen;
 		// it is served bare rather than dropped, so nothing captured is hidden.
 		return line, stream != "frames"
+	}
+}
+
+// renderLogLine renders one L| payload as an application-log line. A leveled
+// payload ("<code>|<time>|<msg>") renders "HH:MM:SS.mmm LEVEL msg" and honors
+// the minimum-level filter; a legacy plain payload rides verbatim (and is
+// filtered only above info).
+func renderLogLine(payload, minLevel string) (string, bool) {
+	code, stamp, msg, ok := splitLeveledLog(payload)
+	if !ok {
+		return payload, minRank(minLevel) <= dispatch.LevelRank(dispatch.LevelInfo)
+	}
+	if dispatch.LevelRank(code) < minRank(minLevel) {
+		return "", false
+	}
+	clock := stamp
+	if t, err := time.Parse("2006-01-02T15:04:05.000Z", stamp); err == nil {
+		clock = t.Format("15:04:05.000")
+	}
+	return fmt.Sprintf("%s %-5s %s", clock, dispatch.LevelName(code), msg), true
+}
+
+// splitLeveledLog splits a leveled L| payload into its code, stamp, and
+// message, reporting whether the payload carries the leveled shape.
+func splitLeveledLog(payload string) (code, stamp, msg string, ok bool) {
+	code, rest, cut := strings.Cut(payload, "|")
+	if !cut || dispatch.LevelName(code) == "INFO" && code != dispatch.LevelInfo {
+		return "", "", "", false
+	}
+	stamp, msg, cut = strings.Cut(rest, "|")
+	if !cut || len(stamp) != len("2006-01-02T15:04:05.000Z") {
+		return "", "", "", false
+	}
+	return code, stamp, msg, true
+}
+
+// minRank resolves a minimum-level name to its rank; empty or unknown keeps all.
+func minRank(minLevel string) int {
+	switch strings.ToLower(minLevel) {
+	case "debug":
+		return 0
+	case "info":
+		return 1
+	case "warn", "warning":
+		return 2
+	case "error":
+		return 3
+	default:
+		return 0
 	}
 }

@@ -40,6 +40,16 @@ func (a *app) runLogs() runE {
 		case tagged:
 			query = "?format=tagged"
 		}
+		if level, _ := cmd.Flags().GetString("level"); level != "" {
+			if tagged {
+				return &fault{code: exitOpFailed, codeStr: "flags", message: "run logs: --level does not combine with --tagged (the raw file is unfiltered)"}
+			}
+			sep := "?"
+			if query != "" {
+				sep = "&"
+			}
+			query += sep + "level=" + level
+		}
 		settings := a.resolveTarget(cmd)
 		client, base, overTCP := a.daemonHTTPClient(settings)
 

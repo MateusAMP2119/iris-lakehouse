@@ -93,14 +93,28 @@ func (c *runCapture) Write(p []byte) (int, error) {
 		i := bytes.IndexByte(c.partial, '\n')
 		if i < 0 {
 			if len(c.partial) >= captureLineCap {
-				c.writeTagged(dispatch.LogLineLog, c.partial)
+				c.writeTagged(dispatch.LogLineLog, c.levelStamp(c.partial))
 				c.partial = c.partial[:0]
 			}
 			return len(p), nil
 		}
-		c.writeTagged(dispatch.LogLineLog, c.partial[:i])
+		c.writeTagged(dispatch.LogLineLog, c.levelStamp(c.partial[:i]))
 		c.partial = append(c.partial[:0], c.partial[i+1:]...)
 	}
+}
+
+// levelStamp renders one log line as the leveled capture payload
+// "<level>|<time>|<message>": the level parsed from the line's leading token
+// (bare lines are INFO), the engine's receive time, and the message with the
+// token stripped -- the application-log shape every consumer renders from.
+func (c *runCapture) levelStamp(line []byte) []byte {
+	lvl, msg := dispatch.ParseLogLevel(string(line))
+	out := make([]byte, 0, len(msg)+32)
+	out = append(out, lvl...)
+	out = append(out, '|')
+	out = append(out, c.now().UTC().Format("2006-01-02T15:04:05.000Z")...)
+	out = append(out, '|')
+	return append(out, msg...)
 }
 
 // EngineFrame records one engine-to-pipeline protocol frame when transcript
@@ -142,7 +156,7 @@ func (c *runCapture) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.partial) > 0 {
-		c.writeTagged(dispatch.LogLineLog, c.partial)
+		c.writeTagged(dispatch.LogLineLog, c.levelStamp(c.partial))
 		c.partial = nil
 	}
 	if c.stamp {
