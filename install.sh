@@ -12,6 +12,7 @@
 #
 # Knobs:
 #   first argument       release tag to install ("snapshot" → rolling development build)
+#   --default            non-interactive clean install: local engine, wipe existing state, public catalog
 #   IRIS_VERSION=<tag>   same as the argument; the argument wins if both are set
 #   IRIS_BASE_URL=<url>  fetch the asset + checksums from here (local testing)
 #   IRIS_DEST=<dir>      install into this directory (default ~/.iris/bin)
@@ -22,9 +23,21 @@
 set -eu
 
 REPO="MateusAMP2119/iris-lakehouse"
-if [ "$#" -gt 0 ] && [ -n "$1" ]; then
-  IRIS_VERSION="$1"
-fi
+for arg in "$@"; do
+  case "$arg" in
+    --default)
+      # One-flag clean install: local engine, wipe any existing state, public
+      # catalog. Explicit IRIS_* env answers still win over the preset.
+      IRIS_ENGINE_SETUP="${IRIS_ENGINE_SETUP:-local}"
+      IRIS_SETUP_EXISTING="${IRIS_SETUP_EXISTING:-wipe}"
+      IRIS_SETUP_CATALOGS="${IRIS_SETUP_CATALOGS:-public}"
+      export IRIS_ENGINE_SETUP IRIS_SETUP_EXISTING IRIS_SETUP_CATALOGS
+      ;;
+    ?*)
+      IRIS_VERSION="$arg"
+      ;;
+  esac
+done
 if [ -n "${IRIS_VERSION:-}" ]; then
   BASE="https://github.com/${REPO}/releases/download/${IRIS_VERSION}"
   requested="${IRIS_VERSION}"

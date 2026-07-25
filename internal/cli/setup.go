@@ -38,6 +38,7 @@ func (a *app) setupCmd() *cobra.Command {
 	c.Flags().String("mode", "", "local|remote|skip (non-interactive; also IRIS_ENGINE_SETUP)")
 	c.Flags().String("catalogs", "", "public|skip|<index-url>[,url…] (non-interactive; also IRIS_SETUP_CATALOGS)")
 	c.Flags().String("existing", "", "reuse|restart|wipe when engine state already exists (non-interactive; also IRIS_SETUP_EXISTING)")
+	c.Flags().Bool("default", false, "non-interactive preset: local engine, wipe existing state, public catalog")
 	c.Flags().String("phase", "all", "engine|catalog|all (install.sh uses engine then catalog)")
 	return daemonless(c)
 }
@@ -76,6 +77,10 @@ func (a *app) setupRun() runE {
 			existingPre = os.Getenv("IRIS_SETUP_EXISTING")
 		}
 		existingPre = strings.ToLower(strings.TrimSpace(existingPre))
+
+		if def, _ := cmd.Flags().GetBool("default"); def {
+			mode, existingPre, catalogsPre = applySetupDefaults(mode, existingPre, catalogsPre)
+		}
 
 		p := a.newPainter(false)
 		log := newCeremonyLog(a.out)
@@ -160,6 +165,22 @@ func (a *app) runEngineSetupPhase(cmd *cobra.Command, mode, existingPre string, 
 		log.line("    remote mode: 'iris engine connect <host>'.")
 		return choice, nil
 	}
+}
+
+// applySetupDefaults fills the setup answers a --default run leaves unset —
+// local engine, wipe existing state, public catalog — so one flag yields a
+// clean, prompt-free install. An explicit flag or env answer still wins.
+func applySetupDefaults(mode, existing, catalogs string) (string, string, string) {
+	if mode == "" {
+		mode = "local"
+	}
+	if existing == "" {
+		existing = "wipe"
+	}
+	if catalogs == "" {
+		catalogs = "public"
+	}
+	return mode, existing, catalogs
 }
 
 // existingEngine is what the installer found under the engine home before a

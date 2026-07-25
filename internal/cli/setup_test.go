@@ -143,3 +143,15 @@ func TestWipeEngineState(t *testing.T) {
 		t.Errorf("the binary must survive the wipe: %v", err)
 	}
 }
+
+// TestApplySetupDefaults proves --default fills only unset answers.
+func TestApplySetupDefaults(t *testing.T) {
+	m, e, c := applySetupDefaults("", "", "")
+	if m != "local" || e != "wipe" || c != "public" {
+		t.Fatalf("defaults = %q %q %q, want local wipe public", m, e, c)
+	}
+	m, e, c = applySetupDefaults("skip", "reuse", "skip")
+	if m != "skip" || e != "reuse" || c != "skip" {
+		t.Fatalf("explicit answers must win, got %q %q %q", m, e, c)
+	}
+}
