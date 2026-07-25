@@ -203,6 +203,60 @@ func TestRemotePackURLGuards(t *testing.T) {
 	}
 }
 
+// TestRemoteFilePack proves the plain-file (format 2) pack fetch: per-file sha
+// verify, dir-prefixed fetch paths, README capture, and the mismatch refusal.
+func TestRemoteFilePack(t *testing.T) {
+	decl := []byte("kind: pipeline\n")
+	readme := []byte("# Demo pack\n")
+	e := IndexEntry{Name: "demo", Dir: "packs/demo", Files: []IndexFile{
+		{Path: "pipelines/demo/iris-declare.yaml", SHA256: sha256Hex(decl)},
+		{Path: ReadmeName, SHA256: sha256Hex(readme)},
+	}}
+	r := catalogServer(t, []IndexEntry{e}, map[string][]byte{
+		"packs/demo/pipelines/demo/iris-declare.yaml": decl,
+		"packs/demo/" + ReadmeName:                    readme,
+	})
+
+	p, err := r.Pack(context.Background(), e)
+	if err != nil {
+		t.Fatalf("Pack: %v", err)
+	}
+	if p.README != string(readme) {
+		t.Errorf("README = %q, want the root README.md content", p.README)
+	}
+	if len(p.Files) != 1 || p.Files[0].Path != "pipelines/demo/iris-declare.yaml" || string(p.Files[0].Data) != string(decl) {
+		t.Errorf("Files = %+v, want the declare file at its pack-relative path", p.Files)
+	}
+
+	t.Run("sha-mismatch-refused", func(t *testing.T) {
+		bad := e
+		bad.Files = []IndexFile{{Path: "pipelines/demo/iris-declare.yaml", SHA256: sha256Hex([]byte("other"))}}
+		if _, err := r.Pack(context.Background(), bad); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
+			t.Fatalf("Pack = %v, want the per-file digest refusal", err)
+		}
+	})
+	t.Run("readme-only-refused", func(t *testing.T) {
+		only := e
+		only.Files = e.Files[1:]
+		if _, err := r.Pack(context.Background(), only); err == nil || !strings.Contains(err.Error(), "no files") {
+			t.Fatalf("Pack = %v, want the readme-only refusal", err)
+		}
+	})
+	t.Run("scheme-escape-refused", func(t *testing.T) {
+		esc := e
+		esc.Files = []IndexFile{{Path: "a", SHA256: "ab"}}
+		esc.Dir = ""
+		guarded := Remote{URL: "https://catalog.example/catalog.json", Fetch: func(context.Context, string) ([]byte, error) {
+			t.Fatal("fetch reached on a guarded entry")
+			return nil, nil
+		}}
+		esc.Files[0].Path = "ftp://evil.example/a"
+		if _, err := guarded.Pack(context.Background(), esc); err == nil {
+			t.Fatal("Pack: nil error, want a refusal")
+		}
+	})
+}
+
 // TestResolverList proves source order, shadowing, and the failed-catalog partial listing.
 func TestResolverList(t *testing.T) {
 	alphaA := demoTarball(t)

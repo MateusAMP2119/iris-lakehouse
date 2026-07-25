@@ -91,8 +91,12 @@ func (r Remote) Index(ctx context.Context) (Index, error) {
 	return idx, nil
 }
 
-// Pack fetches entry e's tarball, verifies its pinned sha256 before parsing, and extracts the pack.
+// Pack fetches entry e's content, verifying every pinned sha256: a files entry
+// (format 2) fetches each plain file raw, a path entry the pack tarball.
 func (r Remote) Pack(ctx context.Context, e IndexEntry) (Pack, error) {
+	if len(e.Files) > 0 {
+		return r.filePack(ctx, e)
+	}
 	u, err := r.packURL(e)
 	if err != nil {
 		return Pack{}, err
@@ -113,6 +117,54 @@ func (r Remote) Pack(ctx context.Context, e IndexEntry) (Pack, error) {
 	return Pack{IndexEntry: e, Source: r.URL, README: readme, Files: files}, nil
 }
 
+// filePack fetches a files entry's members one by one, verifying each pinned
+// sha256, capturing the root README, and enforcing the same bounds as a
+// tarball extraction.
+func (r Remote) filePack(ctx context.Context, e IndexEntry) (Pack, error) {
+	if len(e.Files) > maxPackFiles {
+		return Pack{}, fmt.Errorf("catalog: pack %q: more than %d files", e.Name, maxPackFiles)
+	}
+	var files []File
+	var readme string
+	total := 0
+	for _, pin := range e.Files {
+		if err := safeRel(pin.Path); err != nil {
+			return Pack{}, fmt.Errorf("catalog: pack %q: %w", e.Name, err)
+		}
+		rel := pin.Path
+		if e.Dir != "" {
+			rel = e.Dir + "/" + pin.Path
+		}
+		u, err := r.resolveURL(e.Name, rel)
+		if err != nil {
+			return Pack{}, err
+		}
+		data, err := r.fetch()(ctx, u)
+		if err != nil {
+			return Pack{}, err
+		}
+		if len(data) > maxPackFileBytes {
+			return Pack{}, fmt.Errorf("catalog: pack %q: file %s exceeds %d bytes", e.Name, pin.Path, maxPackFileBytes)
+		}
+		sum := sha256.Sum256(data)
+		if digest := hex.EncodeToString(sum[:]); !strings.EqualFold(digest, pin.SHA256) {
+			return Pack{}, fmt.Errorf("catalog: pack %q: file %s digest mismatch: index pins %s, fetched %s", e.Name, pin.Path, strings.ToLower(pin.SHA256), digest)
+		}
+		if total += len(data); total > maxPackTotalBytes {
+			return Pack{}, fmt.Errorf("catalog: pack %q: total size exceeds %d bytes", e.Name, maxPackTotalBytes)
+		}
+		if pin.Path == ReadmeName {
+			readme = string(data)
+			continue
+		}
+		files = append(files, File{Path: pin.Path, Data: data})
+	}
+	if len(files) == 0 {
+		return Pack{}, fmt.Errorf("catalog: pack %q lists no files beyond its README", e.Name)
+	}
+	return Pack{IndexEntry: e, Source: r.URL, README: readme, Files: files}, nil
+}
+
 // packURL resolves e.Path against the index URL, refusing missing pins and non-http(s) escapes.
 func (r Remote) packURL(e IndexEntry) (string, error) {
 	if e.Path == "" {
@@ -121,17 +173,23 @@ func (r Remote) packURL(e IndexEntry) (string, error) {
 	if e.SHA256 == "" {
 		return "", fmt.Errorf("catalog: pack %q: index entry pins no sha256", e.Name)
 	}
+	return r.resolveURL(e.Name, e.Path)
+}
+
+// resolveURL resolves one pack-relative reference against the index URL,
+// refusing non-http(s) escapes.
+func (r Remote) resolveURL(name, rel string) (string, error) {
 	base, err := url.Parse(r.URL)
 	if err != nil {
 		return "", fmt.Errorf("catalog: parse catalog url %s: %w", r.URL, err)
 	}
-	ref, err := url.Parse(e.Path)
+	ref, err := url.Parse(rel)
 	if err != nil {
-		return "", fmt.Errorf("catalog: pack %q: parse path %q: %w", e.Name, e.Path, err)
+		return "", fmt.Errorf("catalog: pack %q: parse path %q: %w", name, rel, err)
 	}
 	resolved := base.ResolveReference(ref)
 	if resolved.Scheme != "http" && resolved.Scheme != "https" {
-		return "", fmt.Errorf("catalog: pack %q: path %q resolves to non-http(s) url %s", e.Name, e.Path, resolved)
+		return "", fmt.Errorf("catalog: pack %q: path %q resolves to non-http(s) url %s", name, rel, resolved)
 	}
 	return resolved.String(), nil
 }

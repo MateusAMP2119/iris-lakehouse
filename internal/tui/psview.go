@@ -210,6 +210,7 @@ func (c *Client) fetchRunLogs(ctx context.Context, id string) ([]string, error) 
 	if len(lines) == 1 && lines[0] == "" {
 		return nil, nil
 	}
+	lines = humanizeCapture(lines)
 	if len(lines) > psMaxLogLines {
 		lines = lines[len(lines)-psMaxLogLines:]
 	}

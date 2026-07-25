@@ -155,10 +155,11 @@ func TestApplyOrderInterlock(t *testing.T) {
 	}
 }
 
-// TestParseIndex proves the format gate and the nameless-entry refusal.
+// TestParseIndex proves the format gate, the nameless-entry refusal, and the
+// files-entry (format 2) shape validation.
 func TestParseIndex(t *testing.T) {
-	if _, err := ParseIndex([]byte(`{"format":2,"packs":[]}`)); err == nil {
-		t.Error("format 2 accepted, want refusal")
+	if _, err := ParseIndex([]byte(`{"format":3,"packs":[]}`)); err == nil {
+		t.Error("format 3 accepted, want refusal")
 	}
 	if _, err := ParseIndex([]byte(`{"format":1,"packs":[{"name":""}]}`)); err == nil {
 		t.Error("nameless entry accepted, want refusal")
@@ -166,6 +167,23 @@ func TestParseIndex(t *testing.T) {
 	idx, err := ParseIndex([]byte(`{"format":1,"packs":[{"name":"p","tags":["t"]}]}`))
 	if err != nil || len(idx.Packs) != 1 {
 		t.Errorf("ParseIndex = %+v, %v; want one pack", idx, err)
+	}
+
+	files := `{"format":2,"packs":[{"name":"p","dir":"packs/p","files":[{"path":"iris.yaml","sha256":"ab"}]}]}`
+	idx, err = ParseIndex([]byte(files))
+	if err != nil || len(idx.Packs) != 1 || len(idx.Packs[0].Files) != 1 {
+		t.Errorf("ParseIndex files entry = %+v, %v; want one pack with one file", idx, err)
+	}
+	for name, bad := range map[string]string{
+		"files under format 1":      `{"format":1,"packs":[{"name":"p","files":[{"path":"a","sha256":"ab"}]}]}`,
+		"both path and files":       `{"format":2,"packs":[{"name":"p","path":"t.tar.gz","sha256":"ab","files":[{"path":"a","sha256":"ab"}]}]}`,
+		"file without sha256":       `{"format":2,"packs":[{"name":"p","files":[{"path":"a"}]}]}`,
+		"parent-escaping file path": `{"format":2,"packs":[{"name":"p","files":[{"path":"../a","sha256":"ab"}]}]}`,
+		"parent-escaping dir":       `{"format":2,"packs":[{"name":"p","dir":"..","files":[{"path":"a","sha256":"ab"}]}]}`,
+	} {
+		if _, err := ParseIndex([]byte(bad)); err == nil {
+			t.Errorf("%s accepted, want refusal", name)
+		}
 	}
 }
 

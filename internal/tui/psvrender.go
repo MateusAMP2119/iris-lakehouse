@@ -1498,8 +1498,12 @@ func renderLogsPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 	if start < 0 {
 		start = 0
 	}
-	for i, line := range logs[start:end] {
-		b.text(x+2, y+1+i, logLineStyle(line), line)
+	// The tail anchors to the pane's bottom like tail -f: a short capture
+	// leaves the top blank, and new lines arrive at the bottom edge.
+	shown := logs[start:end]
+	yoff := innerH - len(shown)
+	for i, line := range shown {
+		b.text(x+2, y+1+yoff+i, logLineStyle(line), line)
 	}
 	if len(logs) > 0 {
 		tail := fmt.Sprintf(" %d lines ", len(logs))
