@@ -256,10 +256,10 @@ func newLaneLoop(
 	}
 	if events != nil {
 		opts = append(opts, dispatch.WithEvents(events))
-		// The declared-source poll clock runs beside the loop: it wakes parked
-		// lanes on each source's every interval, and the turn's conditional GET
-		// keeps a no-news wake nearly free.
-		opts = append(opts, dispatch.WithBackground(SourcePollClock(workspace, events, logger)))
+		// The declared-source watcher runs beside the loop: fresh origin bytes
+		// land as watermark bumps, and the woken turn takes the stored body
+		// with no network of its own.
+		opts = append(opts, dispatch.WithBackground(func(ctx context.Context) { sources.run(ctx, events) }))
 	}
 	return dispatch.NewLoop(walk, gate, runnerSeam, logger, opts...)
 }
@@ -443,10 +443,18 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 
 	var src *sourceFrame
 	if acc.source != nil {
-		src = m.sources.fetch(ctx, rec.Pipeline, acc.source.HTTP, acc.source.EffectiveEvery(), buf)
+		src = m.sources.take(rec.Pipeline, buf)
 	}
 	res := driveTurn(ctx, ses, ses.nextTurn(), src, feed.Rows, acc.writes, rp, tr, buf)
 	trec.Calls = res.calls
+	// A cleanly completed turn is the body's delivery: only then does the
+	// watcher stop offering it, so a failed turn (or its replay) re-takes the
+	// same bytes. markDelivered fires on each turnDone success return below.
+	markDelivered := func() {
+		if src != nil {
+			m.sources.delivered(rec.Pipeline)
+		}
+	}
 	switch res.kind {
 	case turnShutdown:
 		// Term over: end the session outright (the runner's ctx watcher kills the
@@ -458,6 +466,7 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 	case turnDone:
 		if len(res.rows) == 0 && len(res.calls) == 0 && !feed.Advanced {
 			m.counters.bump(rec.Pipeline, false)
+			markDelivered() // a clean quiet answer consumed the body (nothing row-worthy in it)
 			return dispatch.RunQuiet, nil // the quiet turn: two JSON lines, zero writes
 		}
 		if len(res.rows) == 0 && len(res.calls) == 0 {
@@ -500,6 +509,7 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 			}); err != nil {
 				return dispatch.RunSucceeded, fmt.Errorf("lane turn %s: record succeeded: %w", runID, err)
 			}
+			markDelivered()
 			return dispatch.RunSucceeded, nil
 		}
 		if m.data == nil {
@@ -541,6 +551,7 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 		}); err != nil {
 			return dispatch.RunSucceeded, fmt.Errorf("lane turn %s: record succeeded: %w", runID, err)
 		}
+		markDelivered()
 		return dispatch.RunSucceeded, nil
 
 	case turnErrored:
@@ -764,7 +775,7 @@ func (m *laneExec) runToTerminal(ctx context.Context, pipeline string, target st
 
 	var src *sourceFrame
 	if acc.source != nil {
-		src = m.sources.fetch(ctx, pipeline, acc.source.HTTP, acc.source.EffectiveEvery(), sink)
+		src = m.sources.take(pipeline, sink)
 	}
 	res := driveTurn(ctx, ses, ses.nextTurn(), src, feed.Rows, acc.writes, rp, sink, sink)
 	if res.kind != turnShutdown {
@@ -814,6 +825,9 @@ func (m *laneExec) runToTerminal(ctx context.Context, pipeline string, target st
 		}); cerr != nil {
 			return deadLetter(fmt.Sprintf("turn commit failed: %v", cerr))
 		}
+	}
+	if src != nil {
+		m.sources.delivered(pipeline)
 	}
 	sink.SetOutcome("succeeded")
 	if serr := m.submit.Submit(ctx, func(w *store.Writer) error { return w.MarkRunSucceeded(ctx, runID) }); serr != nil {

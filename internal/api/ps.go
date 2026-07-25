@@ -121,10 +121,11 @@ type SourceHealth struct {
 	// Error is the last attempt's failure text; empty when healthy.
 	Error string `json:"error,omitempty"`
 	// ConsecutiveFails counts the unbroken failure streak; 0 when healthy.
-	// The retry cadence is Every, so "how stale" derives without a clock.
 	ConsecutiveFails int `json:"consecutive_fails,omitempty"`
-	// Every is the declared poll pace.
-	Every string `json:"every,omitempty"`
+	// FreshFor is the origin's own declared freshness lifetime for the last
+	// answer (bounded by the engine's cache limits) -- the re-check pace comes
+	// from HTTP, never from an iris schedule.
+	FreshFor string `json:"fresh_for,omitempty"`
 }
 
 // PsEngine is the engine block of the ps readout: identity, leadership role,

@@ -139,6 +139,10 @@ type Candidate struct {
 	// stdout/stderr through (the lane loop receives it via its build closure).
 	// Nil leaves manual runs uncaptured (shape-test compositions).
 	runLogs *RunLogWriter
+	// sources is the shared declared-source watcher: the manual path takes
+	// bodies from the same instance the lane loop's watcher fills, and the
+	// control planes poke its roster on apply/destroy.
+	sources *sourceFetcher
 
 	// patGrantLedger is the meta read of every data-PAT role's ledgered grants:
 	// the authoritative set the leader reconciles each role's live Postgres
@@ -410,6 +414,12 @@ func WithWipePlane(wp *wipePlane, reader store.Reader, data dataPlane) Candidate
 // stdout/stderr into the writer's run-id-keyed logs and record runs.log_ref
 // (the lane loop receives the same writer through its build closure). Absent,
 // run output is discarded (shape-test compositions).
+// WithSourceWatcher shares the declared-source watcher with the leadership
+// term's planes (manual turns take from it; apply/destroy refresh its roster).
+func WithSourceWatcher(f *sourceFetcher) CandidateOption {
+	return func(c *Candidate) { c.sources = f }
+}
+
 func WithRunLogs(logs *RunLogWriter) CandidateOption {
 	return func(c *Candidate) {
 		c.runLogs = logs
@@ -741,6 +751,9 @@ func (c *Candidate) lead(ctx context.Context) (demoted bool, err error) {
 			roleCreds,
 			c.logger,
 		)
+		if c.sources != nil {
+			orch.sourcesRefresh = c.sources.Refresh
+		}
 		c.control.install(orch)
 		defer c.control.clear()
 
@@ -767,7 +780,7 @@ func (c *Candidate) lead(ctx context.Context) (demoted bool, err error) {
 		// store (the *pg.Client that also serves as the journal high-watermark), the
 		// meta seal read seam, the single dispatcher (checkpoint insert + archive
 		// flip), and the object store. Nil seams (the shape tests) leave sealing off.
-		mo := newManualOrchestrator(c.workspace, c.pluginsRoot, c.services, d, c.registry, c.manualReader, c.objects, c.runner, c.journalHM, c.turnDB, reg, c.buildSealer(d), c.runLogs, c.logger)
+		mo := newManualOrchestrator(c.workspace, c.pluginsRoot, c.services, d, c.registry, c.manualReader, c.objects, c.runner, c.journalHM, c.turnDB, reg, c.buildSealer(d), c.runLogs, c.sources, c.logger)
 		c.pipelines.install(mo)
 		defer c.pipelines.clear()
 	}

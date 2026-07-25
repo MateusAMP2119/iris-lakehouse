@@ -142,7 +142,10 @@ type controlOrchestrator struct {
 	// -- the shape-test compositions.
 	submit    dispatch.Submitter
 	roleCreds store.RoleCredentialReader
-	logger    *slog.Logger
+	// sourcesRefresh, when set, pokes the declared-source watcher's roster
+	// after a successful apply or destroy (a new/changed/gone source block).
+	sourcesRefresh func()
+	logger         *slog.Logger
 }
 
 // newControlOrchestrator builds the leader's control orchestrator over its workspace
@@ -165,6 +168,14 @@ func newControlOrchestrator(workspace string, applier *dispatch.Applier, destroy
 		submit:    submit,
 		roleCreds: roleCreds,
 		logger:    logger,
+	}
+}
+
+// pokeSources refreshes the declared-source watcher's roster after a non-dry
+// mutation; a nil hook (shape tests, unwired terms) is a no-op.
+func (o *controlOrchestrator) pokeSources(dryRun bool) {
+	if o.sourcesRefresh != nil && !dryRun {
+		o.sourcesRefresh()
 	}
 }
 
@@ -232,6 +243,7 @@ func (o *controlOrchestrator) apply(ctx context.Context, req api.ControlRequest)
 		if decl.Pipeline.Logs == nil {
 			warnings = append(warnings, fmt.Sprintf("pipeline %q declares no logs block; engine default applies (combined stream, no stamp); declare logs: {split: true, stamp: true} to state the recording contract", decl.Pipeline.Name))
 		}
+		o.pokeSources(req.DryRun)
 		return api.ControlResult{Kind: decl.Kind.String(), Target: decl.Pipeline.Name, DryRun: req.DryRun, Warnings: warnings}, nil
 	case declare.KindComposer:
 		// Composer apply validates the whole folder against its surface (member subset plus pairwise write claims), so a shrinking surface refuses instead of stranding members.
@@ -252,6 +264,7 @@ func (o *controlOrchestrator) apply(ctx context.Context, req api.ControlRequest)
 		if err := o.provision(ctx, req.DryRun); err != nil {
 			return api.ControlResult{}, err
 		}
+		o.pokeSources(req.DryRun)
 		return api.ControlResult{Kind: decl.Kind.String(), Target: decl.Composer.Lane, DryRun: req.DryRun}, nil
 	default:
 		return api.ControlResult{}, fmt.Errorf("declare apply: unknown declaration kind %v", decl.Kind)
@@ -288,6 +301,7 @@ func (o *controlOrchestrator) destroy(ctx context.Context, req api.ControlReques
 				return api.ControlResult{}, err
 			}
 			o.forgetHead(ctx, target)
+			o.pokeSources(false)
 		}
 		return api.ControlResult{Kind: decl.Kind.String(), Target: decl.Pipeline.Name, DryRun: req.DryRun}, nil
 	case declare.KindComposer:
@@ -303,6 +317,7 @@ func (o *controlOrchestrator) destroy(ctx context.Context, req api.ControlReques
 				return api.ControlResult{}, err
 			}
 			o.forgetHead(ctx, target)
+			o.pokeSources(false)
 		}
 		return api.ControlResult{Kind: decl.Kind.String(), Target: decl.Composer.Lane, DryRun: req.DryRun}, nil
 	default:

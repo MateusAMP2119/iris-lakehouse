@@ -10,69 +10,44 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/declare"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/dispatch"
+	"github.com/MateusAMP2119/iris-lakehouse/internal/store"
 )
 
-// This file is the declared-source fetcher: the engine-side HTTP input for a
-// pipeline's source block. The engine fetches, the pipeline transforms — the
-// script does no network I/O. Fetches are conditional (ETag / Last-Modified
-// cached per pipeline), so an unchanged feed costs one 304 exchange and the
-// turn carries no source frame at all.
+// This file is the declared-source watcher: the engine-side input for a
+// pipeline's source block. One resident watcher runs beside the lane loop;
+// when an origin publishes fresh bytes, that ARRIVAL is the event -- the
+// watcher stores the body, bumps the watermark, the parked lane wakes, and
+// the turn consumes the body with no network of its own. The loop stays
+// purely event-driven: the only durations in play are the ones HTTP itself
+// declares (Cache-Control max-age less Age, Expires, Retry-After), bounded by
+// RFC 9111-style cache limits -- never an iris schedule, never a user knob.
+// Scripts do no network I/O at all.
+
+// The watcher's cache bounds: engine-side limits on origin-declared
+// freshness, not schedules. The floor keeps a max-age=0/no-store origin from
+// being hammered; the cap keeps a wildly long declaration re-checkable; the
+// no-signal lifetime covers origins that declare nothing usable.
+const (
+	sourceWaitFloor    = 15 * time.Second
+	sourceWaitCap      = 10 * time.Minute
+	sourceNoSignalWait = 5 * time.Minute
+	// sourceRetryAfterCap bounds an origin's Retry-After above the normal cap:
+	// a long ban is honored, never fought -- but not past this.
+	sourceRetryAfterCap = time.Hour
+	// sourceErrorBackoffBase seeds the doubling error backoff.
+	sourceErrorBackoffBase = 15 * time.Second
+)
 
 // sourceBodyCap bounds one fetched source body.
 const sourceBodyCap = 8 << 20
-
-// sourceClockGranularity bounds how often the source clock re-reads the
-// workspace for declared sources and their due times.
-const sourceClockGranularity = 10 * time.Second
-
-// SourcePollClock is the declared-source clock the lane loop runs beside it:
-// the one sanctioned timer (clock doctrine otherwise holds -- events initiate
-// work). Every granularity tick it scans the workspace for pipelines
-// declaring a source, and when any is due per its every interval it bumps the
-// watermark once, waking the parked lanes; the turn's conditional GET keeps a
-// no-news wake nearly free (304, no source frame, quiet turn, re-park).
-func SourcePollClock(workspace string, events *dispatch.Events, logger *slog.Logger) func(context.Context) {
-	return func(ctx context.Context) {
-		lastDue := map[string]time.Time{}
-		tick := time.NewTicker(sourceClockGranularity)
-		defer tick.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case now := <-tick.C:
-				ws, err := declare.DiscoverWorkspace(workspace)
-				if err != nil {
-					if logger != nil {
-						logger.Debug("source clock: workspace scan failed", "err", err)
-					}
-					continue
-				}
-				due := false
-				for _, p := range ws.Pipelines {
-					src := p.Declaration.Source
-					if src == nil {
-						continue
-					}
-					name := p.Declaration.Name
-					if last, seen := lastDue[name]; !seen || now.Sub(last) >= src.EffectiveEvery() {
-						lastDue[name] = now
-						due = true
-					}
-				}
-				if due {
-					events.Bump()
-				}
-			}
-		}
-	}
-}
 
 // sourceFetchTimeout bounds one source fetch.
 const sourceFetchTimeout = 60 * time.Second
@@ -85,99 +60,284 @@ type sourceFrame struct {
 	summary string
 }
 
-// sourceValidator caches one pipeline's conditional-GET validators, its last
-// body digest, when it last went to the network, and its health: the last
-// answer's status, error text, and the consecutive-failure count -- the
-// operator-visible source state.
-type sourceValidator struct {
-	url, etag, lastModified string
-	bodySHA                 [32]byte
-	fetchedAt               time.Time
-	every                   time.Duration
-	status                  int
-	errMsg                  string
-	fails                   int
+// sourceState is one watched source's whole state: identity, conditional-GET
+// validators, the body awaiting delivery, health, and pacing.
+type sourceState struct {
+	pipeline, url      string
+	etag, lastModified string
+	pendingBody        []byte
+	pendingSHA         [32]byte // digest of the body stored for delivery
+	deliveredSHA       [32]byte // digest of the last body a turn COMMITTED
+	seenSHA            [32]byte // digest of the last body fetched at all
+	status             int
+	errMsg             string
+	fails              int
+	freshFor           time.Duration // the origin's last declared freshness, bounded
+	nextAttempt        time.Time
 }
 
-// sourceFetcher fetches declared sources over one shared client, caching each
-// pipeline's response validators and health in memory (a restart refetches
-// once). One instance serves the loop and the manual path, so pacing and
-// health are engine-wide facts.
+// sourceFetcher is the declared-source watcher and hand-off point: the single
+// engine-wide instance the lane loop's companion goroutine drives, the turn
+// paths (loop and manual alike) take bodies from, and the ps plane reads
+// health from.
 type sourceFetcher struct {
-	mu     sync.Mutex
-	client *http.Client
-	cache  map[string]sourceValidator
-	logger *slog.Logger
+	mu        sync.Mutex
+	client    *http.Client
+	states    map[string]*sourceState // keyed by pipeline
+	workspace string
+	registry  store.RegistryReader
+	events    *dispatch.Events
+	refresh   chan struct{}
+	logger    *slog.Logger
 }
 
-// newSourceFetcher builds the fetcher over one shared HTTP client. A nil
-// logger discards.
-func newSourceFetcher(logger *slog.Logger) *sourceFetcher {
+// newSourceFetcher builds the watcher over one shared HTTP client. registry
+// may be nil in compositions that never run the watcher (take and Health
+// still work). A nil logger discards.
+func newSourceFetcher(workspace string, registry store.RegistryReader, logger *slog.Logger) *sourceFetcher {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	return &sourceFetcher{client: &http.Client{Timeout: sourceFetchTimeout}, cache: map[string]sourceValidator{}, logger: logger}
+	return &sourceFetcher{
+		client:    &http.Client{Timeout: sourceFetchTimeout},
+		states:    map[string]*sourceState{},
+		workspace: workspace,
+		registry:  registry,
+		refresh:   make(chan struct{}, 1),
+		logger:    logger,
+	}
 }
 
-// Health snapshots every tracked source's operator-visible state, pipeline-sorted.
-func (f *sourceFetcher) Health() []api.SourceHealth {
+// Refresh signals the watcher to re-read its roster (a declaration applied or
+// destroyed). Non-blocking and coalescing; safe before the watcher runs.
+func (f *sourceFetcher) Refresh() {
+	select {
+	case f.refresh <- struct{}{}:
+	default:
+	}
+}
+
+// run is the watcher loop the lane loop spawns beside itself: one goroutine
+// multiplexing every declared source. It exits promptly on cancellation
+// (in-flight fetches ride ctx, and the loop joins it before returning).
+func (f *sourceFetcher) run(ctx context.Context, events *dispatch.Events) {
+	f.mu.Lock()
+	f.events = events
+	f.mu.Unlock()
+	f.rescanRoster(ctx)
+	for {
+		next := f.fetchDue(ctx)
+		wait := time.Until(next)
+		if wait < time.Second {
+			wait = time.Second // coalesce wakeups; per-source pacing is already floored
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-f.refresh:
+			timer.Stop()
+			f.rescanRoster(ctx)
+		case <-timer.C:
+		}
+	}
+}
+
+// rescanRoster rebuilds the watched set: the workspace's source-declaring
+// pipelines INTERSECTED with the registered roster -- a destroyed pipeline's
+// files stay on disk, and its origin must not keep being polled. A vanished
+// entry's state drops whole; an in-place URL change restarts the state fresh.
+func (f *sourceFetcher) rescanRoster(ctx context.Context) {
+	ws, err := declare.DiscoverWorkspace(f.workspace)
+	if err != nil {
+		f.logger.Debug("source watcher: workspace scan failed", "err", err)
+		return
+	}
+	registered := map[string]bool{}
+	if f.registry != nil {
+		names, rerr := f.registry.RegisteredPipelines(ctx)
+		if rerr != nil {
+			f.logger.Debug("source watcher: registry read failed", "err", rerr)
+			return
+		}
+		for _, n := range names {
+			registered[n] = true
+		}
+	}
+	live := map[string]string{} // pipeline -> url
+	for _, p := range ws.Pipelines {
+		if p.Declaration.Source != nil && registered[p.Declaration.Name] {
+			live[p.Declaration.Name] = p.Declaration.Source.HTTP
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	names := make([]string, 0, len(f.cache))
-	for name := range f.cache {
-		names = append(names, name)
+	for name, st := range f.states {
+		if url, ok := live[name]; !ok || st.url != url {
+			delete(f.states, name)
+		}
 	}
-	sort.Strings(names)
-	out := make([]api.SourceHealth, 0, len(names))
-	for _, name := range names {
-		v := f.cache[name]
-		out = append(out, api.SourceHealth{Pipeline: name, URL: v.url, Status: v.status, Error: v.errMsg, ConsecutiveFails: v.fails, Every: v.every.String()})
+	for name, url := range live {
+		if _, ok := f.states[name]; !ok {
+			f.states[name] = &sourceState{pipeline: name, url: url}
+		}
 	}
-	return out
 }
 
-// fetch returns the pipeline's prepared source frame, or nil when the turn
-// should carry none: the declared every interval has not elapsed since the
-// last fetch (no network at all -- the spin breaker: a wake caused by the
-// pipeline's own produce never re-fetches early), the source is unchanged
-// (304, or a 200 whose body digest matches the last -- an origin without
-// validators still quiets), or the fetch failed. A failure never refuses the
-// turn — it is noted in the turn's log sink and the pipeline runs without
-// external input.
-func (f *sourceFetcher) fetch(ctx context.Context, pipeline, url string, every time.Duration, sink io.Writer) *sourceFrame {
+// fetchDue fetches every source whose next attempt is due and returns the
+// earliest next attempt across the roster (a no-signal wait when empty).
+func (f *sourceFetcher) fetchDue(ctx context.Context) time.Time {
+	now := time.Now()
 	f.mu.Lock()
-	last := f.cache[pipeline]
-	f.mu.Unlock()
-	if last.url == url && !last.fetchedAt.IsZero() && time.Since(last.fetchedAt) < every {
-		return nil
-	}
-	body, status, unchanged, err := f.do(ctx, pipeline, url)
-	switch {
-	case err != nil:
-		// A failed attempt still stamps the pace window: an erroring origin
-		// (429, outage) is retried at the declared every, never hammered. The
-		// failure lands in the DAEMON log too -- the turn sink dies with a
-		// quiet turn, and a failing source always quiets its turns.
-		f.mu.Lock()
-		last.url, last.fetchedAt, last.every = url, time.Now(), every
-		last.errMsg, last.fails = err.Error(), last.fails+1
-		fails := last.fails
-		f.cache[pipeline] = last
-		f.mu.Unlock()
-		f.logger.Warn("declared source fetch failed", "pipeline", pipeline, "url", url, "err", err, "consecutive", fails, "retry_in", every)
-		if sink != nil {
-			fmt.Fprintf(sink, "[iris: source fetch %s failed: %v]\n", url, err)
+	var due []*sourceState
+	for _, st := range f.states {
+		if !st.nextAttempt.After(now) {
+			due = append(due, st)
 		}
-		return nil
-	case unchanged:
-		f.noteRecovery(pipeline, status, every, last.fails)
-		return nil
 	}
-	f.noteRecovery(pipeline, status, every, last.fails)
+	f.mu.Unlock()
+	sort.Slice(due, func(i, j int) bool { return due[i].pipeline < due[j].pipeline })
+	for _, st := range due {
+		if ctx.Err() != nil {
+			break
+		}
+		f.fetchOne(ctx, st)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	earliest := time.Now().Add(sourceNoSignalWait)
+	for _, st := range f.states {
+		if st.nextAttempt.Before(earliest) {
+			earliest = st.nextAttempt
+		}
+	}
+	return earliest
+}
+
+// fetchOne runs one conditional GET for st, storing a changed body for
+// delivery (store first, THEN bump -- the woken turn must find it) and pacing
+// the next attempt from the answer's own freshness declarations.
+func (f *sourceFetcher) fetchOne(ctx context.Context, st *sourceState) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, st.url, nil)
+	if err != nil {
+		f.noteFailure(st, err, 0)
+		return
+	}
+	f.mu.Lock()
+	if st.etag != "" {
+		req.Header.Set("If-None-Match", st.etag)
+	}
+	if st.lastModified != "" {
+		req.Header.Set("If-Modified-Since", st.lastModified)
+	}
+	f.mu.Unlock()
+
+	resp, err := f.client.Do(req)
+	if err != nil {
+		f.noteFailure(st, err, 0)
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	switch {
+	case resp.StatusCode == http.StatusNotModified:
+		f.noteAnswer(st, resp, nil, false)
+		return
+	case resp.StatusCode != http.StatusOK:
+		wait := time.Duration(0)
+		if ra, rerr := parseDeltaSeconds(resp.Header.Get("Retry-After")); rerr == nil {
+			wait = ra
+		}
+		if wait > sourceRetryAfterCap {
+			wait = sourceRetryAfterCap
+		}
+		f.noteFailure(st, fmt.Errorf("source answered status %d", resp.StatusCode), wait)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, sourceBodyCap+1))
+	if err != nil {
+		f.noteFailure(st, err, 0)
+		return
+	}
+	if len(body) > sourceBodyCap {
+		f.noteFailure(st, fmt.Errorf("source body exceeds %d bytes", sourceBodyCap), 0)
+		return
+	}
 	sum := sha256.Sum256(body)
-	if last.url == url && sum == last.bodySHA {
-		return nil // a 200 with the same bytes: unchanged in every way that matters
+	changed := sum != st.seenSHA
+	f.noteAnswer(st, resp, body, changed)
+	if changed {
+		f.mu.Lock()
+		st.seenSHA, st.pendingBody, st.pendingSHA = sum, body, sum
+		events := f.events
+		f.mu.Unlock()
+		if events != nil {
+			events.Bump() // fresh bytes are the event; the parked lane wakes to them
+		}
 	}
+}
+
+// noteAnswer records a successful answer: validators, health, and the pace
+// the origin's own freshness declarations set for the next attempt.
+func (f *sourceFetcher) noteAnswer(st *sourceState, resp *http.Response, body []byte, changed bool) {
+	fresh := boundWait(originFreshness(resp))
+	f.mu.Lock()
+	hadFails := st.fails
+	if et := resp.Header.Get("ETag"); et != "" {
+		st.etag = et
+	}
+	if lm := resp.Header.Get("Last-Modified"); lm != "" {
+		st.lastModified = lm
+	}
+	st.status, st.errMsg, st.fails = resp.StatusCode, "", 0
+	st.freshFor = fresh
+	st.nextAttempt = time.Now().Add(fresh)
+	f.mu.Unlock()
+	if hadFails > 0 {
+		f.logger.Info("declared source recovered", "pipeline", st.pipeline, "after_failures", hadFails)
+	}
+	if changed {
+		f.logger.Info("declared source changed", "pipeline", st.pipeline, "bytes", len(body), "fresh_for", fresh)
+	}
+}
+
+// noteFailure records a failed attempt: doubling backoff, overridden by a
+// longer origin-declared Retry-After. Every failure lands in the DAEMON log
+// -- a failing source's turns are quiet, so the turn sink cannot carry this.
+func (f *sourceFetcher) noteFailure(st *sourceState, ferr error, retryAfter time.Duration) {
+	f.mu.Lock()
+	st.fails++
+	st.errMsg = ferr.Error()
+	st.status = 0
+	shift := st.fails - 1
+	if shift > 6 {
+		shift = 6
+	}
+	wait := boundWait(sourceErrorBackoffBase << shift)
+	if retryAfter > wait {
+		wait = retryAfter // a declared ban is honored past the normal cap (bounded by sourceRetryAfterCap)
+	}
+	st.nextAttempt = time.Now().Add(wait)
+	fails := st.fails
+	f.mu.Unlock()
+	f.logger.Warn("declared source fetch failed", "pipeline", st.pipeline, "url", st.url, "err", ferr, "consecutive", fails, "next_attempt_in", wait)
+}
+
+// take returns the pipeline's undelivered source frame, or nil when the turn
+// should carry none. It does NOT consume: the body stays takeable until
+// delivered() records a committed turn, so a failed turn (or its replay)
+// re-takes the same bytes instead of losing the captured change forever.
+func (f *sourceFetcher) take(pipeline string, sink io.Writer) *sourceFrame {
+	f.mu.Lock()
+	st, ok := f.states[pipeline]
+	if !ok || st.pendingBody == nil || st.pendingSHA == st.deliveredSHA {
+		f.mu.Unlock()
+		return nil
+	}
+	url, body, sum, status := st.url, st.pendingBody, st.pendingSHA, st.status
+	f.mu.Unlock()
+
 	line, err := dispatch.EncodeSourceFrame(url, status, body)
 	if err != nil {
 		if sink != nil {
@@ -195,65 +355,97 @@ func (f *sourceFetcher) fetch(ctx context.Context, pipeline, url string, every t
 	return &sourceFrame{line: line, summary: string(summary)}
 }
 
-// noteRecovery records a successful answer's health, logging the recovery
-// when it ends a failure streak.
-func (f *sourceFetcher) noteRecovery(pipeline string, status int, every time.Duration, prevFails int) {
+// delivered records that a turn COMMITTED the pipeline's pending body: only
+// now does it stop being takeable. The turn paths call it on commit success.
+func (f *sourceFetcher) delivered(pipeline string) {
 	f.mu.Lock()
-	v := f.cache[pipeline]
-	v.status, v.errMsg, v.fails, v.every = status, "", 0, every
-	f.cache[pipeline] = v
-	f.mu.Unlock()
-	if prevFails > 0 {
-		f.logger.Info("declared source recovered", "pipeline", pipeline, "after_failures", prevFails)
+	if st, ok := f.states[pipeline]; ok {
+		st.deliveredSHA = st.pendingSHA
+		st.pendingBody = nil
 	}
+	f.mu.Unlock()
 }
 
-// do runs one conditional GET, updating the pipeline's cached validators.
-func (f *sourceFetcher) do(ctx context.Context, pipeline, url string) (body []byte, status int, unchanged bool, err error) {
-	ctx, cancel := context.WithTimeout(ctx, sourceFetchTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, 0, false, err
-	}
+// Health snapshots every watched source's operator-visible state, sorted.
+func (f *sourceFetcher) Health() []api.SourceHealth {
 	f.mu.Lock()
-	v := f.cache[pipeline]
-	f.mu.Unlock()
-	if v.url == url {
-		if v.etag != "" {
-			req.Header.Set("If-None-Match", v.etag)
+	defer f.mu.Unlock()
+	names := make([]string, 0, len(f.states))
+	for name := range f.states {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]api.SourceHealth, 0, len(names))
+	for _, name := range names {
+		st := f.states[name]
+		h := api.SourceHealth{Pipeline: name, URL: st.url, Status: st.status, Error: st.errMsg, ConsecutiveFails: st.fails}
+		if st.freshFor > 0 {
+			h.FreshFor = st.freshFor.String()
 		}
-		if v.lastModified != "" {
-			req.Header.Set("If-Modified-Since", v.lastModified)
+		out = append(out, h)
+	}
+	return out
+}
+
+// originFreshness reads the answer's own freshness lifetime: Cache-Control
+// max-age less the CDN's Age, else Expires less Date, else the RFC 9111
+// heuristic (a tenth of the copy's age per Last-Modified), else no signal.
+func originFreshness(resp *http.Response) time.Duration {
+	if ma, ok := parseMaxAge(resp.Header.Get("Cache-Control")); ok {
+		age := time.Duration(0)
+		if a, err := parseDeltaSeconds(resp.Header.Get("Age")); err == nil {
+			age = a
+		}
+		return ma - age
+	}
+	if exp, err := http.ParseTime(resp.Header.Get("Expires")); err == nil {
+		base := time.Now()
+		if d, derr := http.ParseTime(resp.Header.Get("Date")); derr == nil {
+			base = d
+		}
+		return exp.Sub(base)
+	}
+	if lm, err := http.ParseTime(resp.Header.Get("Last-Modified")); err == nil {
+		return time.Since(lm) / 10
+	}
+	return 0
+}
+
+// boundWait applies the cache bounds: the no-signal lifetime for a zero or
+// negative input, then the floor and cap.
+func boundWait(d time.Duration) time.Duration {
+	switch {
+	case d <= 0:
+		return sourceNoSignalWait
+	case d < sourceWaitFloor:
+		return sourceWaitFloor
+	case d > sourceWaitCap:
+		return sourceWaitCap
+	}
+	return d
+}
+
+// parseMaxAge reads max-age out of a Cache-Control value.
+func parseMaxAge(cc string) (time.Duration, bool) {
+	for _, part := range strings.Split(cc, ",") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(part), "max-age="); ok {
+			if secs, err := parseDeltaSeconds(rest); err == nil {
+				return secs, true
+			}
 		}
 	}
-	resp, err := f.client.Do(req)
+	return 0, false
+}
+
+// parseDeltaSeconds parses a delta-seconds header value (Retry-After, Age,
+// max-age) as a duration.
+func parseDeltaSeconds(v string) (time.Duration, error) {
+	secs, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
 	if err != nil {
-		return nil, 0, false, err
+		return 0, err
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode == http.StatusNotModified {
-		f.mu.Lock()
-		v.fetchedAt = time.Now()
-		f.cache[pipeline] = v
-		f.mu.Unlock()
-		return nil, resp.StatusCode, true, nil
+	if secs < 0 {
+		return 0, fmt.Errorf("negative seconds")
 	}
-	body, err = io.ReadAll(io.LimitReader(resp.Body, sourceBodyCap+1))
-	if err != nil {
-		return nil, 0, false, err
-	}
-	if len(body) > sourceBodyCap {
-		return nil, 0, false, fmt.Errorf("source body exceeds %d bytes", sourceBodyCap)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, 0, false, fmt.Errorf("source answered status %d", resp.StatusCode)
-	}
-	f.mu.Lock()
-	f.cache[pipeline] = sourceValidator{
-		url: url, etag: resp.Header.Get("ETag"), lastModified: resp.Header.Get("Last-Modified"),
-		bodySHA: sha256.Sum256(body), fetchedAt: time.Now(),
-	}
-	f.mu.Unlock()
-	return body, resp.StatusCode, false, nil
+	return time.Duration(secs) * time.Second, nil
 }

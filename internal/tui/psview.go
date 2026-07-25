@@ -531,7 +531,7 @@ func pollPs(ctx context.Context, c *Client, every time.Duration,
 		// quiet, so this line is the pane's only live trace of the failure.
 		for _, sh := range ps.Sources {
 			if sh.ConsecutiveFails > 0 {
-				warn = fmt.Sprintf("source %s failing ×%d (%s) · retrying every %s", sh.Pipeline, sh.ConsecutiveFails, sh.Error, sh.Every)
+				warn = fmt.Sprintf("source %s failing ×%d (%s) · backing off", sh.Pipeline, sh.ConsecutiveFails, sh.Error)
 				break
 			}
 		}

@@ -214,10 +214,12 @@ type Loop struct {
 	// influences dispatch.
 	onPass func(PassReport)
 
-	// background, when set, runs beside the loop for its lifetime (spawned by Run,
-	// cancelled with its ctx). The daemon uses it for the declared-source poll
-	// clock -- the one sanctioned timer: declared external input is inherently
-	// time-paced, so its ticks land as watermark bumps like any other cause.
+	// background, when set, runs beside the loop for its lifetime: spawned by
+	// Run, cancelled with its ctx, and JOINED before Run returns, so a demoted
+	// leader never leaves the previous term's companion racing the next one's.
+	// The contract is prompt exit on cancellation (any I/O it holds must ride
+	// its ctx). The daemon uses it for the declared-source watcher: fresh
+	// external bytes land as watermark bumps like any other cause.
 	background func(context.Context)
 }
 
@@ -401,7 +403,12 @@ func memberInFlight(running map[string][]string, pipelines []string) bool {
 // still-running (or hung) lane.
 func (l *Loop) Run(ctx context.Context) error {
 	if l.background != nil {
-		go l.background(ctx)
+		bgDone := make(chan struct{})
+		go func() {
+			defer close(bgDone)
+			l.background(ctx)
+		}()
+		defer func() { <-bgDone }()
 	}
 	// running maps each in-flight pass's lane name to its member pipelines. The
 	// members matter: a pipeline's lane identity can change between walk reads
