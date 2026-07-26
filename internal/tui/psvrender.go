@@ -83,12 +83,28 @@ func (b *screenBuf) text(x, y int, sgr, s string) {
 
 // paintSelAccent marks a selected row Grok-style: a left magenta bar (▌).
 // Colorless mode keeps a plain ">" so geometry tests stay SGR-free.
-func paintSelAccent(b *screenBuf, x, y int, colorless bool) {
+// paintSelAccent marks the cursor row: the whole row inverts (#238 tweak —
+// no bar glyph), keeping each cell's own color under the inversion. The
+// colorless painter keeps the ">" marker, its only visible channel.
+func paintSelAccent(b *screenBuf, x, y, w int, colorless bool) {
 	if colorless {
 		b.text(x, y, "", ">")
 		return
 	}
-	b.text(x, y, ansiMagenta, "▌")
+	b.invertRow(x, y, w)
+}
+
+// invertRow layers inverse video over w cells of row y from x.
+func (b *screenBuf) invertRow(x, y, w int) {
+	if y < 0 || y >= b.h {
+		return
+	}
+	for xx := x; xx < x+w && xx < b.w; xx++ {
+		c := &b.cells[y*b.w+xx]
+		if !strings.HasPrefix(c.sgr, ansiInverse) {
+			c.sgr = ansiInverse + c.sgr
+		}
+	}
 }
 
 // dimAll repaints the whole frame dim -- the search overlay's backdrop.
@@ -400,7 +416,7 @@ func renderTable(b *screenBuf, y, bodyH int, cols []psColumn, selRow int, colorl
 			if colorless {
 				b.text(0, ry, "", "> ")
 			} else {
-				b.text(0, ry, ansiMagenta, "▌")
+				b.invertRow(0, ry, b.w)
 			}
 		}
 	}
@@ -473,7 +489,7 @@ func renderPsFrame(m *psModel, w, h int, colorless bool) *screenBuf {
 		// The full-screen log view: the frame's only raw-text surface.
 		renderLogsFull(b, m, 0, 0, w, h-footerH, colorless)
 	default:
-		bannerH := renderPsBanner(b, w, h, colorless)
+		bannerH := renderPsBanner(b, m, w, h, colorless)
 		renderPsHeader(b, m, bannerH)
 		top := bannerH + psHeaderRows(h-bannerH)
 		paneH := h - top - footerH // rows between header and optional footer
@@ -1305,7 +1321,7 @@ func renderCommandOverlay(b *screenBuf, m *psModel) {
 			label := commandRunRowLabel(run, i == sel, leftW-4)
 			b.text(ox+2, ry, "", label)
 			if i == sel {
-				paintSelAccent(b, ox+1, ry, false)
+				paintSelAccent(b, ox+1, ry, leftW-1, false)
 			}
 			row++
 		}
@@ -1338,7 +1354,7 @@ func renderCommandOverlay(b *screenBuf, m *psModel) {
 			label := commandListLabel(spec, i == c.sel, leftW-4)
 			b.text(ox+2, ry, "", label)
 			if i == c.sel {
-				paintSelAccent(b, ox+1, ry, false)
+				paintSelAccent(b, ox+1, ry, leftW-1, false)
 			}
 		}
 		if len(list) == 0 {
@@ -1442,7 +1458,7 @@ func renderSearchOverlay(b *screenBuf, m *psModel) {
 		b.text(ox+4, ry, ansiDim, fmt.Sprintf("%-8s", h.kind.kindTag()))
 		b.text(ox+14, ry, "", h.label)
 		if i == s.sel {
-			paintSelAccent(b, ox+1, ry, false)
+			paintSelAccent(b, ox+1, ry, leftW-1, false)
 		}
 	}
 
@@ -1609,7 +1625,7 @@ func renderCatalogOverlay(b *screenBuf, m *psModel) {
 		m.addClick(psClick{x: ox + 2, y: row, w: 1, kind: psClickMarkPack, idx: i})
 		b.text(ox+4, row, "", clipCells(label, leftW-6))
 		if i == c.sel {
-			paintSelAccent(b, ox+1, row, false)
+			paintSelAccent(b, ox+1, row, leftW-1, false)
 		}
 	}
 	if top+innerH < len(c.packs) {

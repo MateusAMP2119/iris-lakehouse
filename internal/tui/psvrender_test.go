@@ -145,7 +145,7 @@ func TestPsFrameGoldens(t *testing.T) {
 }
 
 // TestPsFrameStyling proves the SGR layer: state colors land on their cells,
-// the focused pane's border is cyan, the selection uses a magenta accent bar
+// the focused pane's border is cyan, the selection inverts its whole row
 // (or "> " when colorless), heat cells quantize into the ramp, and the
 // emission carries zero escape bytes beyond cursor addressing when the painter
 // is off.
@@ -162,8 +162,8 @@ func TestPsFrameStyling(t *testing.T) {
 					t.Errorf("frame carries no %q-styled cell", want)
 				}
 			}
-			if !strings.Contains(out, ansiMagenta+"▌") {
-				t.Error("selected row carries no magenta accent bar")
+			if !strings.Contains(out, ansiInverse) {
+				t.Error("selected row carries no inverse-video highlight")
 			}
 		})
 
@@ -260,10 +260,13 @@ func TestPsFrameStyling(t *testing.T) {
 		t.Run("header card names the engine and its role under the banner", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
 			lines := renderPsFrame(m, 150, 40, false).plainLines()
-			if !strings.Contains(lines[0], "█") {
-				t.Error("wide frame is missing the brand banner row")
+			if lines[0] != "" {
+				t.Error("banner must keep one blank breathing row on top")
 			}
-			top := strings.Join(lines[3:3+psHeaderCardH], "\n")
+			if !strings.Contains(lines[1], "█") || strings.Contains(lines[1][:1], "█") {
+				t.Error("wide frame is missing the padded brand banner row")
+			}
+			top := strings.Join(lines[4:4+psHeaderCardH], "\n")
 			for _, want := range []string{"IRIS", "dev", "LEADER", "pid 42", "up 2h13m", "1 running", "1 queued"} {
 				if !strings.Contains(top, want) {
 					t.Errorf("header card %q missing %q", top, want)

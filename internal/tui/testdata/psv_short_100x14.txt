@@ -3,10 +3,10 @@
 │ / type to filter the   ││ 1 running · 1 queued · 3 pipelines    lane durations arrive with #200  │
 ╰────────────────────────╯│                                                                        │
 ╭────────────────────────╮│ CPU                                                      ▓  51.0% now  │
-│▌ingest           1r·1q ││ MEM                                     █  24.0MiB now · 24.0MiB peak  │
+│ ingest           1r·1q ││ MEM                                     █  24.0MiB now · 24.0MiB peak  │
 │ 51.0% 24.0MiB        ▓ ││                                                                        │
 │ demo.orders      +1187 ││      PIPELINE     LATEST   Q  R  CPU    MEM                            │
-│ ● extract           1q ││ ▌ ○  extract      queued   1  0  -      -                              │
+│ ● extract           1q ││   ○  extract      queued   1  0  -      -                              │
 │ ○ hello_iris           ││   ○  hello_iris   -        0  0  -      -                              │
 │ ● load_orders      run ││   ○  load_orders  running  0  1  51.0%  24.0MiB                        │
 │                        ││                                                                        │

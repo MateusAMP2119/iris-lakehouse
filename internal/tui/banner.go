@@ -58,19 +58,48 @@ var bannerLakeHalf = []string{
 // psBannerMinGap is the smallest word gap the justified banner accepts.
 const psBannerMinGap = 3
 
-// psBanner joins the two brand words justified across w cells, or nil when
-// they cannot fit with a readable gap.
-func psBanner(w int) []string {
+// psBannerLetterW and psBannerLetterGap are the half-block art's metrics:
+// six-cell letters, five-cell gaps (2x-scaled 3x5 glyphs).
+const (
+	psBannerLetterW   = 6
+	psBannerLetterGap = 5
+)
+
+// psBanner joins the two brand words justified across w cells with one cell
+// of breathing room each side, or nil when they cannot fit with a readable
+// gap. The second return is each letter's column span (start, end exclusive)
+// in final frame coordinates — the shimmer's sweep track.
+func psBanner(w int) ([]string, [][2]int) {
 	iw, lw := len([]rune(bannerIrisHalf[0])), len([]rune(bannerLakeHalf[0]))
-	gap := w - iw - lw
+	gap := w - 2 - iw - lw
 	if gap < psBannerMinGap {
-		return nil
+		return nil, nil
 	}
 	out := make([]string, len(bannerIrisHalf))
 	for i := range out {
-		out[i] = bannerIrisHalf[i] + strings.Repeat(" ", gap) + bannerLakeHalf[i]
+		row := " " + bannerIrisHalf[i] + strings.Repeat(" ", gap) + bannerLakeHalf[i]
+		out[i] = row + strings.Repeat(" ", w-len([]rune(row)))
 	}
-	return out
+	var spans [][2]int
+	x := 1
+	for range 4 { // I R I S
+		spans = append(spans, [2]int{x, x + psBannerLetterW})
+		x += psBannerLetterW + psBannerLetterGap
+	}
+	x = 1 + iw + gap
+	for range 9 { // L A K E H O U S E
+		spans = append(spans, [2]int{x, x + psBannerLetterW})
+		x += psBannerLetterW + psBannerLetterGap
+	}
+	return out, spans
+}
+
+// bannerShimmerSGR is one banner row's highlight tint: its gradient stop
+// blended most of the way to white — the light-source sweep.
+func bannerShimmerSGR(i int) string {
+	g := bannerGradient[i%len(bannerGradient)]
+	blend := func(c int) int { return c + (255-c)*3/4 }
+	return rgb(blend(g[0]), blend(g[1]), blend(g[2]))
 }
 
 // bannerGradient is the installer's G1..G6 purple ramp, one stop per art row;

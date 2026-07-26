@@ -228,7 +228,7 @@ func renderCatalogPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool)
 			}
 		}
 		if i == cursor && (e.kind == 0 || e.kind == 2 || e.kind == 4) {
-			paintSelAccent(b, x+1, ry, colorless)
+			paintSelAccent(b, x+1, ry, w-2, colorless)
 		}
 	}
 }
@@ -804,25 +804,42 @@ func renderLogsFull(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 	}
 }
 
-// renderPsBanner paints the justified brand banner rows and reports how many
-// rows it spent (zero when the frame cannot afford or fit it).
-func renderPsBanner(b *screenBuf, w, h int, colorless bool) int {
+// renderPsBanner paints the justified brand banner — one blank row above,
+// one cell of side padding — and reports how many rows it spent (zero when
+// the frame cannot afford or fit it). One letter at a time carries the
+// shimmer highlight: a light source sweeping the wordmark, advanced one
+// step per poll (m.shimmer), resting between passes.
+func renderPsBanner(b *screenBuf, m *psModel, w, h int, colorless bool) int {
 	if h < psBannerMinHeight {
 		return 0
 	}
-	art := psBanner(w)
+	art, spans := psBanner(w)
 	if art == nil {
 		return 0
+	}
+	lit := -1
+	if !colorless {
+		if idx := m.shimmer % (len(spans) + psShimmerRest); idx < len(spans) {
+			lit = idx
+		}
 	}
 	for i, row := range art {
 		sgr := bannerRowSGR(i)
 		if colorless {
 			sgr = ""
 		}
-		b.text(0, i, sgr, row)
+		b.text(0, i+1, sgr, row)
+		if lit >= 0 {
+			span := spans[lit]
+			cells := []rune(row)[span[0]:span[1]]
+			b.text(span[0], i+1, bannerShimmerSGR(i), string(cells))
+		}
 	}
-	return len(art)
+	return len(art) + 1
 }
+
+// psShimmerRest is how many shimmer steps the sweep rests between passes.
+const psShimmerRest = 6
 
 // runsColumns builds the statistics pane's run history columns. ELAPSED is
 // the engine's rendered span (#238 phase 2); WROTE and the journal range are

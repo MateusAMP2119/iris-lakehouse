@@ -8,7 +8,7 @@
 │ MEM                       █  24.0MiB now · 24.0MiB peak  │
 │                                                          │
 │      PIPELINE     LATEST   Q  R  CPU    MEM              │
-│ ▌ ○  extract      queued   1  0  -      -                │
+│   ○  extract      queued   1  0  -      -                │
 │   ○  hello_iris   -        0  0  -      -                │
 │   ○  load_orders  running  0  1  51.0%  24.0MiB          │
 │                                                          │

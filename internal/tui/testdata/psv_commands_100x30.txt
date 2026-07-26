@@ -2,10 +2,10 @@
 │ IRIS  dev  ·  LEADER  ·  up 2h13m  ·  pid 42    CPU  3.2% · MEM 126.0MiB · 1 running · 1 queued  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ [C╭─ COMMANDS ───────────────────────╮t╭─ ABOUT · catalog ─────────────────────────────────╮────╮
-│ / t│▌▸ catalog · Browse and install … │ │ Browse and install pipeline packs                 │00  │
+│ / t│ ▸ catalog · Browse and install … │ │ Browse and install pipeline packs                 │00  │
 ╰────│   logs · Pin the logs pane on a… │ │                                                   │    │
 ╭────│   search · Fuzzy-find lanes, pi… │ │ Opens the catalog overlay over the dashboard:     │ow  │
-│▌ing│   all · Toggle full run history… │ │ pack list on the left, README and tree on the     │ak  │
+│ ing│   all · Toggle full run history… │ │ pack list on the left, README and tree on the     │ak  │
 │ 51.│   follow · Toggle log-tail foll… │ │ right. Install and apply without leaving iris ps. │    │
 │ dem│   history · Toggle hours-deep l… │ │                                                   │    │
 │ ● e│   cancel · Cancel the watched r… │ │ Usage  :catalog                                   │    │
