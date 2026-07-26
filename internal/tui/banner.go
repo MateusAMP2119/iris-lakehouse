@@ -1,6 +1,9 @@
 package tui
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // The idle view's brand banner: the same pre-rendered oh-my-logo art the
 // installer prints (install.sh banner_wide/banner_stacked), tinted row by row
@@ -36,6 +39,45 @@ var bannerStacked = []string{
 
 // bannerText is the installer's plain fallback when neither art form fits.
 const bannerText = "IRIS LAKEHOUSE"
+
+// bannerIrisChunky and bannerLakeChunky are the ps frame's reworked
+// wordmark: the installer art's ANSI-shadow grammar (█ strokes, ╗║ right
+// rails, ╚═╝ base) redrawn on a 4-row letterform with triple-width strokes —
+// more width, less height. The frame joins the words justified edge to edge.
+var bannerIrisChunky = []string{
+	"█████████╗ ██████╗    █████████╗ █████████╗",
+	"   ███╗    ███╗  ███╗    ███╗    ███╗",
+	"   ███║    ██████╗       ███║          ███╗",
+	"█████████╗ ███╗  ███╗ █████████╗ █████████║",
+	"╚════════╝ ╚══╝  ╚══╝ ╚════════╝ ╚════════╝",
+}
+
+var bannerLakeChunky = []string{
+	"███╗          ███╗    ███╗  ███╗ █████████╗ ███╗  ███╗ █████████╗ ███╗  ███╗ █████████╗ █████████╗",
+	"███║       ███╗  ███╗ ██████╗    ██████╗    █████████║ ███╗  ███║ ███║  ███║ ███╗       ██████╗   ",
+	"███║       █████████║ ██████║    ███╗       ███╗  ███║ ███║  ███║ ███║  ███║       ███╗ ███╗      ",
+	"█████████╗ ███╗  ███║ ███╗  ███╗ █████████╗ ███║  ███║ █████████║ █████████║ █████████║ █████████╗",
+	"╚════════╝ ╚══╝  ╚══╝ ╚══╝  ╚══╝ ╚════════╝ ╚══╝  ╚══╝ ╚════════╝ ╚════════╝ ╚════════╝ ╚════════╝",
+}
+
+// psBannerChunkyMinGap is the smallest word gap the justified banner accepts.
+const psBannerChunkyMinGap = 3
+
+// psBannerRows joins the chunky words justified across w cells with one cell
+// of breathing room each side, or nil when they cannot fit.
+func psBannerRows(w int) []string {
+	iw, lw := len([]rune(bannerIrisChunky[0])), len([]rune(bannerLakeChunky[2]))
+	gap := w - 2 - iw - lw
+	if gap < psBannerChunkyMinGap {
+		return nil
+	}
+	out := make([]string, len(bannerIrisChunky))
+	for i := range out {
+		ir := bannerIrisChunky[i] + strings.Repeat(" ", iw-len([]rune(bannerIrisChunky[i])))
+		out[i] = " " + ir + strings.Repeat(" ", gap) + bannerLakeChunky[i]
+	}
+	return out
+}
 
 // bannerGradient is the installer's G1..G6 purple ramp, one stop per art row;
 // stacked blocks cycle it so both halves fade the same way.

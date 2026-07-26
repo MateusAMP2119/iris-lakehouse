@@ -804,27 +804,32 @@ func renderLogsFull(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 	}
 }
 
-// renderPsBanner paints the brand banner: the installer's ANSI-shadow art
-// (bannerWide, the repo's own asset) centered, one blank row above, tinted
-// with the same per-row purple gradient the idle card uses. It reports how
-// many rows it spent (zero when the frame cannot afford or fit it).
+// renderPsBanner paints the brand banner: the chunky rework of the
+// installer's ANSI-shadow art (banner.go) justified edge to edge, one blank
+// row above, tinted with the same per-row purple gradient the idle card
+// uses. A frame too narrow for the chunky form falls back to the original
+// bannerWide centered; too small gets none. Returns the rows spent.
 func renderPsBanner(b *screenBuf, w, h int, colorless bool) int {
 	if h < psBannerMinHeight {
 		return 0
 	}
-	aw := logoWidth(bannerWide)
-	if aw > w {
+	art, x := psBannerRows(w), 0
+	if art == nil {
+		if aw := logoWidth(bannerWide); aw <= w {
+			art, x = bannerWide, (w-aw)/2
+		}
+	}
+	if art == nil {
 		return 0
 	}
-	x := (w - aw) / 2
-	for i, row := range bannerWide {
+	for i, row := range art {
 		sgr := bannerRowSGR(i)
 		if colorless {
 			sgr = ""
 		}
 		b.text(x, i+1, sgr, row)
 	}
-	return len(bannerWide) + 1
+	return len(art) + 1
 }
 
 // runsColumns builds the statistics pane's run history columns. ELAPSED is
