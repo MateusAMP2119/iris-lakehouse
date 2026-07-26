@@ -1,0 +1,40 @@
+ │ [IRIS LAKEHOUSE]   dev   LEADER  up 2h13m  pid 42                           CPU                          ░░░░░   3.2%  MEM  126.0MiB  1r  1q  0✖ │
+
+ │ [CATALOG]                         │  ┌─ LANE · ingest ───────────────────────────────────────────────────────────────────────────────────────────┐
+ │ / type to filter                  │  │ 1 running · 1 queued · 3 pipelines                                       lane durations arrive with #200  │
+ │ ingest        1r·1q · 3 pipelines │  │                                                                                                           │
+ │ ● extract                      1q │  │ CPU                                                                    ░▒▓▓▓                   51.0% now  │
+ │ ○ hello_iris                      │  │ MEM                                                                    ░████  24.0MiB now · 24.0MiB peak  │
+ │ ● load_orders                 run │  │                                                                                                           │
+ │ reporting                   0r·0q │  │      PIPELINE     LATEST   Q  R  CPU    MEM      ELAPSED  LAST   AVG                                      │
+ │ ○ monthly                         │  │   ○  extract      queued   1  0  0.0%   0B       -        -      -                                        │
+ │ solo                        0r·0q │  │   ○  hello_iris   -        0  0  0.0%   0B       -        -      -                                        │
+ │ ○ solo                            │  │   ○  load_orders  running  0  1  51.0%  24.0MiB  2m14s    1m34s  2m18s                                    │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │ LANE · ingest       last 14:31:07 │  │                                                                                                           │
+ │ demo.orders                 +1187 │  │                                                                                                           │
+ │ CPU               ░▒▓▓▓     51.0% │  │                                                                                                           │
+ │ MEM               ░████   24.0MiB │  └───────────────────────────────────────────────────────────────────────────────────────────────────────────┘

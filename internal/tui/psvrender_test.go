@@ -94,6 +94,13 @@ func TestPsFrameGoldens(t *testing.T) {
 			golden.Assert(t, []byte(framePlain(m, 150, 40)), "testdata/psv_table_150x40.txt")
 		})
 
+		t.Run("lane shape 150x40", func(t *testing.T) {
+			m := psvSeeded(target)
+			m.selectLane("ingest")
+			m.selPipeline = "" // a lane row: the pane charts the lane, not a member
+			golden.Assert(t, []byte(framePlain(m, 150, 40)), "testdata/psv_lane_150x40.txt")
+		})
+
 		t.Run("catalog filter typed 150x40", func(t *testing.T) {
 			m := psvSeeded(target)
 			m.update(key('/'))

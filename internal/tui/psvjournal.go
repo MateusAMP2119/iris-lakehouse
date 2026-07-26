@@ -218,6 +218,14 @@ func (j *psJournal) tableTotals(name string) (rows, maxID, undoOpen, undoPromote
 	return rows, maxID, undoOpen, undoPromoted
 }
 
+// rateOf is one table's per-poll row-delta history (nil when unobserved).
+func (j *psJournal) rateOf(name string) []float64 {
+	if j == nil {
+		return nil
+	}
+	return j.Rate[name]
+}
+
 // runWrote sums one run's captured writes across tables.
 func (j *psJournal) runWrote(runID string) int64 {
 	if j == nil {

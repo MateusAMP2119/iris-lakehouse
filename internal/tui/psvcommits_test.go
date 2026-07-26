@@ -55,21 +55,21 @@ func TestDeriveCommits(t *testing.T) {
 				acc:   map[string]psCommitMark{},
 				delta: []api.JournalActivityGroup{group("", 1187)},
 				stamp: "14:31:07", seq: 3,
-				want:  map[string]psCommitMark{},
+				want: map[string]psCommitMark{},
 			},
 			{
 				name:  "a rowless group is not a commit",
 				acc:   map[string]psCommitMark{},
 				delta: []api.JournalActivityGroup{group("load_orders", 0)},
 				stamp: "14:31:07", seq: 3,
-				want:  map[string]psCommitMark{},
+				want: map[string]psCommitMark{},
 			},
 			{
 				name:  "a stale replay never rewinds a newer mark",
 				acc:   map[string]psCommitMark{"load_orders": {Stamp: "00:01:12", Seq: 9}},
 				delta: []api.JournalActivityGroup{group("load_orders", 1187)},
 				stamp: "23:59:58", seq: 8, // the wall clock wrapped; the ordinal did not
-				want:  map[string]psCommitMark{"load_orders": {Stamp: "00:01:12", Seq: 9}},
+				want: map[string]psCommitMark{"load_orders": {Stamp: "00:01:12", Seq: 9}},
 			},
 		}
 

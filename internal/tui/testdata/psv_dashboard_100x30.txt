@@ -1,30 +1,30 @@
  │ [IRIS]   dev   LEADER  up 2h13m  pid 42   CPU          ░░░░░   3.2%  MEM  126.0MiB  1r  1q  0✖ │
 
- │ [CATALOG]              │  ┌─ extract · lane ingest ────────────────────────────────────────────┐
- │ / type to filter       │  │ run 12 · queued                                   1 runs recorded  │
- │ ing1r·1q · 3 pipelines │  │                                                                    │
- │ ● extract           1q │  │ CPU                                                      0.0% now  │
- │ ○ hello_iris           │  │ MEM                                                        0B now  │
- │ ● load_orders      run │  │ TIME  no timed run recorded yet                                    │
- │ reporting        0r·0q │  │                                                                    │
- │ ○ monthly              │  │ TABLE no captured writes yet                                       │
- │ solo             0r·0q │  │                                                                    │
- │ ○ solo                 │  │   RUN  WROTE  STATE   ELAPSED  EXIT  CPU  MEM                      │
- │                        │  │   12   -      queued  -        -     -    -                        │
- │                        │  │                                                                    │
- │                        │  │                                                                    │
- │                        │  │                                                                    │
- │                        │  │                                                                    │
- │                        │  │                                                                    │
- │                        │  │                                                                    │
- │                        │  │                                                                    │
- │                        │  │                                                                    │
- │                        │  │                                                                    │
- │                        │  │                                                                    │
- │                        │  │                                                                    │
- │                        │  │                                                                    │
- │                        │  │                                                                    │
- │ LANE · inlast 14:31:07 │  │                                                                    │
- │ demo.orders      +1187 │  │                                                                    │
- │ CPU    ░▒▓▓▓     51.0% │  │                                                                    │
+ │ [CATALOG]              │  ┌─ PIPELINE · extract ───────────────────────────────────────────────┐
+ │ / type to filter       │  │ OUTPUT                 │ ROWS / POLL · LIVE                        │
+ │ ing1r·1q · 3 pipelines │  │ no captured writes yet │ no captured writes observed yet           │
+ │ ● extract           1q │  │                        │                                           │
+ │ ○ hello_iris           │  │ LOAD                   │   RUN  WROTE  OP  STATE   ELAPSED         │
+ │ ● load_orders      run │  │ cpu               0.0% │   12   -      -   queued  -               │
+ │ reporting        0r·0q │  │ mem                 0B │                                           │
+ │ ○ monthly              │  │ time  no timed run yet │                                           │
+ │ solo             0r·0q │  │                        │                                           │
+ │ ○ solo                 │  │ SCHEMA                 │                                           │
+ │                        │  │ shape not on the wire  │                                           │
+ │                        │  │                        │                                           │
+ │                        │  │ RETENTION              │                                           │
+ │                        │  │ oldest kept     run 12 │                                           │
+ │                        │  │ runs kept            1 │                                           │
+ │                        │  │                        │                                           │
+ │                        │  │                        │                                           │
+ │                        │  │                        │                                           │
+ │                        │  │                        │                                           │
+ │                        │  │                        │                                           │
+ │                        │  │                        │                                           │
+ │                        │  │                        │                                           │
+ │                        │  │                        │                                           │
+ │                        │  │                        │                                           │
+ │ LANE · inlast 14:31:07 │  │                        │                                           │
+ │ demo.orders      +1187 │  │                        │                                           │
+ │ CPU    ░▒▓▓▓     51.0% │  │                        │                                           │
  │ MEM    ░████   24.0MiB │  └────────────────────────────────────────── a all history · c cancel ┘

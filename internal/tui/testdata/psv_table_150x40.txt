@@ -1,40 +1,40 @@
  │ [IRIS LAKEHOUSE]   dev   LEADER  up 2h13m  pid 42                           CPU                          ░░░░░   3.2%  MEM  126.0MiB  1r  1q  0✖ │
 
  │ [CATALOG]                         │  ┌─ TABLE · demo.orders ─────────────────────────────────────────────────────────────────────────────────────┐
- │ / type to filter                  │  │ demo.orders · 2391 rows captured · writer load_orders · lane ingest                       watermark 8110  │
- │ ingest        1r·1q · 3 pipelines │  │                                                                                                           │
- │ ● extract                      1q │  │ RATE                                                                  █  2391 rows this poll · 2391 peak  │
- │ ○ hello_iris                      │  │ OPS   insert 2391 · update 0 · delete 0                                   undo open 1187 / promoted 1204  │
- │ ● load_orders                 run │  │                                                                                                           │
- │ reporting                   0r·0q │  │   RUN  WROTE  OP   STATE      ELAPSED  JOURNAL RANGE                                                      │
- │ ○ monthly                         │  │   14   +1187  ins  running    2m14s    7921 → 8110                                                        │
- │ solo                        0r·0q │  │   9    +1204  ins  succeeded  3m2s     6800 → 7920                                                        │
- │ ○ solo                            │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │ LANE · ingest       last 14:31:07 │  │                                                                                                           │
- │ demo.orders                 +1187 │  │                                                                                                           │
- │ CPU               ░▒▓▓▓     51.0% │  │                                                                                                           │
+ │ / type to filter                  │  │ OUTPUT                         │ ROWS / POLL · LIVE                   2391 now · 2391 peak · 2391 in view │
+ │ ingest        1r·1q · 3 pipelines │  │ table              demo.orders │                                                                        █ │
+ │ ● extract                      1q │  │ rows captured             2391 │                                                                          │
+ │ ○ hello_iris                      │  │ watermark                 8110 │   RUN  WROTE  OP   STATE      ELAPSED  JOURNAL      TRIGGER              │
+ │ ● load_orders                 run │  │                                │   14   +1187  ins  running    2m14s    7921 → 8110  -                    │
+ │ reporting                   0r·0q │  │ LOAD                           │   9    +1204  ins  succeeded  3m2s     6800 → 7920  -                    │
+ │ ○ monthly                         │  │ cpu            ░▒▓▓▓     51.0% │                                                                          │
+ │ solo                        0r·0q │  │ mem            ░████   24.0MiB │                                                                          │
+ │ ○ solo                            │  │ time █▅               3m2s max │                                                                          │
+ │                                   │  │                                │                                                                          │
+ │                                   │  │ SCHEMA                         │                                                                          │
+ │                                   │  │ shape not on the wire          │                                                                          │
+ │                                   │  │                                │                                                                          │
+ │                                   │  │ OPS                            │                                                                          │
+ │                                   │  │ undo open                 1187 │                                                                          │
+ │                                   │  │ promoted                  1204 │                                                                          │
+ │                                   │  │ ins 2391                       │                                                                          │
+ │                                   │  │                                │                                                                          │
+ │                                   │  │ RETENTION                      │                                                                          │
+ │                                   │  │ oldest kept              run 6 │                                                                          │
+ │                                   │  │ runs kept                    3 │                                                                          │
+ │                                   │  │                                │                                                                          │
+ │                                   │  │                                │                                                                          │
+ │                                   │  │                                │                                                                          │
+ │                                   │  │                                │                                                                          │
+ │                                   │  │                                │                                                                          │
+ │                                   │  │                                │                                                                          │
+ │                                   │  │                                │                                                                          │
+ │                                   │  │                                │                                                                          │
+ │                                   │  │                                │                                                                          │
+ │                                   │  │                                │                                                                          │
+ │                                   │  │                                │                                                                          │
+ │                                   │  │                                │                                                                          │
+ │ LANE · ingest       last 14:31:07 │  │                                │                                                                          │
+ │ demo.orders                 +1187 │  │                                │                                                                          │
+ │ CPU               ░▒▓▓▓     51.0% │  │                                │                                                                          │
  │ MEM               ░████   24.0MiB │  └───────────────────────────────────────────────── a all history · c cancel · :data provenance for the walk ┘

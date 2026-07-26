@@ -1,0 +1,494 @@
+package tui
+
+// The detail pane's two-column shape: a narrow spec column on the left
+// (OUTPUT, SCHEMA, OPS, RETENTION) and the wide column on the right carrying
+// the write-rate bar over the run table. Both the pipeline shape and the table
+// shape are this layout -- they differ only in which table the spec column
+// reads and which runs the wide column lists, so the blocks are shared and the
+// two entry points are thin. A pane too narrow to hold both columns stacks
+// them instead of clipping either.
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
+)
+
+const (
+	// psSpecMinW floors the spec column: a clipped table name plus its label.
+	psSpecMinW = 22
+	// psSpecMaxW ceilings it: the widest label/value pair, whole.
+	psSpecMaxW = 30
+	// psRunsCoreW is the run table's irreducible width: RUN WROTE OP STATE
+	// ELAPSED. Below it the columns stack rather than split.
+	psRunsCoreW = 37
+	// psRunsCauseW is the width that also affords TRIGGER.
+	psRunsCauseW = 50
+	// psRunsFullW is the width that affords every column.
+	psRunsFullW = 62
+	// psSpecGap parts two spec blocks.
+	psSpecGap = 1
+)
+
+// paneSplit is the detail pane's resolved column geometry. When split is
+// false the columns stack: lx/lw describe the single column and ruleX is -1.
+type paneSplit struct {
+	lx, lw int // spec column
+	rx, rw int // wide column
+	ruleX  int // the vertical rule, -1 when stacked
+	split  bool
+}
+
+// splitPane resolves the two-column geometry over an interior of width iw
+// starting at column ix. The spec column takes two sevenths, clamped to its
+// floor and ceiling (the rail's clamp idiom); the wide column takes the rest
+// less the rule and its two spaces. Too little left for the run table's core
+// columns and the pane stacks instead.
+func splitPane(ix, iw int) paneSplit {
+	lw := min(max(iw*2/7, psSpecMinW), psSpecMaxW)
+	rw := iw - lw - 3
+	if lw+3 >= iw || rw < psRunsCoreW {
+		return paneSplit{lx: ix, lw: iw, rx: ix, rw: iw, ruleX: -1}
+	}
+	return paneSplit{lx: ix, lw: lw, rx: ix + lw + 3, rw: rw, ruleX: ix + lw + 1, split: true}
+}
+
+// runsTier is how many run-table columns a wide column of width w affords:
+// the full set, the set less JOURNAL, or the core five. Columns shed whole --
+// a clipped header reads as a bug, a missing one as a narrow terminal.
+func runsTier(w int) int {
+	switch {
+	case w >= psRunsFullW:
+		return 2
+	case w >= psRunsCauseW:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// vrule paints an h-cell vertical divider at (x, y) in border chrome -- the
+// vertical half of rule.
+func (b *screenBuf) vrule(x, y, h int) {
+	for yy := y; yy < y+h; yy++ {
+		b.text(x, yy, ansiBorder, "│")
+	}
+}
+
+// specHead paints one spec section heading: the title dim uppercase, with an
+// optional dim right-aligned count beside it.
+func specHead(b *screenBuf, x, y, w int, title, right string) {
+	b.text(x, y, ansiDim, clipCells(title, w))
+	if right != "" && len([]rune(title))+len([]rune(right))+2 <= w {
+		b.text(x+w-len([]rune(right)), y, ansiDim, right)
+	}
+}
+
+// specRow paints one label/value row: the label left dim, the value right
+// aligned in a valW column so a value that grows a character never shifts its
+// neighbours (loadValW's rule, applied to text).
+func specRow(b *screenBuf, x, y, w, valW int, label, val, valSGR string) {
+	b.text(x, y, ansiDim, clipCells(label, w-valW-1))
+	if len([]rune(val)) > valW {
+		val = clipCells(val, valW)
+	}
+	b.text(x+w-len([]rune(val)), y, valSGR, val)
+}
+
+// specStripRow paints one labeled heat-strip row inside the spec column: the
+// label left dim, the bar between, the reading right-aligned in a frozen valW
+// column so the bar holds still as the numbers move (statsStripRow's rule at
+// the spec column's tighter margins).
+func specStripRow(b *screenBuf, x, y, w, valW int, label string, samples func(int) []float64, val string) {
+	b.text(x, y, ansiDim, label)
+	stripX := x + len([]rune(label)) + 1
+	stripW := x + w - valW - 1 - stripX
+	if stripW >= 6 {
+		b.renderHeatStrip(stripX, y, stripW, samples(stripW))
+	}
+	b.text(x+w-len([]rune(val)), y, "", val)
+}
+
+// specScope is what the spec column describes: the table its blocks read, the
+// pipeline that owns it (empty on the table shape), and the runs the
+// retention block counts.
+type specScope struct {
+	table    string // "schema.table"; empty when nothing has been written yet
+	pipeline string
+	runs     []api.PsRun
+}
+
+// pipelineSpecScope scopes the spec column to the selected pipeline: its
+// busiest written table and its whole recorded run history.
+func pipelineSpecScope(m *psModel) specScope {
+	sc := specScope{pipeline: m.selPipeline, runs: deriveRuns(m.snap, m.selPipeline, true)}
+	if tables := pipelineTables(m.snap, m.selPipeline); len(tables) > 0 {
+		sc.table = tables[0].name
+	}
+	return sc
+}
+
+// tableSpecScope scopes the spec column to the selected table and the runs of
+// the pipeline that writes it.
+func tableSpecScope(m *psModel) specScope {
+	writer := m.snap.Journal.tableWriter(m.selTable)
+	return specScope{table: m.selTable, pipeline: writer, runs: deriveRuns(m.snap, writer, true)}
+}
+
+// renderSpecOutput paints the OUTPUT block: the written table, the rows the
+// journal captured into it, and its watermark. It never sheds -- a detail
+// pane that cannot name its table is not a detail pane.
+func renderSpecOutput(b *screenBuf, m *psModel, sc specScope, x, y, w int) int {
+	specHead(b, x, y, w, "OUTPUT", "")
+	if sc.table == "" {
+		b.text(x, y+1, ansiDim, clipCells("no captured writes yet", w))
+		return 2
+	}
+	rows, watermark, _, _ := m.snap.Journal.tableTotals(sc.table)
+	specRow(b, x, y+1, w, len([]rune(sc.table)), "table", sc.table, "")
+	specRow(b, x, y+2, w, 10, "rows captured", fmt.Sprintf("%d", rows), "")
+	specRow(b, x, y+3, w, 10, "watermark", fmt.Sprintf("%d", watermark), ansiDim)
+	// Clicking the table name is the doorway to the TABLE shape.
+	m.addClick(psClick{x: x, y: y + 1, w: w, kind: psClickRailTable, lane: m.selLane, name: sc.table})
+	return 4
+}
+
+// renderSpecLoad paints the LOAD block: the pipeline's CPU and resident
+// strips and, when the engine has timed a run, its elapsed levels. A table
+// owns no process, so the block renders only under the pipeline shape.
+func renderSpecLoad(b *screenBuf, m *psModel, sc specScope, x, y, w, maxH int) int {
+	if maxH < 3 || sc.pipeline == "" {
+		return 0
+	}
+	key := "p:" + sc.pipeline
+	load := m.scopeLoad(nil)
+	for _, p := range derivePipelines(m.snap, m.selLane) {
+		if p.name == sc.pipeline {
+			load = m.scopeLoad(p.load)
+		}
+	}
+	cpuVal, memVal := cpuText(load), memText(load)
+	valW := loadValW(cpuVal, memVal)
+	specHead(b, x, y, w, "LOAD", "")
+	specStripRow(b, x, y+1, w, valW, "cpu", func(n int) []float64 { return m.stripCPU(key, n) }, cpuVal)
+	specStripRow(b, x, y+2, w, valW, "mem", func(n int) []float64 { return m.stripMem(key, n) }, memVal)
+	if maxH < 4 {
+		return 3
+	}
+	pt, hasTimes := pipeTimes(m.snap)[sc.pipeline]
+	el := pipeElapsed(m.snap, sc.pipeline)
+	switch {
+	case hasTimes:
+		// The engine quantizes elapsed into levels, so this bar is glyphs the
+		// daemon chose, not a strip this view scaled -- hence no sampler.
+		val := pt.Max + " max"
+		b.text(x, y+3, ansiDim, "time")
+		b.text(x+w-len([]rune(val)), y+3, "", val)
+		b.text(x+5, y+3, ansiCyan, timeStripGlyphs(pt.Levels, w-6-len([]rune(val))))
+	case el != "":
+		specRow(b, x, y+3, w, 10, "time", el+" now", "")
+	default:
+		b.text(x, y+3, ansiDim, clipCells("time  no timed run yet", w))
+	}
+	return 4
+}
+
+// renderSpecSchema paints the SCHEMA block. The declared shape is not on the
+// wire yet, so the block states that rather than omitting the rows and
+// letting everything below it move once the route lands.
+func renderSpecSchema(b *screenBuf, _ *psModel, _ specScope, x, y, w, maxH int) int {
+	if maxH < 2 {
+		return 0
+	}
+	specHead(b, x, y, w, "SCHEMA", "")
+	b.text(x, y+1, ansiDim, clipCells("shape not on the wire", w))
+	return 2
+}
+
+// renderSpecOps paints the OPS block: the undo ledger and the per-op split of
+// the captured writes.
+func renderSpecOps(b *screenBuf, m *psModel, sc specScope, x, y, w, maxH int) int {
+	if maxH < 2 || sc.table == "" {
+		return 0
+	}
+	_, _, undoOpen, undoPromoted := m.snap.Journal.tableTotals(sc.table)
+	specHead(b, x, y, w, "OPS", "")
+	specRow(b, x, y+1, w, 10, "undo open", fmt.Sprintf("%d", undoOpen), "")
+	if maxH < 3 {
+		return 2
+	}
+	specRow(b, x, y+2, w, 10, "promoted", fmt.Sprintf("%d", undoPromoted), ansiDim)
+	if maxH < 4 {
+		return 3
+	}
+	b.text(x, y+3, ansiDim, clipCells(compactOps(m.snap.Journal, sc.table), w))
+	return 4
+}
+
+// compactOps is the per-op write split abbreviated for the spec column, ops
+// that wrote nothing left out -- the full words never fit here, and a line
+// clipped mid-word reads as a bug.
+func compactOps(j *psJournal, name string) string {
+	var parts []string
+	for _, op := range []string{"insert", "update", "delete"} {
+		var rows int64
+		for _, k := range j.tableKeys() {
+			t := j.Tables[k]
+			if t.Schema+"."+t.Table == name && t.Op == op {
+				rows += t.Rows
+			}
+		}
+		if rows > 0 {
+			parts = append(parts, fmt.Sprintf("%s %d", shortOp(op), rows))
+		}
+	}
+	if len(parts) == 0 {
+		return "no writes"
+	}
+	return strings.Join(parts, " · ")
+}
+
+// renderSpecRetention paints the RETENTION block. Retention in iris is
+// count-based and clockless, so the floor is a run id and the ledger is a
+// count -- never a timestamp the engine does not hold.
+func renderSpecRetention(b *screenBuf, _ *psModel, sc specScope, x, y, w, maxH int) int {
+	if maxH < 2 || len(sc.runs) == 0 {
+		return 0
+	}
+	oldest := sc.runs[len(sc.runs)-1].ID
+	specHead(b, x, y, w, "RETENTION", "")
+	specRow(b, x, y+1, w, 10, "oldest kept", "run "+oldest, "")
+	if maxH < 3 {
+		return 2
+	}
+	specRow(b, x, y+2, w, 10, "runs kept", fmt.Sprintf("%d", len(sc.runs)), ansiDim)
+	return 3
+}
+
+// renderSpecColumn stacks the four spec blocks down the left column within
+// the height budget, parted by one blank row. Blocks shed from the bottom:
+// OUTPUT always renders, RETENTION is the first to go.
+func renderSpecColumn(b *screenBuf, m *psModel, sc specScope, x, y, w, h int) {
+	row := renderSpecOutput(b, m, sc, x, y, w)
+	blocks := []func(int, int) int{
+		func(yy, budget int) int { return renderSpecLoad(b, m, sc, x, yy, w, budget) },
+		func(yy, budget int) int { return renderSpecSchema(b, m, sc, x, yy, w, budget) },
+		func(yy, budget int) int { return renderSpecOps(b, m, sc, x, yy, w, budget) },
+		func(yy, budget int) int { return renderSpecRetention(b, m, sc, x, yy, w, budget) },
+	}
+	for _, block := range blocks {
+		budget := h - row - psSpecGap
+		if budget < 2 {
+			return
+		}
+		if n := block(y+row+psSpecGap, budget); n > 0 {
+			row += psSpecGap + n
+		}
+	}
+}
+
+// renderRowsBar paints the wide column's head: the write-rate heading with
+// its readings right-aligned, and the rate bar. The source is the poller's
+// per-poll row deltas -- the only rows-over-time the engine offers today, so
+// the heading says POLL and LIVE rather than dressing it as an hourly grid.
+func renderRowsBar(b *screenBuf, m *psModel, table string, x, y, w int) int {
+	head := "ROWS / POLL · LIVE"
+	rate := m.snap.Journal.rateOf(table)
+	var latest, peak, total float64
+	for _, v := range rate {
+		if v > peak {
+			peak = v
+		}
+		total += v
+	}
+	if len(rate) > 0 {
+		latest = rate[len(rate)-1]
+	}
+	if len(rate) == 0 || peak == 0 {
+		// Nothing observed: the heading says so once, with no readings to
+		// dress the absence as three zeroes.
+		b.text(x, y, ansiDim, clipCells(head, w))
+		b.text(x, y+1, ansiDim, clipCells("no captured writes observed yet", w))
+		return 2
+	}
+	right := fmt.Sprintf("%d now · %d peak · %d in view", int64(latest), int64(peak), int64(total))
+	b.text(x, y, ansiDim, clipCells(head, w))
+	if len([]rune(head))+len([]rune(right))+2 <= w {
+		b.text(x+w-len([]rune(right)), y, ansiDim, right)
+	}
+	scaled := make([]float64, len(rate))
+	for i, v := range rate {
+		scaled[i] = v / peak * 100
+	}
+	b.renderHeatStrip(x, y+1, w, fitSamples(scaled, w))
+	return 2
+}
+
+// detailRun is one row of the detail pane's run table: the run's identity and
+// state from the payload, its captured writes from the journal aggregate.
+type detailRun struct {
+	id      string
+	wrote   int64
+	hasRows bool
+	op      string
+	state   string
+	elapsed string
+	minID   int64
+	maxID   int64
+	// cause is why the run was minted, the TRIGGER column. runs.cause is not
+	// on the wire yet, so it reads as absence rather than a guess.
+	cause string
+}
+
+// pipelineDetailRuns lists the selected pipeline's runs, newest first, each
+// carrying the writes the journal recorded for it.
+func pipelineDetailRuns(m *psModel, sc specScope) []detailRun {
+	j := m.snap.Journal
+	runs := deriveRuns(m.snap, sc.pipeline, m.showAll)
+	out := make([]detailRun, 0, len(runs))
+	for _, r := range runs {
+		lo, hi := j.runRange(r.ID)
+		d := detailRun{
+			id: r.ID, state: r.State, elapsed: runSpan(r),
+			minID: lo, maxID: hi,
+		}
+		if rows := j.runWrote(r.ID); rows != 0 {
+			d.wrote, d.hasRows = rows, true
+		}
+		if w, ok := j.ByRun[r.ID][sc.table]; ok {
+			d.op = shortOp(w.Op)
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+// tableDetailRuns lists the runs that wrote the selected table, newest write
+// first, each scoped to its writes into that one table.
+func tableDetailRuns(m *psModel, sc specScope) []detailRun {
+	j := m.snap.Journal
+	var out []detailRun
+	for id, per := range j.ByRun {
+		w, ok := per[sc.table]
+		if !ok {
+			continue
+		}
+		d := detailRun{
+			id: id, wrote: signedRows(w), hasRows: true, op: shortOp(w.Op),
+			minID: w.MinID, maxID: w.MaxID, state: "-",
+		}
+		if run, ok := findRun(m.snap, id); ok {
+			d.state, d.elapsed = run.State, runSpan(run)
+		}
+		out = append(out, d)
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].maxID > out[b].maxID })
+	return out
+}
+
+// runWriteColumns builds the detail pane's run table for a wide column of the
+// given tier: the core five always, plus TRIGGER, plus JOURNAL.
+func runWriteColumns(rows []detailRun, tier int) []psColumn {
+	n := len(rows)
+	cols := []psColumn{
+		psCol("RUN", n, func(i int) string { return rows[i].id }),
+		psCol("WROTE", n, func(i int) string {
+			if !rows[i].hasRows {
+				return "-"
+			}
+			return fmt.Sprintf("%+d", rows[i].wrote)
+		}),
+		psCol("OP", n, func(i int) string { return orDash(rows[i].op) }),
+		psColStyled("STATE", n, func(i int) (string, string) {
+			if rows[i].state == "dead_lettered" {
+				return "✖ dead", ansiRed
+			}
+			return orDash(rows[i].state), psStateSGR(rows[i].state)
+		}),
+		psCol("ELAPSED", n, func(i int) string { return orDash(rows[i].elapsed) }),
+	}
+	if tier >= 2 {
+		cols = append(cols, psCol("JOURNAL", n, func(i int) string {
+			if rows[i].maxID == 0 {
+				return "-"
+			}
+			return fmt.Sprintf("%d → %d", rows[i].minID, rows[i].maxID)
+		}))
+	}
+	if tier >= 1 {
+		cols = append(cols, psCol("TRIGGER", n, func(i int) string { return orDash(rows[i].cause) }))
+	}
+	return cols
+}
+
+// renderRunsTable blits the run table into the wide column and registers one
+// clickable region per visible row.
+func renderRunsTable(b *screenBuf, m *psModel, rows []detailRun, x, y, w, h int, colorless bool) {
+	if h < 2 {
+		return
+	}
+	if len(rows) == 0 {
+		hint := "no live runs · press a for full history"
+		if m.showAll {
+			hint = "no runs in history"
+		}
+		b.text(x, y, ansiDim, clipCells(hint, w))
+		return
+	}
+	keys := make([]string, len(rows))
+	for i, r := range rows {
+		keys[i] = r.id
+	}
+	sel := selIndex(m.tblRun, keys)
+	sub := newScreenBuf(w, h)
+	renderTable(sub, 0, h, runWriteColumns(rows, runsTier(w)), sel, colorless)
+	b.blit(sub, x, y)
+	visible := h - 1
+	top := 0
+	if sel >= visible {
+		top = sel - visible + 1
+	}
+	for r := top; r < len(keys) && r-top < visible; r++ {
+		m.addClick(psClick{x: x - 1, y: y + 1 + (r - top), w: w + 2, kind: psClickTableRow, name: keys[r]})
+	}
+}
+
+// renderDetailPane paints the shared two-column body inside an already-drawn
+// box: the spec column, the rule, the rate bar, and the run table. A pane too
+// narrow to split stacks the spec blocks above the table instead.
+func renderDetailPane(b *screenBuf, m *psModel, sc specScope, rows []detailRun, x, y, w, h int, colorless bool) {
+	ix, iy := x+2, y+1
+	iw, ih := w-4, h-2
+	p := splitPane(ix, iw)
+
+	if !p.split {
+		// Stacked: the spec column takes what it needs off the top, the run
+		// table takes the rest. The rate bar sheds -- a column this narrow
+		// cannot carry a bar and a table both.
+		specH := min(ih/2, 9)
+		renderSpecColumn(b, m, sc, ix, iy, iw, specH)
+		renderRunsTable(b, m, rows, ix, iy+specH+1, iw, ih-specH-1, colorless)
+		return
+	}
+
+	b.vrule(p.ruleX, iy, ih)
+	renderSpecColumn(b, m, sc, p.lx, iy, p.lw, ih)
+
+	barH := 0
+	if ih >= 10 {
+		barH = renderRowsBar(b, m, sc.table, p.rx, iy, p.rw) + 1
+	}
+	renderRunsTable(b, m, rows, p.rx, iy+barH, p.rw, ih-barH, colorless)
+}
+
+// detailTitle names the pane's subject, crossed when its newest run
+// dead-lettered.
+func detailTitle(kind, name string, runs []api.PsRun) string {
+	title := kind + " · " + name
+	if len(runs) > 0 && runs[0].State == "dead_lettered" {
+		title = "✖ " + title
+	}
+	return title
+}

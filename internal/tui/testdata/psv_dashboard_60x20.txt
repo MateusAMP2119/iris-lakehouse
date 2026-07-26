@@ -1,17 +1,17 @@
  │ [IRIS]   dev   LEADER  up 2h13m  pid 42                │
 
- ┌─ extract · lane ingest ────────────────────────────────┐
- │ run 12 · queued                       1 runs recorded  │
+ ┌─ PIPELINE · extract ───────────────────────────────────┐
+ │ OUTPUT                                                 │
+ │ no captured writes yet                                 │
  │                                                        │
- │ CPU                                          0.0% now  │
- │ MEM                                            0B now  │
- │ TIME  no timed run recorded yet                        │
+ │ LOAD                                                   │
+ │ cpu                                               0.0% │
+ │ mem                                                 0B │
+ │ time  no timed run yet                                 │
  │                                                        │
- │ TABLE no captured writes yet                           │
  │                                                        │
- │   RUN  WROTE  STATE   ELAPSED  EXIT  CPU  MEM          │
- │   12   -      queued  -        -     -    -            │
- │                                                        │
+ │   RUN  WROTE  OP  STATE   ELAPSED  TRIGGER             │
+ │   12   -      -   queued  -        -                   │
  │                                                        │
  │                                                        │
  │                                                        │

@@ -418,120 +418,24 @@ func latestRunDelta(s Snapshot, table string) int64 {
 	return best.Rows
 }
 
-// renderTableStats is the statistics pane's table shape (#238 C1d): writer,
-// watermark, write rate, the ops split, and the runs that wrote it — the
-// provenance walk's on-frame doorway.
+// renderTableStats is the detail pane's table shape: the two-column body
+// scoped to one written table -- its identity and undo ledger on the left,
+// the write rate over the runs that wrote it on the right. The provenance
+// walk's on-frame doorway.
 func renderTableStats(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
-	name := m.selTable
-	j := m.snap.Journal
-	borderSGR, titleSGR, title := paneChrome(m.pane == psPaneStats, colorless, "TABLE · "+name)
+	sc := tableSpecScope(m)
+	borderSGR, titleSGR, title := paneChrome(m.pane == psPaneStats, colorless, detailTitle("TABLE", m.selTable, sc.runs))
 	b.box(x, y, w, h, borderSGR, titleSGR, title)
 	m.addClick(psClick{x: x, y: y, w: w, h: h, kind: psClickPane, pane: psPaneStats})
 	if h < 6 {
 		return
 	}
 	bottomHint(b, x, y+h-1, w, "a all history · c cancel · :data provenance for the walk")
-	if j == nil {
-		b.text(x+3, y+2, ansiDim, clipCells("journal activity unavailable", w-6))
+	if m.snap.Journal == nil {
+		b.text(x+2, y+1, ansiDim, clipCells("journal activity unavailable", w-4))
 		return
 	}
-
-	rows, watermark, undoOpen, undoPromoted := j.tableTotals(name)
-	idLine := fmt.Sprintf("%s · %d rows captured · writer %s · lane %s", name, rows, orDash(j.tableWriter(name)), m.selLane)
-	wm := fmt.Sprintf("watermark %d", watermark)
-	leftW := w - 4
-	if len([]rune(idLine))+len([]rune(wm))+8 <= w {
-		b.text(x+w-3-len([]rune(wm)), y+1, ansiDim, wm)
-		leftW = w - 7 - len([]rune(wm))
-	}
-	b.text(x+2, y+1, "", clipCells(idLine, leftW))
-
-	// WRITE RATE: the per-poll delta history, percent-of-peak like MEM strips.
-	rate := j.Rate[name]
-	peak := 0.0
-	var latest float64
-	for _, v := range rate {
-		if v > peak {
-			peak = v
-		}
-	}
-	if len(rate) > 0 {
-		latest = rate[len(rate)-1]
-	}
-	scaled := make([]float64, len(rate))
-	for i, v := range rate {
-		if peak > 0 {
-			scaled[i] = v / peak * 100
-		}
-	}
-	rateVal := fmt.Sprintf("%d rows this poll · %d peak", int64(latest), int64(peak))
-	// A lone row with no sibling to line up against: its own width is the column.
-	statsStripRow(b, x, y+3, w, len([]rune(rateVal)), "RATE", func(int) []float64 { return scaled }, rateVal)
-
-	ops := opsSplit(j, name)
-	b.text(x+2, y+4, ansiDim, "OPS")
-	undo := fmt.Sprintf("undo open %d / promoted %d", undoOpen, undoPromoted)
-	b.text(x+8, y+4, "", clipCells(ops, w-14-len([]rune(undo))))
-	b.text(x+w-3-len([]rune(undo)), y+4, ansiDim, undo)
-
-	// The runs that wrote it, newest first: id, delta, op, span, state, range.
-	tblY := y + 6
-	tblH := y + h - 1 - tblY
-	if tblH < 2 {
-		return
-	}
-	type wrote struct {
-		id string
-		w  psRunWrites
-	}
-	var writers []wrote
-	for id, per := range j.ByRun {
-		if ww, ok := per[name]; ok {
-			writers = append(writers, wrote{id: id, w: ww})
-		}
-	}
-	sort.Slice(writers, func(a, b int) bool { return writers[a].w.MaxID > writers[b].w.MaxID })
-	n := len(writers)
-	cols := []psColumn{
-		psCol("RUN", n, func(i int) string { return writers[i].id }),
-		psCol("WROTE", n, func(i int) string { return fmt.Sprintf("%+d", signedRows(writers[i].w)) }),
-		psCol("OP", n, func(i int) string { return shortOp(writers[i].w.Op) }),
-		psColStyled("STATE", n, func(i int) (string, string) {
-			if run, ok := findRun(m.snap, writers[i].id); ok {
-				if run.State == "dead_lettered" {
-					return "✖ dead", ansiRed
-				}
-				return run.State, psStateSGR(run.State)
-			}
-			return "-", ansiDim
-		}),
-		psCol("ELAPSED", n, func(i int) string {
-			if run, ok := findRun(m.snap, writers[i].id); ok {
-				return orDash(runSpan(run))
-			}
-			return "-"
-		}),
-		psCol("JOURNAL RANGE", n, func(i int) string {
-			return fmt.Sprintf("%d → %d", writers[i].w.MinID, writers[i].w.MaxID)
-		}),
-	}
-	sel := -1
-	for i, ww := range writers {
-		if ww.id == m.tblRun {
-			sel = i
-		}
-	}
-	sub := newScreenBuf(w-4, tblH)
-	renderTable(sub, 0, sub.h, cols, sel, colorless)
-	b.blit(sub, x+2, tblY)
-	visible := tblH - 1
-	top := 0
-	if sel >= visible {
-		top = sel - visible + 1
-	}
-	for r := top; r < n && r-top < visible; r++ {
-		m.addClick(psClick{x: x + 1, y: tblY + 1 + (r - top), w: w - 2, kind: psClickTableRow, name: writers[r].id})
-	}
+	renderDetailPane(b, m, sc, tableDetailRuns(m, sc), x, y, w, h, colorless)
 }
 
 // pipelineTableRow is one table row of the pipeline statistics pane.
@@ -616,149 +520,19 @@ func opsSplit(j *psJournal, name string) string {
 	return strings.Join(parts, " · ")
 }
 
-// renderPipelineStats is the statistics pane's pipeline shape: run identity,
-// load strips, the TIME and TABLE placeholders, the run history, and the NOW
-// line — the frame's one live raw-text row.
+// renderPipelineStats is the detail pane's pipeline shape: the two-column
+// body scoped to the selected pipeline -- its output table, undo ledger and
+// retention on the left, the write rate over its run history on the right.
 func renderPipelineStats(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
-	name := m.selPipeline
-	title := name + " · lane " + m.selLane
-	runs := deriveRuns(m.snap, name, true)
-	if len(runs) > 0 && runs[0].State == "dead_lettered" {
-		title = "✖ " + title
-	}
-	borderSGR, titleSGR, title := paneChrome(m.pane == psPaneStats, colorless, title)
+	sc := pipelineSpecScope(m)
+	borderSGR, titleSGR, title := paneChrome(m.pane == psPaneStats, colorless, detailTitle("PIPELINE", m.selPipeline, sc.runs))
 	b.box(x, y, w, h, borderSGR, titleSGR, title)
 	m.addClick(psClick{x: x, y: y, w: w, h: h, kind: psClickPane, pane: psPaneStats})
 	if h < 6 {
 		return
 	}
 	bottomHint(b, x, y+h-1, w, "a all history · c cancel")
-
-	// Run identity: the newest run, its state, and the recorded count.
-	idLine := "no runs recorded"
-	if len(runs) > 0 {
-		r := runs[0]
-		idLine = "run " + r.ID + " · " + r.State
-		if r.State == "running" && r.Elapsed != "" {
-			idLine += " " + r.Elapsed
-		}
-		if r.State != "running" && r.State != "queued" {
-			idLine = "last " + idLine
-			if r.ExitCode != nil {
-				idLine += fmt.Sprintf(" · exit %d", *r.ExitCode)
-			}
-			if r.Duration != "" {
-				idLine += " · " + r.Duration
-			}
-		}
-	}
-	count := fmt.Sprintf("%d runs recorded", len(runs))
-	leftW := w - 4
-	if len([]rune(idLine))+len([]rune(count))+8 <= w {
-		b.text(x+w-3-len([]rune(count)), y+1, ansiDim, count)
-		leftW = w - 7 - len([]rune(count))
-	}
-	b.text(x+2, y+1, "", clipCells(idLine, leftW))
-
-	// Load strips: CPU, MEM, and the TIME row that waits on issue #200.
-	key := "p:" + name
-	load := m.scopeLoad(nil)
-	for _, p := range derivePipelines(m.snap, m.selLane) {
-		if p.name == name {
-			load = m.scopeLoad(p.load)
-		}
-	}
-	cpuNow, memNow := cpuText(load), memText(load)
-	memVal := memNow + " now"
-	if ring := m.stripRing(key); ring != nil {
-		if peak := ring.memPeak(); peak > 0 {
-			memVal += " · " + memBytes(peak) + " peak"
-		}
-	}
-	cpuVal := cpuNow + " now"
-	valW := loadValW(cpuVal, memVal)
-	statsStripRow(b, x, y+3, w, valW, "CPU", func(n int) []float64 { return m.stripCPU(key, n) }, cpuVal)
-	statsStripRow(b, x, y+4, w, valW, "MEM", func(n int) []float64 { return m.stripMem(key, n) }, memVal)
-	b.text(x+2, y+5, ansiDim, "TIME")
-	pt, hasTimes := pipeTimes(m.snap)[name]
-	timeVal := ""
-	if el := pipeElapsed(m.snap, name); el != "" {
-		timeVal = el + " now"
-	}
-	if hasTimes {
-		for _, part := range []string{pt.Avg + " avg", pt.Max + " max"} {
-			if timeVal != "" {
-				timeVal += " · "
-			}
-			timeVal += part
-		}
-	}
-	switch {
-	case hasTimes:
-		stripX := x + 8
-		stripW := x + w - 3 - len([]rune(timeVal)) - 2 - stripX
-		if stripW >= 8 {
-			b.text(stripX, y+5, ansiCyan, timeStripGlyphs(pt.Levels, stripW))
-			b.text(x+w-3-len([]rune(timeVal)), y+5, "", timeVal)
-		}
-	case timeVal != "":
-		b.text(x+8, y+5, "", timeVal)
-	default:
-		b.text(x+8, y+5, ansiDim, clipCells("no timed run recorded yet", w-10))
-	}
-
-	// TABLE: the tables this pipeline writes, from the journal aggregate.
-	tableRows := pipelineTables(m.snap, name)
-	if len(tableRows) == 0 {
-		b.text(x+2, y+7, ansiDim, "TABLE")
-		b.text(x+8, y+7, ansiDim, clipCells("no captured writes yet", w-10))
-	} else {
-		b.text(x+2, y+7, ansiDim, clipCells("TABLE                   OP        ROWS     Δ RUN   WATERMARK", w-4))
-		for i, tr := range tableRows {
-			if i >= 3 {
-				break
-			}
-			line := fmt.Sprintf("%-22s  %-3s  %10d  %8s   %d", clipCells(tr.name, 22), shortOp(tr.op), tr.rows, fmt.Sprintf("%+d", tr.delta), tr.watermark)
-			b.text(x+2, y+8+i, "", clipCells(line, w-4))
-		}
-	}
-	tableN := len(tableRows)
-	if tableN > 3 {
-		tableN = 3
-	}
-	if tableN == 0 {
-		tableN = 1 // the placeholder line
-	}
-
-	// Run history: the discovery path to run ids (⏎ opens the full screen).
-	tblY := y + 8 + tableN
-	nowY := y + h - 2
-	tblH := nowY - tblY - 1
-	if tblH >= 2 {
-		visRuns := deriveRuns(m.snap, name, m.showAll)
-		if len(visRuns) == 0 {
-			hint := "no live runs · press a for full history"
-			if m.showAll {
-				hint = "no runs in history"
-			}
-			b.text(x+3, tblY, ansiDim, clipCells(hint, w-6))
-		} else {
-			sub := newScreenBuf(w-4, tblH)
-			renderTable(sub, 0, sub.h, runsColumns(m, visRuns), selIndex(m.tblRun, m.runKeys()), colorless)
-			b.blit(sub, x+2, tblY)
-			visible := tblH - 1
-			sel := selIndex(m.tblRun, m.runKeys())
-			top := 0
-			if sel >= visible {
-				top = sel - visible + 1
-			}
-			keys := m.runKeys()
-			for r := top; r < len(keys) && r-top < visible; r++ {
-				m.addClick(psClick{x: x + 1, y: tblY + 1 + (r - top), w: w - 2, kind: psClickTableRow, name: keys[r]})
-			}
-		}
-	}
-
+	renderDetailPane(b, m, sc, pipelineDetailRuns(m, sc), x, y, w, h, colorless)
 }
 
 // renderLaneStats is the statistics pane's lane shape: lane totals, lane load

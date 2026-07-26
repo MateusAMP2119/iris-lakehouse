@@ -1,19 +1,19 @@
  │ [IRIS]   dev   LEADER  up 2h13m  pid 42   CPU          ░░░░░   3.2%  MEM  126.0MiB  1r  1q  0✖ │
 
- │ [CATALOG]              │  ┌─ extract · lane ingest ────────────────────────────────────────────┐
- │ / ┌─ COMMANDS ───────────────────────┐u┌─ ABOUT · catalog ─────────────────────────────────┐d  │
- │ in│ ▸ catalog · Browse and install … │ │ Browse and install pipeline packs                 │   │
- │ ● │   search · Fuzzy-find lanes, pi… │ │                                                   │w  │
- │ ○ │   all · Toggle full run history… │ │ Opens the catalog overlay over the dashboard:     │w  │
- │ ● │   history · Toggle day-deep loa… │i│ pack list on the left, README and tree on the     │   │
+ │ [CATALOG]              │  ┌─ PIPELINE · extract ───────────────────────────────────────────────┐
+ │ / ┌─ COMMANDS ───────────────────────┐ ┌─ ABOUT · catalog ─────────────────────────────────┐   │
+ │ in│ ▸ catalog · Browse and install … │d│ Browse and install pipeline packs                 │   │
+ │ ● │   search · Fuzzy-find lanes, pi… │ │                                                   │   │
+ │ ○ │   all · Toggle full run history… │ │ Opens the catalog overlay over the dashboard:     │   │
+ │ ● │   history · Toggle day-deep loa… │ │ pack list on the left, README and tree on the     │   │
  │ re│   cancel · Cancel the run under… │ │ right. Install and apply without leaving iris ps. │   │
- │ ○ │   help · Keyboard reference      │a│                                                   │   │
+ │ ○ │   help · Keyboard reference      │i│                                                   │   │
  │ so│   q · Quit iris ps               │ │ Usage  :catalog                                   │   │
- │ ○ │                                  │T│ Keys   :catalog                                   │   │
- │   │                                  │ │ Group  navigate                                   │   │
+ │ ○ │                                  │ │ Keys   :catalog                                   │   │
+ │   │                                  │o│ Group  navigate                                   │   │
  │   │                                  │ │                                                   │   │
  │   │                                  │ │                                                   │   │
- │   │                                  │ │                                                   │   │
+ │   │                                  │t│                                                   │   │
  │   │                                  │ │                                                   │   │
  │   │                                  │ │                                                   │   │
  │   │                                  │ │                                                   │   │
@@ -25,6 +25,6 @@
  │   ┌────────────────────────────────────────────────────────────────────────────────────────┐   │
  │ LA│ :█                                                                  tab · ↑↓ · ⏎ · esc │   │
  │ de└────────────────────────────────────────────────────────────────────────────────────────┘   │
- │ CPU    ░▒▓▓▓     51.0% │  │                                                                    │
+ │ CPU    ░▒▓▓▓     51.0% │  │                        │                                           │
  │ MEM    ░████   24.0MiB │  └────────────────────────────────────────── a all history · c cancel ┘
   ↑↓ select · tab complete · ⏎ run · esc close
