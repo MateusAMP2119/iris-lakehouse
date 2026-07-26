@@ -260,8 +260,8 @@ func TestPsFrameStyling(t *testing.T) {
 		t.Run("header card names the engine and its role under the banner", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
 			lines := renderPsFrame(m, 150, 40, false).plainLines()
-			if lines[0] != "" {
-				t.Error("banner must keep one blank breathing row on top")
+			if strings.Trim(lines[0], " ✦✧˚·") != "" {
+				t.Error("banner's breathing row may carry only sparkles")
 			}
 			if !strings.Contains(lines[1], "█") || strings.Contains(lines[1][:1], "█") {
 				t.Error("wide frame is missing the padded brand banner row")
