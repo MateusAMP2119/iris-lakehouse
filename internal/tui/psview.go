@@ -485,6 +485,8 @@ func pollPs(ctx context.Context, c *Client, every time.Duration,
 		runSwitched bool              // focus moved to the same pipeline's next run
 		ticks       int
 		journal     *psJournal // accumulated write activity (#238 phase 3)
+		events      []psEvent  // accumulated engine-wide digest (#238 phase 4)
+		prevSnap    *Snapshot  // the last shipped snapshot, the events diff base
 	)
 	poll := func(history bool) bool {
 		ps, err := c.fetchPs(ctx, true, history)
@@ -542,10 +544,15 @@ func pollPs(ctx context.Context, c *Client, every time.Duration,
 		if journal != nil {
 			since = journal.Watermark
 		}
+		var actDelta []api.JournalActivityGroup
 		if act, aerr := c.fetchJournalActivity(ctx, since); aerr == nil {
+			actDelta = act.Groups
 			journal = foldJournal(journal, act)
 		}
 		snap := Snapshot{Ps: ps, Pipelines: lastPipes, Journal: journal}
+		events = foldEvents(events, deriveEvents(prevSnap, snap, actDelta, eventStamp(time.Now())))
+		snap.Events = events
+		prevSnap = &snap
 		if focus != "" {
 			snap.Logs, snap.LogsRun = humanizeCapture(lastLogs), focus
 		}

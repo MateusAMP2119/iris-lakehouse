@@ -81,6 +81,9 @@ type Snapshot struct {
 	// Journal is the poller-accumulated write-activity state (#238 phase 3);
 	// nil until the first successful activity poll (renders as absence).
 	Journal *psJournal
+	// Events is the poller-derived engine-wide digest (#238 phase 4): state
+	// changes observed between polls, newest last. Never raw log text.
+	Events []psEvent
 	// staleAge marks a snapshot revived from the last-known-state cache (the
 	// engine was unreachable at open): how old the cached state is. Zero on a
 	// live snapshot. The view opens it under the unreachable banner.
@@ -453,6 +456,22 @@ func (m *psModel) laneTables() map[string][]string {
 	for _, name := range j.tableNames() {
 		if lane, ok := laneOfPipe[j.tableWriter(name)]; ok {
 			out[lane] = append(out[lane], name)
+		}
+	}
+	return out
+}
+
+// filteredEvents narrows the digest by the events filter: a case-insensitive
+// substring match over the row text and its pipeline.
+func (m *psModel) filteredEvents() []psEvent {
+	q := strings.ToLower(strings.TrimSpace(string(m.evtFilter)))
+	if q == "" {
+		return m.snap.Events
+	}
+	var out []psEvent
+	for _, e := range m.snap.Events {
+		if strings.Contains(strings.ToLower(e.Text), q) || strings.Contains(strings.ToLower(e.Pipeline), q) {
+			out = append(out, e)
 		}
 	}
 	return out

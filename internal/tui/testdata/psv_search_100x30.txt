@@ -18,13 +18,13 @@
 │                        ││ / type to filter — pipeline, table, severity                           │
 │                        │╰────────────────────────────────────────────────────────────────────────╯
 │                        │╭────────────────────────────────────────────────────────────────────────╮
-│                        ││ events arrive with the events route (#238) · state changes only, never │
+│                        ││ 14:32:19  ·  load_orders/14 running                                    │
+│                        ││ 14:31:07  ●  load_orders committed +1204 rows → demo.orders            │
+│                        ││ 14:30:52  ✖  load_orders/6 dead-lettered · exit 3                      │
+│                        ││ 14:29:41  ✔  solo/2 succeeded · 40ms                                   │
 │                        ││                                                                        │
 │                        ││                                                                        │
 │                        ││                                                                        │
 │                        ││                                                                        │
 │                        ││                                                                        │
-│                        ││                                                                        │
-│                        ││                                                                        │
-│                        ││                                                                        │
-╰────────────────────────╯╰────────────────────────────────────────────────────────────────────────╯
+╰────────────────────────╯╰─────────────────────── state changes only, never raw text · 4 observed ╯

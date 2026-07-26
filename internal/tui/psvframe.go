@@ -710,19 +710,45 @@ func renderLaneStats(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 }
 
 // renderEventsPane paints the engine-wide events digest: its filter box and
-// the list box. Until the events route lands (#238 phase 4) the list carries
-// its placeholder fact.
+// the list box, newest first. Rows are poller-derived state changes (#238
+// phase 4) — never raw log text; the stamp is when this view observed the
+// change.
 func renderEventsPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 	focused := m.pane == psPaneEvents
+	rows := m.filteredEvents()
+	right := ""
+	if hidden := len(m.snap.Events) - len(rows); hidden > 0 {
+		right = fmt.Sprintf("%d hidden", hidden)
+	}
 	renderFilterBox(b, x, y, w, "EVENTS · engine wide", "/ type to filter — pipeline, table, severity",
-		focused, m.evtInput, m.evtFilter, "", colorless)
+		focused, m.evtInput, m.evtFilter, right, colorless)
 	m.addClick(psClick{x: x, y: y, w: w, h: psFilterBoxH, kind: psClickPsEvtFilter})
 
 	ly := y + psFilterBoxH
 	lh := h - psFilterBoxH
+	hint := fmt.Sprintf("state changes only, never raw text · %d observed", len(m.snap.Events))
 	b.box(x, ly, w, lh, ansiBorder, "", "")
+	bottomHint(b, x, ly+lh-1, w, hint)
 	m.addClick(psClick{x: x, y: ly, w: w, h: lh, kind: psClickPane, pane: psPaneEvents})
-	b.text(x+2, ly+1, ansiDim, clipCells("events arrive with the events route (#238) · state changes only, never raw text", w-4))
+
+	if len(rows) == 0 {
+		if len(m.snap.Events) == 0 {
+			b.text(x+2, ly+1, ansiDim, clipCells("nothing observed yet · state changes land here as they happen", w-4))
+		} else {
+			b.text(x+2, ly+1, ansiDim, clipCells("no events match · esc clears the filter", w-4))
+		}
+		return
+	}
+	innerH := lh - 2
+	// Newest first: the digest reads like notifications, not a tail.
+	for i := 0; i < innerH && i < len(rows); i++ {
+		e := rows[len(rows)-1-i]
+		ry := ly + 1 + i
+		b.text(x+2, ry, ansiDim, e.Stamp)
+		g, sgr := e.Severity.glyph()
+		b.text(x+12, ry, sgr, g)
+		b.text(x+15, ry, "", clipCells(e.Text, w-17))
+	}
 }
 
 // renderLogsFull paints the full-screen log view: the frame's investigation

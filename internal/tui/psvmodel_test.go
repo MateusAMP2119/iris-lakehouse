@@ -37,6 +37,12 @@ func psvFixture() Snapshot {
 			{RunID: 2, Pipeline: "solo", Schema: "demo", Table: "audit", Op: "update",
 				Rows: 12, MinID: 6500, MaxID: 6512, UndoOpen: 0, UndoPromoted: 12},
 		}}),
+		Events: []psEvent{
+			{Stamp: "14:29:41", Severity: psEvOK, Text: "solo/2 succeeded · 40ms", Pipeline: "solo"},
+			{Stamp: "14:30:52", Severity: psEvFail, Text: "load_orders/6 dead-lettered · exit 3", Pipeline: "load_orders"},
+			{Stamp: "14:31:07", Severity: psEvCommit, Text: "load_orders committed +1204 rows → demo.orders", Pipeline: "load_orders"},
+			{Stamp: "14:32:19", Severity: psEvInfo, Text: "load_orders/14 running", Pipeline: "load_orders"},
+		},
 		Pipelines: []api.PipelineListItem{
 			{Name: "extract", Active: true, Lane: "ingest"},
 			{Name: "hello_iris", Active: false, Lane: "ingest"},
