@@ -51,7 +51,14 @@ func psvHistory() *api.PsHistory {
 func psvSeeded(target string) *psModel {
 	s := psvFixture()
 	s.Ps.History = psvHistory()
-	return newPsModel(s, target)
+	m := newPsModel(s, target)
+	// The pack cache as a completed background fetch: the detail pane's
+	// RETENTION row reads it, so the goldens pin it with data.
+	m.packs = []api.CatalogPack{
+		{Name: "orders-etl", Installed: true, Pipelines: []string{"load_orders", "extract"}},
+		{Name: "quake-monitor", Installed: false, Pipelines: []string{"monthly"}},
+	}
+	return m
 }
 
 // TestPsFrameGoldens pins the dashboard byte-for-byte at each width tier:

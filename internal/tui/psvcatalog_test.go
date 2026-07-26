@@ -405,8 +405,17 @@ func TestRunPsLoopCatalogWiring(t *testing.T) {
 		}
 		mu.Lock()
 		defer mu.Unlock()
-		if len(got) != 1 || got[0].kind != psCatalogList {
-			t.Fatalf("runner saw %+v, want exactly the one list request", got)
+		// Two listing reads, both deliberate: the background pack cache the
+		// view opens with (the detail pane's RETENTION row reads it) and the
+		// overlay's own refresh when it opens. Neither is on the poll tick --
+		// the listing resolves packs over the network, so it never rides one.
+		if len(got) != 2 {
+			t.Fatalf("runner saw %+v, want the pack cache read plus the overlay's", got)
+		}
+		for i, req := range got {
+			if req.kind != psCatalogList {
+				t.Errorf("request %d = %+v, want a list request", i, req)
+			}
 		}
 	})
 }

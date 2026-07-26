@@ -133,6 +133,12 @@ type psModel struct {
 	idleCat    *psCatalog    // the idle card's inline searchable catalog; nil once work registers
 	catalogReq *psCatalogReq // catalog action parked for the loop, consumed via takeCatalogReq
 	catalogSeq int           // monotonic request correlation counter (stale outcomes drop)
+	// packs is the last successful pack listing, fetched once at open and
+	// refreshed on an overlay read or a successful install -- never on a poll
+	// tick (the listing resolves packs over the network). packsReq correlates
+	// the background fetch that owns no surface.
+	packs    []api.CatalogPack
+	packsReq int
 
 	// rings holds every heat strip's fine history: key "" is the engine,
 	// "l:<name>" a lane, "p:<name>" a pipeline. Seeded from the daemon's
@@ -177,6 +183,8 @@ func newPsModel(first Snapshot, target string) *psModel {
 	m.quote = quotes.Farewell[rand.IntN(len(quotes.Farewell))] //nolint:gosec // G404: cosmetic quote pick.
 	if psIsEmptyWorkspace(m) {
 		m.openIdleCatalog()
+	} else {
+		m.openPackCache()
 	}
 	return m
 }

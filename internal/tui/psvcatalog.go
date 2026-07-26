@@ -152,6 +152,38 @@ func (m *psModel) parkCatalogReqFor(c *psCatalog, req psCatalogReq) {
 	m.catalogReq = &req
 }
 
+// openPackCache parks the one background pack listing the detail pane's
+// RETENTION block reads. It is deliberately NOT on the poller: ListPacks
+// resolves every pack over the network with a SHA-256 verify, so a per-tick
+// read would be a fetch storm against every configured source for as long as
+// the view is open. One fetch at open, refreshed only when the overlay
+// refetches or an install lands.
+func (m *psModel) openPackCache() {
+	if m.catalogReq != nil {
+		return // a surface already owns this tick's request
+	}
+	m.catalogSeq++
+	m.packsReq = m.catalogSeq
+	m.catalogReq = &psCatalogReq{kind: psCatalogList, seq: m.packsReq}
+}
+
+// packsFor names the installed packs that declare the pipeline.
+func (m *psModel) packsFor(pipeline string) []string {
+	var out []string
+	for _, p := range m.packs {
+		if !p.Installed {
+			continue
+		}
+		for _, name := range p.Pipelines {
+			if name == pipeline {
+				out = append(out, p.Name)
+				break
+			}
+		}
+	}
+	return out
+}
+
 // takeCatalogReq hands the loop the parked request, once.
 func (m *psModel) takeCatalogReq() *psCatalogReq {
 	r := m.catalogReq
@@ -360,6 +392,11 @@ func (m *psModel) parkBatchHead(c *psCatalog) {
 // absorbCatalog folds one action outcome into whichever surface owns the
 // request; an outcome for a closed or superseded request is dropped.
 func (m *psModel) absorbCatalog(cm psCatalogMsg) {
+	// A listing outcome always refreshes the pack cache, whichever surface
+	// asked for it -- including the background fetch that owns no surface.
+	if cm.kind == psCatalogList && cm.err == "" {
+		m.packs = cm.packs
+	}
 	c := m.catalog
 	if c == nil || cm.seq != c.pending {
 		c = m.idleCat

@@ -15,7 +15,7 @@
  │                                   │  │ RETENTION                      │                                                                          │
  │                                   │  │ oldest kept             run 12 │                                                                          │
  │                                   │  │ runs kept                    1 │                                                                          │
- │                                   │  │                                │                                                                          │
+ │                                   │  │ pack                orders-etl │                                                                          │
  │                                   │  │                                │                                                                          │
  │                                   │  │                                │                                                                          │
  │                                   │  │                                │                                                                          │

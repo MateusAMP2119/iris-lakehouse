@@ -281,7 +281,7 @@ func compactOps(j *psJournal, name string) string {
 // renderSpecRetention paints the RETENTION block. Retention in iris is
 // count-based and clockless, so the floor is a run id and the ledger is a
 // count -- never a timestamp the engine does not hold.
-func renderSpecRetention(b *screenBuf, _ *psModel, sc specScope, x, y, w, maxH int) int {
+func renderSpecRetention(b *screenBuf, m *psModel, sc specScope, x, y, w, maxH int) int {
 	if maxH < 2 || len(sc.runs) == 0 {
 		return 0
 	}
@@ -292,6 +292,15 @@ func renderSpecRetention(b *screenBuf, _ *psModel, sc specScope, x, y, w, maxH i
 		return 2
 	}
 	specRow(b, x, y+2, w, 10, "runs kept", fmt.Sprintf("%d", len(sc.runs)), ansiDim)
+	if maxH < 4 {
+		return 3
+	}
+	// Packs come from the cached listing, which resolves over the network and
+	// so is fetched once rather than polled: an empty cache reads as absence.
+	if packs := m.packsFor(sc.pipeline); len(packs) > 0 {
+		specRow(b, x, y+3, w, len([]rune(packs[0])), "pack", packs[0], ansiDim)
+		return 4
+	}
 	return 3
 }
 
