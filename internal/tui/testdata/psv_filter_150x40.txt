@@ -5,7 +5,7 @@
  │ ingest        1r·1q · 3 pipelines │  │ table              demo.orders │                                                                        █ │
  │ ● load_orders                 run │  │ rows captured             2391 │                                                                          │
  │                                   │  │ watermark                 8110 │   RUN  WROTE  OP   STATE    ELAPSED  JOURNAL      TRIGGER                │
- │                                   │  │                                │   14   +1187  ins  running  2m14s    7921 → 8110  -                      │
+ │                                   │  │                                │   14   +1187  ins  running  2m14s    7921 → 8110  loop                   │
  │                                   │  │ LOAD                           │                                                                          │
  │                                   │  │ cpu            ░▒▓▓▓     51.0% │                                                                          │
  │                                   │  │ mem            ░████   24.0MiB │                                                                          │

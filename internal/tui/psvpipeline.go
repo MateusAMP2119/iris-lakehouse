@@ -337,8 +337,8 @@ type detailRun struct {
 	elapsed string
 	minID   int64
 	maxID   int64
-	// cause is why the run was minted, the TRIGGER column. runs.cause is not
-	// on the wire yet, so it reads as absence rather than a guess.
+	// cause is why the run was minted, the TRIGGER column: loop, manual,
+	// replay, or propagated. Empty on a run the engine did not record one for.
 	cause string
 }
 
@@ -352,7 +352,7 @@ func pipelineDetailRuns(m *psModel, sc specScope) []detailRun {
 		lo, hi := j.runRange(r.ID)
 		d := detailRun{
 			id: r.ID, state: r.State, elapsed: runSpan(r),
-			minID: lo, maxID: hi,
+			minID: lo, maxID: hi, cause: r.Cause,
 		}
 		if rows := j.runWrote(r.ID); rows != 0 {
 			d.wrote, d.hasRows = rows, true
@@ -380,7 +380,7 @@ func tableDetailRuns(m *psModel, sc specScope) []detailRun {
 			minID: w.MinID, maxID: w.MaxID, state: "-",
 		}
 		if run, ok := findRun(m.snap, id); ok {
-			d.state, d.elapsed = run.State, runSpan(run)
+			d.state, d.elapsed, d.cause = run.State, runSpan(run), run.Cause
 		}
 		out = append(out, d)
 	}

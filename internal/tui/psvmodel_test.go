@@ -17,12 +17,12 @@ func psvFixture() Snapshot {
 		Engine: api.PsEngine{Version: "dev", Role: "leader", PID: 42, Uptime: "2h13m",
 			QueuedRuns: 1, RunningRuns: 1, Load: &api.PsLoad{CPUPercent: 3.2, RSSBytes: 126 << 20}},
 		Runs: []api.PsRun{
-			{ID: "14", Pipeline: "load_orders", Lane: "ingest", State: "running",
+			{ID: "14", Pipeline: "load_orders", Lane: "ingest", State: "running", Cause: "loop",
 				Load: &api.PsLoad{CPUPercent: 51, RSSBytes: 24 << 20}, Elapsed: "2m14s"},
-			{ID: "12", Pipeline: "extract", Lane: "ingest", State: "queued"},
-			{ID: "9", Pipeline: "load_orders", Lane: "ingest", State: "succeeded", ExitCode: &exit0, Duration: "3m2s"},
-			{ID: "6", Pipeline: "load_orders", Lane: "ingest", State: "dead_lettered", ExitCode: &exit3, Duration: "1m34s"},
-			{ID: "2", Pipeline: "solo", State: "succeeded", ExitCode: &exit0, Duration: "40ms"},
+			{ID: "12", Pipeline: "extract", Lane: "ingest", State: "queued", Cause: "manual"},
+			{ID: "9", Pipeline: "load_orders", Lane: "ingest", State: "succeeded", ExitCode: &exit0, Duration: "3m2s", Cause: "loop"},
+			{ID: "6", Pipeline: "load_orders", Lane: "ingest", State: "dead_lettered", ExitCode: &exit3, Duration: "1m34s", Cause: "replay"},
+			{ID: "2", Pipeline: "solo", State: "succeeded", ExitCode: &exit0, Duration: "40ms", Cause: "manual"},
 		},
 		PipelineTimes: []api.PsPipelineTime{
 			{Pipeline: "load_orders", Runs: 2, Last: "1m34s", Avg: "2m18s", P50: "1m34s", Max: "3m2s", Levels: []int{8, 5}},

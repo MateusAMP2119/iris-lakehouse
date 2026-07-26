@@ -17,6 +17,11 @@ Reference docs: `docs/Iris Epics.md` (epics + build order).
 - Issue branches: `issue/EXX.Y-short-name`, cut from `development`. PR title `EXX.Y <task name>`. 
 - Small tweaks and experiments may go on plain feature branches.
 
+## Style
+
+- Chat replies use caveman mode (caveman plugin `skills/caveman/SKILL.md`), level `full`: drop articles, filler, pleasantries, hedging; fragments fine; technical terms exact.
+- Prose only. Code, comments, commit messages, PR bodies, and issue text stay normal English.
+
 ## Conventions
 
 - Single Go module, application not library: all packages under `internal/`, only `cmd/iris` is main package.

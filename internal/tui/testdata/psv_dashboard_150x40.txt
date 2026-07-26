@@ -5,7 +5,7 @@
  │ ingest        1r·1q · 3 pipelines │  │ no captured writes yet         │ no captured writes observed yet                                          │
  │ ● extract                      1q │  │                                │                                                                          │
  │ ○ hello_iris                      │  │ LOAD                           │   RUN  WROTE  OP  STATE   ELAPSED  JOURNAL  TRIGGER                      │
- │ ● load_orders                 run │  │ cpu                       0.0% │   12   -      -   queued  -        -        -                            │
+ │ ● load_orders                 run │  │ cpu                       0.0% │   12   -      -   queued  -        -        manual                       │
  │ reporting                   0r·0q │  │ mem                         0B │                                                                          │
  │ ○ monthly                         │  │ time  no timed run yet         │                                                                          │
  │ solo                        0r·0q │  │                                │                                                                          │

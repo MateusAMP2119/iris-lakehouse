@@ -188,6 +188,9 @@ type PsRun struct {
 	Lane string `json:"lane,omitempty"`
 	// State is the run's lifecycle state.
 	State string `json:"state"`
+	// Cause is why the run was minted (runs.cause): manual, loop, replay, or
+	// propagated -- the run table's TRIGGER column. Empty when unrecorded.
+	Cause string `json:"cause,omitempty"`
 	// ExitCode is the subprocess exit code, present on terminal runs only.
 	ExitCode *int `json:"exit_code,omitempty"`
 	// Load is the run's process group's sampled host load, present only on a

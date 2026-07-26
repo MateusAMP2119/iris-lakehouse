@@ -78,6 +78,8 @@ type Run struct {
 	ExitCode *int
 	// Reason is the dead-letter reason, set when State is RunDeadLettered.
 	Reason string
+	// Cause is why the run was minted (runs.cause): the closed RunCause set.
+	Cause RunCause
 	// Seq is a monotonic ordering identity assigned on creation: identity, never
 	// a clock.
 	Seq int64

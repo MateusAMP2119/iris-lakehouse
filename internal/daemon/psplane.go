@@ -156,6 +156,7 @@ func (p *psPlane) Ps(ctx context.Context, all, history bool) (api.PsPayload, err
 			Pipeline: run.Pipeline,
 			Lane:     run.Lane,
 			State:    string(run.State),
+			Cause:    string(run.Cause),
 		}
 		// Observed run times (#238 phase 2): rendered here, second- (or
 		// millisecond-) truncated, so the wire never carries a computable

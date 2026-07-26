@@ -11,7 +11,7 @@
  │                                                        │
  │                                                        │
  │   RUN  WROTE  OP  STATE   ELAPSED  TRIGGER             │
- │   12   -      -   queued  -        -                   │
+ │   12   -      -   queued  -        manual              │
  │                                                        │
  │                                                        │
  │                                                        │

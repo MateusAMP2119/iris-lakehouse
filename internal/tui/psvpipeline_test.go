@@ -84,8 +84,7 @@ func TestRunsTier(t *testing.T) {
 
 // TestDetailRunsAbsence proves the run table renders what the engine has not
 // said as absence, never as a fabricated zero: a run that wrote nothing shows
-// a dash in WROTE and JOURNAL, and TRIGGER is dashes everywhere until
-// runs.cause reaches the wire.
+// a dash in WROTE and JOURNAL, while TRIGGER carries the recorded cause.
 func TestDetailRunsAbsence(t *testing.T) {
 	t.Run("detail-runs-absence", func(t *testing.T) {
 		m := newPsModel(psvFixture(), "")
@@ -107,9 +106,10 @@ func TestDetailRunsAbsence(t *testing.T) {
 			}
 		}
 		trigger := cols[6]
-		for i := range rows {
-			if got := trigger.cells[i]; got != "-" {
-				t.Errorf("TRIGGER row %d = %q, want absence until runs.cause lands", i, got)
+		wantCause := map[string]string{"14": "loop", "9": "loop", "6": "replay"}
+		for i, r := range rows {
+			if got, want := trigger.cells[i], wantCause[r.id]; got != want {
+				t.Errorf("TRIGGER for run %s = %q, want %q", r.id, got, want)
 			}
 		}
 		// Run 6 dead-lettered without writing: its journal range is unknown.
