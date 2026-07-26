@@ -114,25 +114,36 @@ var bannerSweepStops = [][3]int{
 // dark enough to read as depth behind the gradient blocks.
 var bannerShadowSGR = rgb(38, 40, 66)
 
-// bannerSparkle decides deterministically whether banner cell (x, y) carries
-// a glint, and which. Position-hashed — no randomness, stable goldens, the
-// same sky every frame. Roughly one cell in forty lights up.
-func bannerSparkle(x, y int) (string, string, bool) {
+// bannerSparkle decides whether banner cell (x, y) carries a glint at the
+// given tick, and which. Candidate cells are position-hashed; each candidate
+// twinkles on its own period and phase offset, growing · → ✧ → ✦ and fading
+// back — discrete pops, which read as twinkling even at a one-second poll
+// cadence (smooth motion never would). Deterministic in (x, y, tick), so a
+// frozen frame and the goldens are stable.
+func bannerSparkle(x, y, tick int) (string, string, bool) {
 	h := uint32(x*2654435761) ^ uint32(y*40503) //nolint:gosec // deterministic hash, not crypto
 	h = (h ^ h>>13) * 1274126177
 	h ^= h >> 16
-	if h%41 != 0 {
+	if h%17 != 0 {
 		return "", "", false
 	}
-	switch (h / 41) % 4 {
-	case 0:
-		return "✦", rgb(238, 111, 248), true // pink glint
-	case 1:
+	seed := h / 17
+	period := 6 + int(seed%7)       // 6..12 ticks between appearances
+	offset := int(seed>>3) % period // each glint on its own clock
+	life := (tick + offset) % period
+	pink := seed&1 == 0
+	switch life {
+	case 0, 4:
+		return "·", ansiDim, true
+	case 1, 3:
 		return "✧", rgb(150, 160, 245), true // periwinkle hollow
 	case 2:
-		return "˚", ansiDim, true
+		if pink {
+			return "✦", rgb(238, 111, 248), true // pink flash at peak
+		}
+		return "✦", rgb(199, 210, 254), true // lavender flash
 	default:
-		return "·", ansiDim, true
+		return "", "", false // dark phase between twinkles
 	}
 }
 

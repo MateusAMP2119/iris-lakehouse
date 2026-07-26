@@ -808,10 +808,10 @@ func renderLogsFull(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 // one cell of side padding — and reports how many rows it spent (zero when
 // the frame cannot afford or fit it). Color is one static diagonal brand
 // gradient (banner.go). Depth is a right-edge extrusion: every glyph run
-// casts one dark ▓ shadow cell. Sparkles are deterministic glints scattered
-// over the surrounding blank cells — position-hashed, so every frame (and
-// the goldens) sees the same sky.
-func renderPsBanner(b *screenBuf, w, h int, colorless bool) int {
+// casts one dark ▓ shadow cell. Sparkles twinkle over the surrounding blank
+// cells: each position-hashed glint pops in and out on its own period,
+// advanced one tick per absorbed poll (m.twinkle).
+func renderPsBanner(b *screenBuf, m *psModel, w, h int, colorless bool) int {
 	if h < psBannerMinHeight {
 		return 0
 	}
@@ -855,7 +855,7 @@ func renderPsBanner(b *screenBuf, w, h int, colorless bool) int {
 	}
 	for y := 0; y <= len(art); y++ {
 		for x := 0; x < w; x++ {
-			glyph, sgr, ok := bannerSparkle(x, y)
+			glyph, sgr, ok := bannerSparkle(x, y, m.twinkle)
 			if !ok || !blank(x, y) {
 				continue
 			}

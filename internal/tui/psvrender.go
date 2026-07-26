@@ -494,7 +494,7 @@ func renderPsFrame(m *psModel, w, h int, colorless bool) *screenBuf {
 		// The full-screen log view: the frame's only raw-text surface.
 		renderLogsFull(b, m, 0, 0, w, h-footerH, colorless)
 	default:
-		bannerH := renderPsBanner(b, w, h, colorless)
+		bannerH := renderPsBanner(b, m, w, h, colorless)
 		renderPsHeader(b, m, bannerH)
 		top := bannerH + psHeaderRows(h-bannerH)
 		paneH := h - top - footerH // rows between header and optional footer
