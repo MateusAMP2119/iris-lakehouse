@@ -266,7 +266,7 @@ func TestPsFrameStyling(t *testing.T) {
 			if !strings.Contains(lines[1], "█") || strings.Contains(lines[1][:1], "█") {
 				t.Error("wide frame is missing the padded brand banner row")
 			}
-			top := strings.Join(lines[6:6+psHeaderCardH], "\n")
+			top := strings.Join(lines[4:4+psHeaderCardH], "\n")
 			for _, want := range []string{"IRIS", "dev", "LEADER", "pid 42", "up 2h13m", "1 running", "1 queued"} {
 				if !strings.Contains(top, want) {
 					t.Errorf("header card %q missing %q", top, want)
