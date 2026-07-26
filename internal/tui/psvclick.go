@@ -15,13 +15,12 @@ const (
 	psClickTableRow
 	psClickCatalogRow
 	psClickCatalogFilter
-	psClickActionLogs
+	psClickActionHelp
 	psClickActionQuit
 	psClickMarkPack     // a pack row's ○/● mark circle (inline list and overlay)
 	psClickMarkPipeline // a pipeline row's ○/● mark circle (rail and table)
 	psClickCatalogApply // the "apply N marked" affordance (inline list and overlay)
 	psClickPsCatFilter  // the catalog pane's filter input box (#238 C1d)
-	psClickPsEvtFilter  // the events pane's filter input box (#238 C1d)
 	psClickRailTable    // a written-table row in the catalog (#238 phase 3)
 )
 
@@ -80,11 +79,7 @@ func (m *psModel) clickOn(r psClick) {
 	case psClickTableRow:
 		m.pane = psPaneStats
 		if m.selPipeline != "" {
-			if m.tblRun == r.name {
-				m.enter() // second click pins the run's logs
-				return
-			}
-			m.tblRun = r.name
+			m.tblRun = r.name // the cursor is the selection; there is nowhere to drill
 			return
 		}
 		if m.tblPipeline == r.name {
@@ -105,13 +100,8 @@ func (m *psModel) clickOn(r psClick) {
 	case psClickPsCatFilter:
 		m.pane = psPaneLanes
 		m.catInput = true
-	case psClickPsEvtFilter:
-		m.pane = psPaneEvents
-		m.evtInput = true
-	case psClickActionLogs:
-		m.openCommand()
-		m.command.input = []rune("logs ")
-		m.command.syncSel()
+	case psClickActionHelp:
+		m.openCommandHelp()
 	case psClickActionQuit:
 		m.quit = true
 	case psClickMarkPack:

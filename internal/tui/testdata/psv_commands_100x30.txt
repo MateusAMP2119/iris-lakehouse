@@ -3,28 +3,28 @@
  │ [CATALOG]              │  ┌─ extract · lane ingest ────────────────────────────────────────────┐
  │ / ┌─ COMMANDS ───────────────────────┐u┌─ ABOUT · catalog ─────────────────────────────────┐d  │
  │ in│ ▸ catalog · Browse and install … │ │ Browse and install pipeline packs                 │   │
- │ ● │   logs · Pin the logs pane on a… │ │                                                   │w  │
- │ ○ │   search · Fuzzy-find lanes, pi… │ │ Opens the catalog overlay over the dashboard:     │w  │
- │ ● │   all · Toggle full run history… │i│ pack list on the left, README and tree on the     │   │
- │ re│   follow · Toggle log-tail foll… │ │ right. Install and apply without leaving iris ps. │   │
- │ ○ │   history · Toggle day-deep loa… │a│                                                   │   │
- │ so│   cancel · Cancel the watched r… │ │ Usage  :catalog                                   │   │
- │ ○ │   help · Keyboard reference      │ │ Keys   :catalog                                   │   │
- │   │   q · Quit iris ps               │ │ Group  navigate                                   │   │
+ │ ● │   search · Fuzzy-find lanes, pi… │ │                                                   │w  │
+ │ ○ │   all · Toggle full run history… │ │ Opens the catalog overlay over the dashboard:     │w  │
+ │ ● │   history · Toggle day-deep loa… │i│ pack list on the left, README and tree on the     │   │
+ │ re│   cancel · Cancel the run under… │ │ right. Install and apply without leaving iris ps. │   │
+ │ ○ │   help · Keyboard reference      │a│                                                   │   │
+ │ so│   q · Quit iris ps               │ │ Usage  :catalog                                   │   │
+ │ ○ │                                  │T│ Keys   :catalog                                   │   │
+ │   │                                  │ │ Group  navigate                                   │   │
  │   │                                  │ │                                                   │   │
- │   │                                  │─│                                                   │gs ┘
- │   │                                  │e│                                                   │───┐
- │   │                                  │f│                                                   │   │
- │   │                                  │─│                                                   │───┘
- │   │                                  │─│                                                   │───┐
- │   │                                  │·│                                                   │   │
- │   │                                  │●│                                                   │   │
- │   │                                  │✖│                                                   │   │
- │   │                                  │✔│                                                   │   │
+ │   │                                  │ │                                                   │   │
+ │   │                                  │ │                                                   │   │
+ │   │                                  │ │                                                   │   │
+ │   │                                  │ │                                                   │   │
+ │   │                                  │ │                                                   │   │
+ │   │                                  │ │                                                   │   │
+ │   │                                  │ │                                                   │   │
+ │   │                                  │ │                                                   │   │
+ │   │                                  │ │                                                   │   │
  │   └──────────────────────────────────┘ └───────────────────────────────────────────────────┘   │
  │   ┌────────────────────────────────────────────────────────────────────────────────────────┐   │
  │ LA│ :█                                                                  tab · ↑↓ · ⏎ · esc │   │
  │ de└────────────────────────────────────────────────────────────────────────────────────────┘   │
  │ CPU    ░▒▓▓▓     51.0% │  │                                                                    │
- │ MEM    ░████   24.0MiB │  └─────────────────── state changes only, never raw text · 4 observed ┘
+ │ MEM    ░████   24.0MiB │  └────────────────────────────────────────── a all history · c cancel ┘
   ↑↓ select · tab complete · ⏎ run · esc close

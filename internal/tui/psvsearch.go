@@ -97,8 +97,8 @@ func (m *psModel) updateSearch(k psKey) {
 }
 
 // jumpTo lands on the hit: a lane selects its catalog row, a pipeline selects
-// its row and focuses the statistics pane, a run pins the target and opens
-// the full-screen log view.
+// its row and focuses the detail pane, a run lands the detail pane's table
+// cursor on it.
 func (m *psModel) jumpTo(h psHit) {
 	switch h.kind {
 	case psHitLane:
@@ -110,8 +110,6 @@ func (m *psModel) jumpTo(h psHit) {
 	case psHitRun:
 		m.selectTree(psTreeRow{lane: h.lane, pipeline: h.pipeline})
 		m.tblRun = h.runID
-		m.pinnedRun = h.runID
-		m.logsOpen = true
 		m.pane = psPaneStats
 	}
 }

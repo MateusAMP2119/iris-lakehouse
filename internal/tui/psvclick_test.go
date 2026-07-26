@@ -64,23 +64,24 @@ func TestPsClick(t *testing.T) {
 		m := newPsModel(psvFixture(), "")
 		renderPsFrame(m, 150, 40, false)
 
-		var logsPane, tableRow psClick
+		var detailPane, tableRow psClick
 		for _, r := range m.clicks {
-			if r.kind == psClickPane && r.pane == psPaneEvents {
-				logsPane = r
+			if r.kind == psClickPane && r.pane == psPaneStats {
+				detailPane = r
 			}
 			if r.kind == psClickTableRow && tableRow.w == 0 {
 				tableRow = r
 			}
 		}
-		if logsPane.w == 0 || tableRow.w == 0 {
-			t.Fatalf("dashboard regions missing: logs=%+v row=%+v", logsPane, tableRow)
+		if detailPane.w == 0 || tableRow.w == 0 {
+			t.Fatalf("dashboard regions missing: detail=%+v row=%+v", detailPane, tableRow)
 		}
-		m.click(logsPane.x+1, logsPane.y+1)
-		if m.pane != psPaneEvents {
-			t.Fatalf("logs pane click should focus logs, pane=%d", m.pane)
+		m.pane = psPaneLanes
+		m.click(detailPane.x+1, detailPane.y+1)
+		if m.pane != psPaneStats {
+			t.Fatalf("detail pane click should focus the detail pane, pane=%d", m.pane)
 		}
-		// The rail opens on a pipeline, so the statistics pane lists its runs.
+		// The rail opens on a pipeline, so the detail pane lists its runs.
 		m.click(tableRow.x, tableRow.y)
 		if m.pane != psPaneStats || m.tblRun != tableRow.name {
 			t.Fatalf("table row click should focus the pane and select %q, got pane=%d sel=%q",

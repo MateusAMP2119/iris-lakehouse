@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -24,7 +23,6 @@ type scriptedView struct {
 	keys     chan psKey
 	polls    chan psPollMsg
 	notes    chan string
-	focusCh  chan string
 	cancelCh chan string
 }
 
@@ -34,12 +32,11 @@ func newScriptedView() *scriptedView {
 		keys:     make(chan psKey, 16),
 		polls:    make(chan psPollMsg, 1),
 		notes:    make(chan string, 1),
-		focusCh:  make(chan string, 4),
 		cancelCh: make(chan string, 4),
 	}
 	s.v = &psView{
 		out: s.out, p: painter{}, size: func() (int, int) { return 80, 24 },
-		keys: s.keys, polls: s.polls, notes: s.notes, focusCh: s.focusCh, cancelCh: s.cancelCh,
+		keys: s.keys, polls: s.polls, notes: s.notes, cancelCh: s.cancelCh,
 	}
 	return s
 }
@@ -91,7 +88,7 @@ func TestRunPsLoop(t *testing.T) {
 			sb := &syncBuffer{}
 			s.v.out = sb
 			m := newPsModel(psvFixture(), "")
-			m.selPipeline = "load_orders" // the target is the running run 14
+			m.selectTree(psTreeRow{lane: "ingest", pipeline: "load_orders"}) // cursor lands on running 14
 			m.pane = psPaneStats
 
 			done := make(chan error, 1)
@@ -119,32 +116,6 @@ func TestRunPsLoop(t *testing.T) {
 			s.keys <- key('q')
 			if err := <-done; err != nil {
 				t.Fatalf("loop exit = %v, want nil", err)
-			}
-		})
-
-		t.Run("the loop points the poller at the selection's run and follows it", func(t *testing.T) {
-			s := newScriptedView()
-			m := newPsModel(psvFixture(), "")
-			s.keys <- key('j') // hello_iris: no runs at all
-			s.keys <- key('j') // load_orders: its newest run is the running 14
-			s.keys <- key('q')
-			if err := runPsLoop(context.Background(), s.v, m); err != nil {
-				t.Fatalf("loop exit = %v, want nil", err)
-			}
-			var got []string
-			for {
-				select {
-				case f := <-s.focusCh:
-					got = append(got, f)
-					continue
-				default:
-				}
-				break
-			}
-			// The rail opens on extract (run 12); hello_iris has no run at all, so
-			// its push is the empty target; load_orders lands on the running 14.
-			if len(got) != 3 || got[0] != "12" || got[1] != "" || got[2] != "14" {
-				t.Errorf("focus pushes = %v, want 12, empty, then 14", got)
 			}
 		})
 
@@ -194,13 +165,6 @@ func (s *syncBuffer) String() string {
 	return s.b.String()
 }
 
-// staticLogs serves a run's captured output for the loop's poller tests.
-type staticLogs struct{ text string }
-
-func (s staticLogs) Logs(context.Context, string, api.LogsOptions) (io.ReadCloser, error) {
-	return io.NopCloser(strings.NewReader(s.text)), nil
-}
-
 // recordingCancel records the cancelled run id.
 type recordingCancel struct{ last atomic.Value }
 
@@ -243,7 +207,6 @@ func TestPollPs(t *testing.T) {
 			api.WithPipelines(&pipelinesListFunc{items: []api.PipelineListItem{
 				{Name: "extract", Active: true, Lane: "ingest"},
 			}}),
-			api.WithRunLogs(staticLogs{text: "line one\nline two\n"}),
 			api.WithRunCancel(cancels),
 		)
 		srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
@@ -257,11 +220,10 @@ func TestPollPs(t *testing.T) {
 		defer cancel()
 		polls := make(chan psPollMsg, 1)
 		notes := make(chan string, 1)
-		focusCh := make(chan string, 1)
 		cancelCh := make(chan string, 1)
 		done := make(chan struct{})
 		go func() {
-			pollPs(ctx, c, 5*time.Millisecond, focusCh, cancelCh, polls, notes)
+			pollPs(ctx, c, 5*time.Millisecond, cancelCh, polls, notes)
 			close(done)
 		}()
 
@@ -287,23 +249,6 @@ func TestPollPs(t *testing.T) {
 			t.Errorf("snapshot listing = %+v, want the lane-carrying row", pm.snap.Pipelines)
 		}
 
-		focusCh <- "7"
-		deadline := time.After(5 * time.Second)
-		for {
-			pm = waitPoll("a focused snapshot")
-			if pm.err != nil {
-				t.Fatalf("focused poll failed: %v", pm.err)
-			}
-			if len(pm.snap.Logs) == 2 && pm.snap.Logs[0] == "line one" {
-				break
-			}
-			select {
-			case <-deadline:
-				t.Fatalf("focused snapshot never carried the log tail: %+v", pm.snap.Logs)
-			default:
-			}
-		}
-
 		cancelCh <- "7"
 		select {
 		case note := <-notes:
@@ -321,7 +266,7 @@ func TestPollPs(t *testing.T) {
 		// the poller reports it and keeps ticking (the reconnect loop).
 		shutdown()
 		_ = ln.Close()
-		deadline = time.After(5 * time.Second)
+		deadline := time.After(5 * time.Second)
 		for {
 			pm = waitPoll("an unreachable tick")
 			if pm.err != nil {
@@ -373,7 +318,7 @@ func TestPollPs(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		polls := make(chan psPollMsg, 1)
-		go pollPs(ctx, unixClient(sock), time.Hour, make(chan string), make(chan string), polls, make(chan string, 1))
+		go pollPs(ctx, unixClient(sock), time.Hour, make(chan string), polls, make(chan string, 1))
 
 		select {
 		case pm := <-polls:

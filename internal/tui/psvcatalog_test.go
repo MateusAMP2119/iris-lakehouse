@@ -373,7 +373,7 @@ func TestRunPsLoopCatalogWiring(t *testing.T) {
 		v := &psView{
 			out: out, p: painter{}, size: func() (int, int) { return 100, 30 },
 			keys: keys, polls: make(chan psPollMsg, 1), notes: make(chan string, 1),
-			focusCh: make(chan string, 4), cancelCh: make(chan string, 4),
+			cancelCh: make(chan string, 4),
 			catalogMsgs: catalogMsgs,
 			runCatalog: func(req psCatalogReq) {
 				mu.Lock()

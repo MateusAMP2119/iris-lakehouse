@@ -15,20 +15,15 @@ import (
 // one cursor-home write with per-line clear-to-EOL (never a full-screen clear),
 // so redraws are flicker-free.
 //
-// The frame is four panes: the lanes rail on the left, and on the right a
-// pipelines/runs table, the selected pipeline's detail charts, and the log
-// tail, stacked. Narrow terminals shed panes: under psDetailMinWidth the
-// detail box goes, under psLogsMinWidth the logs pane, under psRailMinWidth
-// the rail; under psMinWidth the frame degrades to a single advisory line.
+// The frame is two panes: the catalog rail on the left and the detail pane
+// filling the rest. Narrow terminals shed: under psRailMinWidth the rail
+// goes; under psMinWidth the frame degrades to a single advisory line.
 
 // The dashboard's width tiers and floor.
 const (
-	psMinWidth       = 40
-	psMinHeight      = 8
-	psRailMinWidth   = 70
-	psLogsMinWidth   = 90
-	psDetailMinWidth = 110
-	psDetailMinRows  = 24
+	psMinWidth     = 40
+	psMinHeight    = 8
+	psRailMinWidth = 70
 	// psHeaderH is the statusline's row budget at every frame height: one row,
 	// its top and bottom edges drawn as SGR rules on that same row.
 	psHeaderH = 1
@@ -574,9 +569,6 @@ func renderPsFrame(m *psModel, w, h int, colorless bool) *screenBuf {
 	switch {
 	case psIsEmptyWorkspace(m):
 		renderEmptyWorkspace(b, m, mx, 0, fw, h-footerH, colorless)
-	case m.logsOpen:
-		// The full-screen log view: the frame's only raw-text surface.
-		renderLogsFull(b, m, mx, 0, fw, h-footerH, colorless)
 	default:
 		renderPsHeader(b, m, mx, 0, fw)
 		top := psHeaderH + psHeaderGap
@@ -598,15 +590,7 @@ func renderPsFrame(m *psModel, w, h int, colorless bool) *screenBuf {
 		if railW > 0 {
 			x += psPaneGap
 		}
-		rw := mx + fw - x
-		eventsH := 0
-		if paneH >= psEventsMinPaneH {
-			eventsH = psFilterBoxH + psEventsBoxH
-		}
-		renderStatsPane(b, m, x, top, rw, paneH-eventsH, colorless)
-		if eventsH > 0 {
-			renderEventsPane(b, m, x, top+paneH-eventsH, rw, eventsH, colorless)
-		}
+		renderStatsPane(b, m, x, top, mx+fw-x, paneH, colorless)
 	}
 
 	switch {
@@ -623,7 +607,6 @@ func renderPsFrame(m *psModel, w, h int, colorless bool) *screenBuf {
 // emptyActions are the compact GET STARTED rows kept for tight terminals.
 var emptyActions = []struct{ label, key string }{
 	{"Browse the pack catalog", "c"},
-	{"Pin a run's log tail", ":logs <id>"},
 	{"Register your pipeline", "iris declare apply"},
 	{"Quit", "q"},
 }
@@ -631,7 +614,7 @@ var emptyActions = []struct{ label, key string }{
 // idleActions are the idle card's action rows beside the status box: key
 // left, label right. Catalog browsing lives inline below, so it needs no row.
 var idleActions = []struct{ key, label string }{
-	{":logs <id>", "pin a run's log tail"},
+	{"?", "keyboard reference"},
 	{"q", "quit"},
 }
 
@@ -973,11 +956,11 @@ func renderIdleQuietBlock(b *screenBuf, m *psModel, x, y, w int) {
 	if len(lines) == 1 {
 		ay++ // breathing room when the quote is short
 	}
-	lx := x + 12 // label column clears the widest key (":logs <id>")
+	lx := x + 12 // label column clears the widest key
 	for i, a := range idleActions {
 		b.text(x, ay+i, ansiYellow, a.key)
 		b.text(lx, ay+i, "", clipCells(a.label, x+w-lx))
-		kind := psClickActionLogs
+		kind := psClickActionHelp
 		if a.key == "q" {
 			kind = psClickActionQuit
 		}
@@ -1271,7 +1254,7 @@ func psFooterHints(m *psModel) []footerHint {
 		return []footerHint{{"⏎", "jump"}, {"esc", "close"}}
 	}
 	if m.confirmCancel {
-		return []footerHint{{"y", "cancel " + m.logsTarget()}, {"N", "keep"}}
+		return []footerHint{{"y", "cancel " + m.cancelTarget()}, {"N", "keep"}}
 	}
 	if m.confirmBulk {
 		runs := len(m.bulkCancelRuns())
@@ -1327,7 +1310,7 @@ func pipelinesColumns(m *psModel, rows []psPipelineRow, wide bool, marked map[st
 }
 
 // renderCommandOverlay paints the dedicated COMMANDS section over a dimmed
-// frame: filterable roster on the left (or run completions after `:logs `),
+// frame: filterable roster on the left,
 // a living detail pane on the right, and a cyan prompt bar on the bottom.
 func renderCommandOverlay(b *screenBuf, m *psModel) {
 	b.dimAll()
@@ -1368,109 +1351,55 @@ func renderCommandOverlay(b *screenBuf, m *psModel) {
 		pw = 0
 	}
 
-	line := string(c.input)
-	runsMode := false
-	var runIDs []string
-	if name, _, hasArg := strings.Cut(line, " "); hasArg && name == "logs" {
-		runsMode = true
-		runIDs = filteredRuns(line, m.snap)
-	}
-
 	innerH := listH - 2
 	if innerH < 1 {
 		innerH = 1
 	}
 
-	if runsMode {
-		// Argument mode: show matching runs under the logs command.
-		b.text(ox+2, oy+1, ansiDim, clipCells("runs matching prefix", leftW-4))
-		top := 0
-		// Reuse c.sel as the run cursor when cycling completions; clamp to list.
-		sel := c.sel
-		if len(runIDs) == 0 {
-			sel = 0
-		} else if sel >= len(runIDs) {
-			sel = len(runIDs) - 1
+	list := c.filtered()
+	top := 0
+	if innerH > 0 && c.sel >= innerH {
+		top = c.sel - innerH + 1
+	}
+	for i := top; i < len(list) && i-top < innerH; i++ {
+		spec := list[i]
+		ry := oy + 1 + (i - top)
+		// Category tag in dim, then the command row.
+		label := commandListLabel(spec, i == c.sel, leftW-4)
+		b.text(ox+2, ry, "", label)
+		if i == c.sel {
+			paintSelAccent(b, ox+1, ry, leftW-1, false)
 		}
-		if innerH > 1 && sel >= innerH-1 {
-			top = sel - (innerH - 2)
-		}
-		row := 0
-		for i := top; i < len(runIDs) && row < innerH-1; i++ {
-			run, ok := findRun(m.snap, runIDs[i])
-			if !ok {
-				continue
-			}
-			ry := oy + 2 + row
-			label := commandRunRowLabel(run, i == sel, leftW-4)
-			b.text(ox+2, ry, "", label)
-			if i == sel {
-				paintSelAccent(b, ox+1, ry, leftW-1, false)
-			}
-			row++
-		}
-		if len(runIDs) == 0 {
-			b.text(ox+2, oy+2, ansiYellow, clipCells("no matching runs", leftW-4))
-		}
-		if pw > 0 {
-			title := "ABOUT · logs"
-			b.box(px, oy, pw, listH, ansiBorder, ansiCyan, title)
-			if spec, ok := lookupCmd("logs"); ok {
-				body := commandDetailBody(spec, pw-4)
-				for i, ln := range body {
-					if i >= listH-2 {
-						break
-					}
-					b.text(px+2, oy+1+i, "", clipCells(ln, pw-4))
-				}
-			}
-		}
-	} else {
-		list := c.filtered()
-		top := 0
-		if innerH > 0 && c.sel >= innerH {
-			top = c.sel - innerH + 1
-		}
-		for i := top; i < len(list) && i-top < innerH; i++ {
-			spec := list[i]
-			ry := oy + 1 + (i - top)
-			// Category tag in dim, then the command row.
-			label := commandListLabel(spec, i == c.sel, leftW-4)
-			b.text(ox+2, ry, "", label)
-			if i == c.sel {
-				paintSelAccent(b, ox+1, ry, leftW-1, false)
-			}
-		}
-		if len(list) == 0 {
-			b.text(ox+2, oy+1, ansiYellow, clipCells("no matching commands", leftW-4))
-		}
-		if top+innerH < len(list) {
-			b.text(ox+2, oy+listH-1, ansiDim, fmt.Sprintf("─ %d more ─", len(list)-top-innerH))
-		}
+	}
+	if len(list) == 0 {
+		b.text(ox+2, oy+1, ansiYellow, clipCells("no matching commands", leftW-4))
+	}
+	if top+innerH < len(list) {
+		b.text(ox+2, oy+listH-1, ansiDim, fmt.Sprintf("─ %d more ─", len(list)-top-innerH))
+	}
 
-		if pw > 0 {
-			title := "ABOUT"
-			var spec psCmdSpec
-			var ok bool
-			if spec, ok = c.selected(); ok {
-				title = "ABOUT · " + spec.name
-			}
-			b.box(px, oy, pw, listH, ansiBorder, ansiCyan, title)
-			if ok {
-				body := commandDetailBody(spec, pw-4)
-				for i, ln := range body {
-					if i >= listH-2 {
-						break
-					}
-					sgr := ""
-					if strings.HasPrefix(ln, "Usage") || strings.HasPrefix(ln, "Keys") || strings.HasPrefix(ln, "Group") {
-						sgr = ansiDim
-					}
-					if ln == "GLOBAL" || ln == "TABLE" || ln == "LOGS" {
-						sgr = ansiCyan
-					}
-					b.text(px+2, oy+1+i, sgr, clipCells(ln, pw-4))
+	if pw > 0 {
+		title := "ABOUT"
+		var spec psCmdSpec
+		var ok bool
+		if spec, ok = c.selected(); ok {
+			title = "ABOUT · " + spec.name
+		}
+		b.box(px, oy, pw, listH, ansiBorder, ansiCyan, title)
+		if ok {
+			body := commandDetailBody(spec, pw-4)
+			for i, ln := range body {
+				if i >= listH-2 {
+					break
 				}
+				sgr := ""
+				if strings.HasPrefix(ln, "Usage") || strings.HasPrefix(ln, "Keys") || strings.HasPrefix(ln, "Group") {
+					sgr = ansiDim
+				}
+				if ln == "GLOBAL" || ln == "TABLE" {
+					sgr = ansiCyan
+				}
+				b.text(px+2, oy+1+i, sgr, clipCells(ln, pw-4))
 			}
 		}
 	}
@@ -1561,7 +1490,7 @@ func renderSearchOverlay(b *screenBuf, m *psModel) {
 
 // renderSearchPreview fills the preview pane for one hit off the held
 // snapshot: a lane previews its pipeline table, a pipeline its run table, a
-// run its log tail (when it is the watched run) or its fact row.
+// run its fact row.
 func renderSearchPreview(b *screenBuf, m *psModel, h psHit, x, y, w, ph int) {
 	sub := newScreenBuf(w, ph)
 	switch h.kind {
@@ -1570,16 +1499,7 @@ func renderSearchPreview(b *screenBuf, m *psModel, h psHit, x, y, w, ph int) {
 	case psHitPipeline:
 		renderTable(sub, 0, ph, runsColumns(m, deriveRuns(m.snap, h.pipeline, true)), -1, false)
 	case psHitRun:
-		if h.runID == m.snap.LogsRun && len(m.snap.Logs) > 0 {
-			logs := m.snap.Logs
-			start := len(logs) - ph
-			if start < 0 {
-				start = 0
-			}
-			for i, line := range logs[start:] {
-				sub.text(0, i, "", line)
-			}
-		} else if run, ok := findRun(m.snap, h.runID); ok {
+		if run, ok := findRun(m.snap, h.runID); ok {
 			fact := run.State
 			if run.ExitCode != nil {
 				fact += " · exit " + exitCodeCell(run.ExitCode)
@@ -1592,62 +1512,6 @@ func renderSearchPreview(b *screenBuf, m *psModel, h psHit, x, y, w, ph int) {
 		}
 	}
 	b.blit(sub, x, y)
-}
-
-// logLineStyle picks the logs pane's style for one naturalized capture line: a
-// framed capture's protocol and stamp lines render marked by origin ([engine],
-// [pipeline], [iris]); the pipeline's own log lines stay unstyled.
-func logLineStyle(line string) string {
-	switch {
-	case strings.HasPrefix(line, "[engine] "):
-		return ansiCyan
-	case strings.HasPrefix(line, "[pipeline] "):
-		return ansiOrange
-	case strings.HasPrefix(line, "[iris] "):
-		return ansiDim
-	default:
-		return ""
-	}
-}
-
-// paintLogLine paints one logs-pane line. A leveled application-log line
-// ("HH:MM:SS.mmm LEVEL msg") renders console-style: dim timestamp, the level
-// and message colored by severity (ERROR red, WARN yellow, DEBUG dim); any
-// other line keeps its origin styling.
-func paintLogLine(b *screenBuf, x, y int, line string) {
-	stamp, level, msg, ok := splitConsoleLine(line)
-	if !ok {
-		b.text(x, y, logLineStyle(line), line)
-		return
-	}
-	sev := ""
-	switch level {
-	case "ERROR":
-		sev = ansiRed
-	case "WARN":
-		sev = ansiYellow
-	case "DEBUG":
-		sev = ansiDim
-	}
-	b.text(x, y, ansiDim, stamp)
-	b.text(x+len(stamp)+1, y, sev, fmt.Sprintf("%-5s %s", level, msg))
-}
-
-// splitConsoleLine splits a served leveled log line into its clock stamp,
-// level name, and message, reporting whether the line carries that shape.
-func splitConsoleLine(line string) (stamp, level, msg string, ok bool) {
-	const clockLen = len("15:04:05.000")
-	if len(line) < clockLen+2 || line[2] != ':' || line[5] != ':' || line[8] != '.' {
-		return "", "", "", false
-	}
-	stamp = line[:clockLen]
-	rest := strings.TrimPrefix(line[clockLen:], " ")
-	level, msg, _ = strings.Cut(rest, " ")
-	switch strings.TrimSpace(level) {
-	case "DEBUG", "INFO", "WARN", "ERROR":
-		return stamp, strings.TrimSpace(level), strings.TrimPrefix(msg, " "), true
-	}
-	return "", "", "", false
 }
 
 // clipCells bounds s to w cells for a box-interior line.

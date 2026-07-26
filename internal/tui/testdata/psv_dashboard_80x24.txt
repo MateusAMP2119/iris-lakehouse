@@ -20,5 +20,5 @@
  │                        │  │                                                │
  │ LANE · inlast 14:31:07 │  │                                                │
  │ demo.orders      +1187 │  │                                                │
- │ CPU    ░▒▓▓▓     51.0% │  │ NOW   ▸ no process alive · absence renders as  │
- │ MEM    ░████   24.0MiB │  └────────────────────── ⏎ run → full-screen logs ┘
+ │ CPU    ░▒▓▓▓     51.0% │  │                                                │
+ │ MEM    ░████   24.0MiB │  └────────────────────── a all history · c cancel ┘

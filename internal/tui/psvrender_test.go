@@ -17,12 +17,6 @@ func framePlain(m *psModel, w, h int) string {
 	return strings.Join(b.plainLines(), "\n") + "\n"
 }
 
-// withLogs attaches a log tail for the model's current target, as a poll
-// carrying the tail would.
-func withLogs(m *psModel, lines ...string) {
-	m.snap.Logs, m.snap.LogsRun = lines, m.logsTarget()
-}
-
 // psvHistory is the recorded load history a live view always opens on -- the
 // CLI seed fetches ?history=1 -- with a fine series per strip and a coarse one
 // for the rail's day-deep lane summary. reporting is a lane idle all day: real
@@ -59,31 +53,23 @@ func psvSeeded(target string) *psModel {
 }
 
 // TestPsFrameGoldens pins the dashboard byte-for-byte at each width tier:
-// all four panes, detail shed, logs shed, rail shed, plus the runs table, the
+// full width, narrowed, rail shed, plus the runs table, the table shape, the
 // search overlay, and the too-small degradation.
 func TestPsFrameGoldens(t *testing.T) {
 	t.Run("ps-frame-goldens", func(t *testing.T) {
 		target := "remote 10.0.0.5:7433"
-		logLines := []string{
-			"fetching s3://orders/2026-07-15.csv",
-			"1204 rows parsed",
-			"upserting batch 3/12 into demo.orders",
-			"upserting batch 4/12 into demo.orders",
-		}
 
-		t.Run("four panes 150x40", func(t *testing.T) {
+		t.Run("full width 150x40", func(t *testing.T) {
 			m := psvSeeded(target)
-			withLogs(m, logLines...)
 			golden.Assert(t, []byte(framePlain(m, 150, 40)), "testdata/psv_dashboard_150x40.txt")
 		})
 
-		t.Run("no detail box 100x30", func(t *testing.T) {
+		t.Run("narrowed 100x30", func(t *testing.T) {
 			m := psvSeeded(target)
-			withLogs(m, logLines...)
 			golden.Assert(t, []byte(framePlain(m, 100, 30)), "testdata/psv_dashboard_100x30.txt")
 		})
 
-		t.Run("no logs pane 80x24", func(t *testing.T) {
+		t.Run("narrow 80x24", func(t *testing.T) {
 			m := psvSeeded(target)
 			golden.Assert(t, []byte(framePlain(m, 80, 24)), "testdata/psv_dashboard_80x24.txt")
 		})
@@ -95,17 +81,16 @@ func TestPsFrameGoldens(t *testing.T) {
 
 		t.Run("runs table with history 150x40", func(t *testing.T) {
 			m := psvSeeded(target)
-			m.update(psKey{kind: psKeyTab}) // table pane
-			m.tblPipeline = "load_orders"
-			m.update(psKey{kind: psKeyEnter}) // drill into its runs
-			m.update(key('a'))                // whole history
-			withLogs(m, logLines...)
+			m.update(key('j'))              // extract -> hello_iris
+			m.update(key('j'))              // -> load_orders, the lane member with history
+			m.update(psKey{kind: psKeyTab}) // focus its runs table
+			m.update(key('a'))              // whole history
 			golden.Assert(t, []byte(framePlain(m, 150, 40)), "testdata/psv_runs_150x40.txt")
 		})
 
 		t.Run("table view 150x40", func(t *testing.T) {
 			m := psvSeeded(target)
-			m.update(key('j')) // the written-table row demo.orders
+			m.selectTable("ingest", "demo.orders")
 			golden.Assert(t, []byte(framePlain(m, 150, 40)), "testdata/psv_table_150x40.txt")
 		})
 
@@ -116,17 +101,6 @@ func TestPsFrameGoldens(t *testing.T) {
 				m.update(key(r))
 			}
 			golden.Assert(t, []byte(framePlain(m, 150, 40)), "testdata/psv_filter_150x40.txt")
-		})
-
-		t.Run("full-screen logs 150x40", func(t *testing.T) {
-			m := psvSeeded(target)
-			m.update(key('j')) // extract
-			m.update(key('j'))
-			m.update(key('j'))                // load_orders
-			m.update(psKey{kind: psKeyEnter}) // focus statistics
-			m.update(psKey{kind: psKeyEnter}) // open its cursored run full screen
-			withLogs(m, logLines...)
-			golden.Assert(t, []byte(framePlain(m, 150, 40)), "testdata/psv_logs_full_150x40.txt")
 		})
 
 		t.Run("search overlay 100x30", func(t *testing.T) {
@@ -379,24 +353,6 @@ func TestPsFrameStyling(t *testing.T) {
 			}
 		})
 
-		t.Run("full-screen log view titles the watched run and pauses read honestly", func(t *testing.T) {
-			m := newPsModel(psvFixture(), "")
-			m.update(key('j'))
-			m.update(key('j')) // load_orders, whose newest run is running
-			withLogs(m, "one", "two")
-			m.logsOpen = true
-			lines := renderPsFrame(m, 150, 40, false).plainLines()
-			joined := strings.Join(lines, "\n")
-			if !strings.Contains(joined, "LOGS · load_orders/14 · running · following") {
-				t.Errorf("logs title missing, frame:\n%s", joined)
-			}
-			m.update(key('f'))
-			joined = strings.Join(renderPsFrame(m, 150, 40, false).plainLines(), "\n")
-			if !strings.Contains(joined, "paused") {
-				t.Error("paused tail not titled")
-			}
-		})
-
 		t.Run("framed statusline is the frame's first chrome and names the engine", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
 			lines := renderPsFrame(m, 150, 40, false).plainLines()
@@ -539,7 +495,7 @@ func TestPsFrameStyling(t *testing.T) {
 			for _, want := range []string{
 				"IRIS LAKEHOUSE", // 100x30 leaves art no room beside the catalog
 				"state", "idle", "queue", "empty", "mem", "12s",
-				quotes.Farewell[0].Text, quotes.Farewell[0].Author, ":logs <id>", "quit",
+				quotes.Farewell[0].Text, quotes.Farewell[0].Author, "keyboard reference", "quit",
 				"catalog", "type to filter", "loading catalog…", "⏎ apply picked",
 			} {
 				if !strings.Contains(frame, want) {

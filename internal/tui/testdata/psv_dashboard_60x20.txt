@@ -16,5 +16,5 @@
  │                                                        │
  │                                                        │
  │                                                        │
- │ NOW   ▸ no process alive · absence renders as absence  │
- └────────────────────────────── ⏎ run → full-screen logs ┘
+ │                                                        │
+ └────────────────────────────── a all history · c cancel ┘

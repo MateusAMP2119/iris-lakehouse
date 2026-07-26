@@ -11,22 +11,20 @@ import (
 )
 
 // This file is the state of the `iris ps` dashboard: the polled snapshot, the
-// pane-focus model over the four panes (lanes rail, table, detail, logs), the
+// pane-focus model over the two panes (catalog rail, detail), the
 // lane tree's expand/collapse state, the client-side load history rings behind
 // every heat strip, and the pure derivations that turn the /ps payload plus
 // the pipeline listing into rows. Everything here is plain data and pure
 // functions -- no terminal, no HTTP -- so the whole state machine is
 // unit-testable with fixture payloads.
 
-// psPane names one of the dashboard's focusable panes. The detail box is
-// display-only (nothing to operate), so tab skips it.
+// psPane names one of the dashboard's focusable panes.
 type psPane int
 
 // The focusable panes, in tab order.
 const (
 	psPaneLanes psPane = iota
 	psPaneStats
-	psPaneEvents
 )
 
 // psRingCap bounds every fine load-history ring, comfortably past the widest
@@ -70,20 +68,16 @@ func (r *psRing) memPeak() int64 {
 
 // Snapshot is one poll's worth of view data: the /ps payload (always the
 // ?all=true history), the pipeline listing (?all=1, idle pipelines included,
-// each row carrying its lane), and the tailed run's log lines. logsRun names
-// the run the tail belongs to, so a snapshot buffered before a retarget never
-// paints the previous run's lines under the new run's title.
+// each row carrying its lane), and the poller-folded journal state.
 type Snapshot struct {
 	Ps        api.PsPayload
 	Pipelines []api.PipelineListItem
-	Logs      []string
-	LogsRun   string
 	// Journal is the poller-accumulated write-activity state (#238 phase 3);
 	// nil until the first successful activity poll (renders as absence).
 	Journal *psJournal
-	// Events is the poller-derived engine-wide digest (#238 phase 4): state
-	// changes observed between polls, newest last. Never raw log text.
-	Events []psEvent
+	// Commits is the newest write this view observed per pipeline: the rail
+	// footer's stamp. Derived from the activity delta, never raw log text.
+	Commits map[string]psCommitMark
 	// staleAge marks a snapshot revived from the last-known-state cache (the
 	// engine was unreachable at open): how old the cached state is. Zero on a
 	// live snapshot. The view opens it under the unreachable banner.
@@ -107,12 +101,6 @@ type psModel struct {
 	// *Input flags hold the input row's typing focus.
 	catFilter []rune
 	catInput  bool
-	evtFilter []rune
-	evtInput  bool
-
-	// logsOpen is the full-screen log view over the pinned/derived run: the
-	// frame's only raw-text surface, opened with ⏎ on a run row.
-	logsOpen bool
 
 	// The table pane's cursor, keyed by row identity so a re-poll that
 	// reorders rows keeps the cursor on the same entity. tblPipeline cursors
@@ -121,14 +109,8 @@ type psModel struct {
 	tblPipeline string
 	tblRun      string
 
-	// pinnedRun is an explicit log target picked in the runs table; "" lets
-	// the target follow the selection automatically.
-	pinnedRun string
-
 	showAll       bool // runs table: 'a' toggled the whole history in
-	follow        bool // logs pane: tail follows new output
-	scroll        int  // logs pane: lines scrolled back when not following
-	confirmCancel bool // logs pane: y/N cancel confirm armed
+	confirmCancel bool // y/N cancel confirm armed over the run under the cursor
 	confirmBulk   bool // y/N bulk-cancel confirm armed over the marked pipelines
 
 	// markedPipes is the space-marked pipeline set a bulk cancel acts on;
@@ -173,7 +155,6 @@ type psModel struct {
 func newPsModel(first Snapshot, target string) *psModel {
 	m := &psModel{
 		pane:   psPaneLanes,
-		follow: true,
 		rings:  map[string]*psRing{},
 		coarse: map[string]*psRing{},
 		snap:   first,
@@ -192,39 +173,10 @@ func newPsModel(first Snapshot, target string) *psModel {
 	return m
 }
 
-// focus is the run id the poller should tail logs for -- the logs pane's
-// current target. Derived, never stored.
-func (m *psModel) focus() string { return m.logsTarget() }
-
-// logsTarget resolves the logs pane's run: the pinned run while it still
-// exists, else the newest running run under the tree selection, else the
-// newest run under it, else "".
-func (m *psModel) logsTarget() string {
-	if m.pinnedRun != "" {
-		if _, ok := findRun(m.snap, m.pinnedRun); ok {
-			return m.pinnedRun
-		}
-	}
-	inScope := func(r api.PsRun) bool {
-		if m.selPipeline != "" {
-			return r.Pipeline == m.selPipeline
-		}
-		return runLaneOf(r) == m.selLane
-	}
-	first := ""
-	for _, r := range m.snap.Ps.Runs { // newest first as the wire orders them
-		if !inScope(r) {
-			continue
-		}
-		if r.State == "running" {
-			return r.ID
-		}
-		if first == "" {
-			first = r.ID
-		}
-	}
-	return first
-}
+// cancelTarget is the run c and :cancel act on: the detail pane's run cursor.
+// The cursor is the only target, so a confirm names exactly the row the
+// operator is looking at.
+func (m *psModel) cancelTarget() string { return m.tblRun }
 
 // detailPipeline resolves which pipeline the detail box charts: the selected
 // pipeline row, or -- on a lane row -- the pipelines table's cursor.
@@ -405,7 +357,7 @@ func deriveRuns(s Snapshot, pipeline string, all bool) []api.PsRun {
 	return out
 }
 
-// findRun resolves a run id in the snapshot, for the logs title and cancel.
+// findRun resolves a run id in the snapshot, for the detail pane and cancel.
 func findRun(s Snapshot, id string) (api.PsRun, bool) {
 	for _, run := range s.Ps.Runs {
 		if run.ID == id {
@@ -475,22 +427,6 @@ func (m *psModel) laneTables() map[string][]string {
 	return out
 }
 
-// filteredEvents narrows the digest by the events filter: a case-insensitive
-// substring match over the row text and its pipeline.
-func (m *psModel) filteredEvents() []psEvent {
-	q := strings.ToLower(strings.TrimSpace(string(m.evtFilter)))
-	if q == "" {
-		return m.snap.Events
-	}
-	var out []psEvent
-	for _, e := range m.snap.Events {
-		if strings.Contains(strings.ToLower(e.Text), q) || strings.Contains(strings.ToLower(e.Pipeline), q) {
-			out = append(out, e)
-		}
-	}
-	return out
-}
-
 // navRows are the rail's cursor stops: pipeline rows only. A lane row is a
 // heading the cursor lands beside, never on — its own facts live in the rail's
 // summary block.
@@ -516,13 +452,9 @@ func (m *psModel) treeHidden() int {
 	return total - len(m.treeRows())
 }
 
-// absorb replaces the snapshot after a poll: grows the load rings, drops a
-// log tail that belongs to a run other than the current target, and re-clamps
-// the cursors so vanished rows never leave them dangling.
+// absorb replaces the snapshot after a poll: grows the load rings and
+// re-clamps the cursors so vanished rows never leave them dangling.
 func (m *psModel) absorb(s Snapshot) {
-	if s.LogsRun != "" && s.LogsRun != m.logsTargetIn(s) {
-		s.Logs, s.LogsRun = nil, ""
-	}
 	m.snap = s
 	m.absorbRings()
 	m.clampTree()
@@ -556,15 +488,6 @@ func (m *psModel) absorb(s Snapshot) {
 			}
 		}
 	}
-}
-
-// logsTargetIn resolves the logs target against a candidate snapshot, so
-// absorb can judge an arriving tail before committing the snapshot.
-func (m *psModel) logsTargetIn(s Snapshot) string {
-	held := m.snap
-	m.snap = s
-	defer func() { m.snap = held }()
-	return m.logsTarget()
 }
 
 // absorbRings advances the load rings for one absorbed snapshot. A snapshot
@@ -872,16 +795,8 @@ func (m *psModel) update(k psKey) (cancelRuns []string) {
 	// An open pane filter input owns printable keys: type to narrow, ⏎ keeps
 	// the query and returns focus to the rows, Esc clears it. Arrows fall
 	// through so the narrowed list stays navigable mid-type.
-	if m.catInput || m.evtInput {
+	if m.catInput {
 		if m.updateFilterInput(k) {
-			return nil
-		}
-	}
-
-	// The full-screen log view (#238 C1d: the frame's only raw-text surface)
-	// intercepts its keys; unclaimed ones fall through.
-	if m.logsOpen {
-		if m.updateLogsView(k) {
 			return nil
 		}
 	}
@@ -890,7 +805,7 @@ func (m *psModel) update(k psKey) (cancelRuns []string) {
 	if m.confirmCancel {
 		m.confirmCancel = false
 		if k.kind == psKeyRune && (k.r == 'y' || k.r == 'Y') {
-			return []string{m.logsTarget()}
+			return []string{m.cancelTarget()}
 		}
 		if k.kind == psKeyCtrlC {
 			m.quit = true
@@ -932,99 +847,29 @@ func (m *psModel) update(k psKey) (cancelRuns []string) {
 	return nil
 }
 
-// updateFilterInput routes a key while a pane filter input holds typing
+// updateFilterInput routes a key while the rail's filter input holds typing
 // focus. Returns true when the key was consumed.
 func (m *psModel) updateFilterInput(k psKey) bool {
-	q := &m.catFilter
-	if m.evtInput {
-		q = &m.evtFilter
-	}
 	switch k.kind {
 	case psKeyRune:
-		*q = append(*q, k.r)
-		if m.catInput {
-			m.clampTree()
-		}
+		m.catFilter = append(m.catFilter, k.r)
+		m.clampTree()
 		return true
 	case psKeyBackspace:
-		if len(*q) > 0 {
-			*q = (*q)[:len(*q)-1]
-			if m.catInput {
-				m.clampTree()
-			}
+		if len(m.catFilter) > 0 {
+			m.catFilter = m.catFilter[:len(m.catFilter)-1]
+			m.clampTree()
 		}
 		return true
 	case psKeyEnter:
-		m.catInput, m.evtInput = false, false
+		m.catInput = false
 		return true
 	case psKeyEsc:
-		wasCat := m.catInput
-		*q = nil
-		m.catInput, m.evtInput = false, false
-		if wasCat {
-			m.clampTree()
-		}
+		m.catFilter, m.catInput = nil, false
+		m.clampTree()
 		return true
 	}
 	return false
-}
-
-// updateLogsView routes a key while the full-screen log view is open.
-// Returns true when the key was consumed.
-func (m *psModel) updateLogsView(k psKey) bool {
-	switch k.kind {
-	case psKeyEsc, psKeyLeft:
-		m.closeLogsView()
-		return true
-	case psKeyUp:
-		if !m.follow {
-			m.scroll++
-			m.clampScroll(len(m.snap.Logs))
-		}
-		return true
-	case psKeyDown:
-		if !m.follow {
-			m.scroll--
-			m.clampScroll(len(m.snap.Logs))
-		}
-		return true
-	case psKeyRune:
-		switch k.r {
-		case 'q':
-			m.closeLogsView()
-			return true
-		case 'k':
-			if !m.follow {
-				m.scroll++
-				m.clampScroll(len(m.snap.Logs))
-			}
-			return true
-		case 'j':
-			if !m.follow {
-				m.scroll--
-				m.clampScroll(len(m.snap.Logs))
-			}
-			return true
-		case 'f':
-			m.follow = !m.follow
-			m.scroll = 0
-			return true
-		case 'c':
-			if run, ok := findRun(m.snap, m.logsTarget()); ok && run.State == "running" {
-				m.confirmCancel = true
-			}
-			return true
-		}
-	}
-	return false
-}
-
-// closeLogsView leaves the full-screen log view, unpinning its run.
-func (m *psModel) closeLogsView() {
-	m.logsOpen = false
-	m.pinnedRun = ""
-	m.follow = true
-	m.scroll = 0
 }
 
 // bulkCancelRuns lists every running run belonging to a marked pipeline.
@@ -1075,16 +920,13 @@ func (m *psModel) togglePipeMark(name string) {
 	}
 }
 
-// cyclePane advances the pane focus: catalog, statistics, events, around.
+// cyclePane advances the pane focus: catalog, detail, around.
 func (m *psModel) cyclePane() {
-	switch m.pane {
-	case psPaneLanes:
+	if m.pane == psPaneLanes {
 		m.pane = psPaneStats
-	case psPaneStats:
-		m.pane = psPaneEvents
-	default:
-		m.pane = psPaneLanes
+		return
 	}
+	m.pane = psPaneLanes
 }
 
 // updateRune routes a printable keypress outside the overlay.
@@ -1097,14 +939,11 @@ func (m *psModel) updateRune(r rune) {
 	case 'k':
 		m.move(-1)
 	case '/':
-		// '/' filters the focused pane (#238 C1d); the global telescope
-		// search lives at :search.
-		switch m.pane {
-		case psPaneLanes:
-			m.catInput = true
-		case psPaneEvents:
-			m.evtInput = true
-		}
+		// '/' opens the rail's filter, the frame's only one; the global
+		// telescope search lives at :search. Typing from the detail pane
+		// hands focus back to the rail rather than swallowing the key.
+		m.pane = psPaneLanes
+		m.catInput = true
 	case ':':
 		m.openCommand()
 	case '?':
@@ -1131,7 +970,7 @@ func (m *psModel) updateRune(r rune) {
 		m.toggleMarkPipeline()
 	case 'c':
 		// Quiet engine: c is the one-key jump into the catalog (the empty
-		// card's primary action). With work registered it stays cancel-in-logs,
+		// card's primary action). With work registered it stays cancel,
 		// or the bulk confirm when pipelines are marked.
 		if psIsEmptyWorkspace(m) {
 			m.openCatalog()
@@ -1145,18 +984,16 @@ func (m *psModel) updateRune(r rune) {
 			m.confirmBulk = true
 			return
 		}
-		// Cancel-the-watched-run stays reachable from the statistics pane's
-		// run cursor (and inside the full-screen log view, handled there).
+		// Cancel acts on the run under the detail pane's table cursor.
 		if m.pane == psPaneStats && m.selPipeline != "" {
-			if run, ok := findRun(m.snap, m.logsTarget()); ok && run.State == "running" {
+			if run, ok := findRun(m.snap, m.cancelTarget()); ok && run.State == "running" {
 				m.confirmCancel = true
 			}
 		}
 	}
 }
 
-// move shifts the focused pane's cursor. The events pane holds no cursor
-// until its route lands (#238 phase 4).
+// move shifts the focused pane's cursor.
 func (m *psModel) move(delta int) {
 	switch m.pane {
 	case psPaneLanes:
@@ -1213,7 +1050,6 @@ func (m *psModel) cycleLaneTable() {
 		return
 	}
 	m.selTable = tables[at+1]
-	m.scroll = 0
 }
 
 // selectLane moves the rail cursor into a lane: its first pipeline, or the
@@ -1225,38 +1061,24 @@ func (m *psModel) selectLane(lane string) {
 // selectTable opens a lane's written table in the statistics pane.
 func (m *psModel) selectTable(lane, name string) {
 	m.selLane, m.selTable = lane, name
-	m.scroll = 0
 }
 
 // selectTree lands the rail cursor on a row, resetting the per-selection
-// state that follows it: table cursors, the pinned run, the runs toggle.
+// state that follows it: the table cursors and the runs toggle.
 func (m *psModel) selectTree(row psTreeRow) {
 	if row.lane == m.selLane && row.pipeline == m.selPipeline && row.table == m.selTable {
 		return
 	}
 	m.selLane, m.selPipeline, m.selTable = row.lane, row.pipeline, row.table
-	m.pinnedRun = ""
 	m.showAll = false
-	m.scroll = 0
-	m.follow = true
 	m.clampTable()
 }
 
-// clampScroll keeps the scrollback offset within the held tail: at the far
-// end the first line stays on screen (never a blank pane past the top).
-func (m *psModel) clampScroll(lines int) {
-	if m.scroll < 0 {
-		m.scroll = 0
-	}
-	if top := lines - 1; top >= 0 && m.scroll > top {
-		m.scroll = top
-	}
-}
-
 // enter acts on the focused pane's selection (Enter / right arrow): a catalog
-// pipeline row hands focus to its statistics pane, a run row in the
-// statistics pane opens the full-screen log view (#238 C1d — nothing folds,
-// so a lane row needs no Enter action beyond being selected).
+// pipeline row hands focus to its detail pane, and a pipelines-table row
+// drills the rail cursor onto that pipeline. A run row has no destination --
+// the table cursor already is the selection (nothing folds, so a lane row
+// needs no Enter action beyond being selected).
 func (m *psModel) enter() {
 	switch m.pane {
 	case psPaneLanes:
@@ -1273,12 +1095,6 @@ func (m *psModel) enter() {
 			// Drill: the catalog selection descends to the pipeline row.
 			m.selectTree(psTreeRow{lane: m.selLane, pipeline: m.tblPipeline})
 			return
-		}
-		if m.tblRun != "" {
-			m.pinnedRun = m.tblRun
-			m.logsOpen = true
-			m.follow = true
-			m.scroll = 0
 		}
 	}
 }

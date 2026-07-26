@@ -22,7 +22,6 @@ func TestPsCacheRoundTrip(t *testing.T) {
 		}
 
 		snap := Snapshot{Ps: psFixture(), Pipelines: []api.PipelineListItem{{Name: "extract", Lane: "ingest"}}}
-		snap.Logs, snap.LogsRun = []string{"secret line"}, "7"
 		c.save(snap)
 
 		got, savedAt, ok := c.load()
@@ -34,9 +33,6 @@ func TestPsCacheRoundTrip(t *testing.T) {
 		}
 		if len(got.Pipelines) != 1 || got.Pipelines[0].Name != "extract" {
 			t.Errorf("listing did not round-trip: %+v", got.Pipelines)
-		}
-		if len(got.Logs) != 0 || got.LogsRun != "" {
-			t.Errorf("the log tail must never be cached: %v", got.Logs)
 		}
 		if age := time.Since(savedAt); age < 0 || age > time.Minute {
 			t.Errorf("save moment = %v ago, want just now", age)

@@ -48,10 +48,6 @@ const psUnreachableWarn = "engine unreachable · showing last known state · ret
 // once a minute) stay current without the history document riding every poll.
 const psHistoryRefreshPolls = 60
 
-// psMaxLogLines bounds the log tail held client-side for the run detail
-// screen; scrollback beyond it is `iris run logs`' job.
-const psMaxLogLines = 2000
-
 // ErrEngineGone signals the poller lost the daemon mid-view: the loop exits,
 // the terminal restores, and ps() maps it to the no-daemon fault.
 var ErrEngineGone = errors.New("engine no longer reachable")
@@ -188,89 +184,6 @@ func (c *Client) fetchPipelines(ctx context.Context) ([]api.PipelineListItem, er
 		return nil, fmt.Errorf("decode /pipeline/list response: %w", err)
 	}
 	return env.Data.Pipelines, nil
-}
-
-// fetchRunLogs reads the tail window of a run's captured output, raw
-// naturalized lines. The poller accumulates windows across ticks (raw lines
-// are stable across polls; humanized fold lines are not) and humanizes the
-// accumulated tail for display.
-func (c *Client) fetchRunLogs(ctx context.Context, id string) ([]string, error) {
-	resp, err := c.get(ctx, "/runs/"+id+"/logs?tailbytes=65536")
-	if err != nil {
-		return nil, err
-	}
-	defer drainClose(resp)
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("daemon returned status %d from /runs/%s/logs", resp.StatusCode, id)
-	}
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
-	if len(lines) == 1 && lines[0] == "" {
-		return nil, nil
-	}
-	return lines, nil
-}
-
-// logGapMarker is the line the accumulator inserts when consecutive tail
-// windows do not overlap (output outpaced the follower between polls).
-const logGapMarker = "· · · output outpaced the follower; lines skipped · · ·"
-
-// mergeLogTail folds a freshly fetched tail window into the accumulated log:
-// the overlap between the accumulation's suffix and the window's prefix is
-// found and only the new lines append, so watching a run accumulates history
-// instead of rotating a fixed window. A window with no overlap appends whole
-// behind a gap marker. The accumulation is capped from the head.
-func mergeLogTail(acc, win []string) []string {
-	if len(win) == 0 {
-		return acc
-	}
-	if len(acc) == 0 {
-		return capLogTail(append(acc, win...))
-	}
-	if k := tailOverlap(acc, win); k > 0 {
-		acc = append(acc, win[k:]...)
-	} else if k := tailOverlap(acc[:len(acc)-1], win); k > 0 {
-		// The accumulation's last line was a mid-write partial the daemon cut;
-		// the window carries its completed form, so the partial is replaced.
-		acc = append(acc[:len(acc)-1], win[k:]...)
-	} else {
-		acc = append(acc, logGapMarker)
-		acc = append(acc, win...)
-	}
-	return capLogTail(acc)
-}
-
-// capLogTail bounds the accumulated log from the head.
-func capLogTail(acc []string) []string {
-	if len(acc) > psMaxLogLines {
-		acc = append(acc[:0], acc[len(acc)-psMaxLogLines:]...)
-	}
-	return acc
-}
-
-// tailOverlap returns the largest k where acc's last k lines equal win's
-// first k.
-func tailOverlap(acc, win []string) int {
-	limit := len(win)
-	if len(acc) < limit {
-		limit = len(acc)
-	}
-	for k := limit; k > 0; k-- {
-		match := true
-		for i := 0; i < k; i++ {
-			if acc[len(acc)-k+i] != win[i] {
-				match = false
-				break
-			}
-		}
-		if match {
-			return k
-		}
-	}
-	return 0
 }
 
 // cancelRun POSTs the run cancel and renders the outcome as the view's note
@@ -468,25 +381,21 @@ type psPollMsg struct {
 }
 
 // pollPs is the live view's poller goroutine: every tick it re-reads the /ps
-// history and the pipeline listing, plus the focused run's log tail, and ships
-// one snapshot. A transport failure is an unreachable tick, not a teardown:
-// the poller keeps ticking and reconnects when the engine returns (the
+// history, the pipeline listing, and the journal activity delta, and ships one
+// snapshot. A transport failure is an unreachable tick, not a teardown: the
+// poller keeps ticking and reconnects when the engine returns (the
 // docker-parity behavior the stale banner narrates). Only a reached daemon
-// REFUSING the read ends the poller (and the view). The listing and logs are
-// soft -- their last good value rides along. Cancel requests arrive on
-// cancelCh and their outcomes return as notes.
+// REFUSING the read ends the poller (and the view). The listing and the
+// activity aggregate are soft -- their last good value rides along. Cancel
+// requests arrive on cancelCh and their outcomes return as notes.
 func pollPs(ctx context.Context, c *Client, every time.Duration,
-	focusCh <-chan string, cancelCh <-chan string, polls chan psPollMsg, notes chan<- string) {
+	cancelCh <-chan string, polls chan psPollMsg, notes chan<- string) {
 	var (
-		focus       string
-		lastPipes   []api.PipelineListItem
-		lastLogs    []string
-		runPipes    map[string]string // run id -> pipeline, from the last payload
-		runSwitched bool              // focus moved to the same pipeline's next run
-		ticks       int
-		journal     *psJournal // accumulated write activity (#238 phase 3)
-		events      []psEvent  // accumulated engine-wide digest (#238 phase 4)
-		prevSnap    *Snapshot  // the last shipped snapshot, the events diff base
+		lastPipes []api.PipelineListItem
+		ticks     int
+		seq       int64                   // poll ordinal, the commit marks' ordering
+		journal   *psJournal              // accumulated write activity (#238 phase 3)
+		commits   map[string]psCommitMark // newest observed write per pipeline
 	)
 	poll := func(history bool) bool {
 		ps, err := c.fetchPs(ctx, true, history)
@@ -502,40 +411,14 @@ func pollPs(ctx context.Context, c *Client, every time.Duration,
 			sendPoll(polls, psPollMsg{unreachable: true})
 			return true // keep ticking: the view shows its last state until the engine returns
 		}
-		// The listing and the log tail are soft: their last good value rides
-		// along, but the failure is surfaced -- an empty lanes screen on a
-		// healthy engine must say why.
+		// The listing is soft: its last good value rides along, but the failure
+		// is surfaced -- an empty lanes screen on a healthy engine must say why.
 		var warn string
 		if pipes, perr := c.fetchPipelines(ctx); perr == nil {
 			lastPipes = pipes
 		} else {
 			warn = "pipeline listing unavailable; lanes may be incomplete"
 		}
-		runPipes = map[string]string{}
-		for _, r := range ps.Runs {
-			runPipes[r.ID] = r.Pipeline
-		}
-		if focus != "" {
-			if win, lerr := c.fetchRunLogs(ctx, focus); lerr == nil {
-				if runSwitched {
-					// Same pipeline, next run: a new capture file, appended
-					// whole -- the pane is the pipeline's continuous console,
-					// run boundaries marked by their [iris] stamps.
-					lastLogs = capLogTail(append(lastLogs, win...))
-					runSwitched = false
-				} else {
-					lastLogs = mergeLogTail(lastLogs, win)
-				}
-			} else if warn == "" && runStateOf(ps.Runs, focus) == "running" {
-				// A queued run has not opened a capture yet, and a pruned one
-				// never will: neither is a failure. Only a live run missing its
-				// tail is worth the footer.
-				warn = "run logs unavailable"
-			}
-		}
-		// A failing declared source needs no footer line: the events digest
-		// already carries the fail row (deriveEvents), and a long fetch error
-		// would swallow the whole row.
 		// The activity aggregate is soft like the listing: a failing (or
 		// missing) route leaves the last accumulated state riding along.
 		since := int64(0)
@@ -545,22 +428,15 @@ func pollPs(ctx context.Context, c *Client, every time.Duration,
 			// The first fold reads the journal whole (since_id 0), so it is the
 			// one activity read that can outlast its poll. Ship what is already
 			// in hand first -- the frame opens live and the tables land when
-			// the aggregate answers. prevSnap stays untouched: this journal-less
-			// snapshot must never become the events diff base.
-			sendPoll(polls, psPollMsg{snap: Snapshot{Ps: ps, Pipelines: lastPipes, Events: events}, warn: warn})
+			// the aggregate answers.
+			sendPoll(polls, psPollMsg{snap: Snapshot{Ps: ps, Pipelines: lastPipes, Commits: commits}, warn: warn})
 		}
-		var actDelta []api.JournalActivityGroup
+		seq++
 		if act, aerr := c.fetchJournalActivity(ctx, since); aerr == nil {
-			actDelta = act.Groups
+			commits = deriveCommits(commits, act.Groups, commitStamp(time.Now()), seq)
 			journal = foldJournal(journal, act)
 		}
-		snap := Snapshot{Ps: ps, Pipelines: lastPipes, Journal: journal}
-		events = foldEvents(events, deriveEvents(prevSnap, snap, actDelta, eventStamp(time.Now())))
-		snap.Events = events
-		prevSnap = &snap
-		if focus != "" {
-			snap.Logs, snap.LogsRun = humanizeCapture(lastLogs), focus
-		}
+		snap := Snapshot{Ps: ps, Pipelines: lastPipes, Journal: journal, Commits: commits}
 		// A history-carrying poll (once a minute) refreshes the last-known-state
 		// cache: the snapshot a later unreachable-at-open view revives.
 		if ps.History != nil {
@@ -571,7 +447,7 @@ func pollPs(ctx context.Context, c *Client, every time.Duration,
 	}
 
 	// The seed the view opened on carries /ps and the listing only, so every
-	// poll-derived surface (the journal tables, the events digest) is empty
+	// poll-derived surface (the journal tables, the commit marks) is empty
 	// until a poll lands. Take one now rather than a tick from now.
 	if !poll(false) {
 		return
@@ -582,20 +458,6 @@ func pollPs(ctx context.Context, c *Client, every time.Duration,
 		select {
 		case <-ctx.Done():
 			return
-		case f := <-focusCh:
-			// A focus move within one pipeline (the loop minted its next run)
-			// keeps the accumulated console and appends; anything else -- a
-			// different pipeline, an unknown run -- starts fresh.
-			samePipe := f != "" && focus != "" && runPipes[f] != "" && runPipes[f] == runPipes[focus]
-			if samePipe && f != focus {
-				runSwitched = true
-			} else if f != focus {
-				lastLogs, runSwitched = nil, false
-			}
-			focus = f
-			if focus != "" && !poll(false) { // fetch the tail now, not a tick later
-				return
-			}
 		case id := <-cancelCh:
 			select {
 			case notes <- c.cancelRun(ctx, id):
@@ -611,17 +473,6 @@ func pollPs(ctx context.Context, c *Client, every time.Duration,
 			}
 		}
 	}
-}
-
-// runStateOf is the state the payload reports for one run ("" when it lists
-// no such run).
-func runStateOf(runs []api.PsRun, id string) string {
-	for _, r := range runs {
-		if r.ID == id {
-			return r.State
-		}
-	}
-	return ""
 }
 
 // sendPoll ships a snapshot with drop-and-replace semantics on the buffered
@@ -653,7 +504,6 @@ type psView struct {
 	keys     <-chan psKey
 	polls    <-chan psPollMsg
 	notes    <-chan string
-	focusCh  chan<- string
 	cancelCh chan<- string
 	// catalogMsgs delivers overlay action outcomes; runCatalog services a parked
 	// overlay request off the loop (#219). Nil seams leave the overlay inert.
@@ -666,19 +516,6 @@ type psView struct {
 // SIGTERM) and the poll error when the poller lost the daemon (a transport
 // failure) or the daemon refused the read (a *HTTPError).
 func runPsLoop(ctx context.Context, v *psView, m *psModel) error {
-	// The poller starts with no log target; the first push below points it at
-	// the initial selection's run, and every later push follows a change from
-	// any message (a key moved the selection, a poll started or finished runs).
-	sentFocus := ""
-	syncFocus := func() {
-		if f := m.focus(); f != sentFocus {
-			select {
-			case v.focusCh <- f:
-				sentFocus = f
-			default:
-			}
-		}
-	}
 	// Catalog fetches can be parked outside a keypress too (the idle card's
 	// inline catalog opens with the model or on a poll), so drain everywhere.
 	drainCatalog := func() {
@@ -686,7 +523,6 @@ func runPsLoop(ctx context.Context, v *psView, m *psModel) error {
 			v.runCatalog(*req)
 		}
 	}
-	syncFocus()
 	drainCatalog()
 	for {
 		w, h := v.size()
@@ -712,7 +548,6 @@ func runPsLoop(ctx context.Context, v *psView, m *psModel) error {
 				}
 			}
 			drainCatalog()
-			syncFocus()
 		case pm := <-v.polls:
 			if pm.err != nil {
 				return pm.err
@@ -726,13 +561,11 @@ func runPsLoop(ctx context.Context, v *psView, m *psModel) error {
 			m.warn = pm.warn
 			m.absorb(pm.snap)
 			drainCatalog()
-			syncFocus()
 		case note := <-v.notes:
 			m.note = note
 		case cm := <-v.catalogMsgs:
 			m.absorbCatalog(cm)
 			drainCatalog() // a batch apply chains its next pack off the absorb
-			syncFocus()
 		}
 	}
 }

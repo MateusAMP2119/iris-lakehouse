@@ -15,37 +15,6 @@ import (
 	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
 )
 
-const (
-	// psFilterBoxH is a pane filter input box: borders around one input row.
-	psFilterBoxH = 3
-	// psEventsBoxH is the events list box height: borders + nine event rows.
-	psEventsBoxH = 11
-	// psEventsMinPaneH is the right-column height below which the events
-	// pane sheds whole, leaving the statistics pane the full column.
-	psEventsMinPaneH = 26
-)
-
-// renderFilterBox paints one idle-screen-style pane filter: a bordered input
-// box carrying the pane title, with the dim placeholder, or the typed query
-// (a trailing block cursor while the input holds typing focus).
-func renderFilterBox(b *screenBuf, x, y, w int, title, placeholder string, focused, typing bool, query []rune, right string, colorless bool) {
-	borderSGR, titleSGR, title := paneChrome(focused, colorless, title)
-	b.box(x, y, w, psFilterBoxH, borderSGR, titleSGR, title)
-	switch {
-	case typing:
-		b.text(x+2, y+1, ansiYellow, "/")
-		b.text(x+4, y+1, "", clipCells(string(query)+"█", w-8))
-	case len(query) > 0:
-		b.text(x+2, y+1, ansiYellow, "/")
-		b.text(x+4, y+1, "", clipCells(string(query), w-8))
-	default:
-		b.text(x+2, y+1, ansiDim, clipCells(placeholder, w-6))
-	}
-	if right != "" && len([]rune(right))+8 < w {
-		b.text(x+w-2-len([]rune(right)), y+1, ansiDim, right)
-	}
-}
-
 // deadPipelines counts the pipelines whose newest run dead-lettered — the
 // engine's terminal failure state, surfaced in the header and the rail.
 func deadPipelines(s Snapshot) int {
@@ -370,19 +339,16 @@ func railStripRow(b *screenBuf, x, y, w, valW int, label string, samples func(in
 }
 
 // laneLastCommit is the newest commit stamp this view observed for the lane's
-// pipelines ("" when it has seen none).
+// pipelines ("" when it has seen none). Seq orders the marks: HH:MM:SS wraps
+// at midnight, the poll ordinal does not.
 func (m *psModel) laneLastCommit(lane string) string {
-	inLane := map[string]bool{}
+	best := psCommitMark{}
 	for _, p := range derivePipelines(m.snap, lane) {
-		inLane[p.name] = true
-	}
-	for i := len(m.snap.Events) - 1; i >= 0; i-- {
-		e := m.snap.Events[i]
-		if e.Severity == psEvCommit && inLane[e.Pipeline] {
-			return e.Stamp
+		if mark, ok := m.snap.Commits[p.name]; ok && mark.Seq > best.Seq {
+			best = mark
 		}
 	}
-	return ""
+	return best.Stamp
 }
 
 // bottomHint splices a right-aligned dim hint into a box's bottom border row.
@@ -464,7 +430,7 @@ func renderTableStats(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) 
 	if h < 6 {
 		return
 	}
-	bottomHint(b, x, y+h-1, w, "⏎ run → full-screen logs · :data provenance for the walk")
+	bottomHint(b, x, y+h-1, w, "a all history · c cancel · :data provenance for the walk")
 	if j == nil {
 		b.text(x+3, y+2, ansiDim, clipCells("journal activity unavailable", w-6))
 		return
@@ -666,7 +632,7 @@ func renderPipelineStats(b *screenBuf, m *psModel, x, y, w, h int, colorless boo
 	if h < 6 {
 		return
 	}
-	bottomHint(b, x, y+h-1, w, "⏎ run → full-screen logs")
+	bottomHint(b, x, y+h-1, w, "a all history · c cancel")
 
 	// Run identity: the newest run, its state, and the recorded count.
 	idLine := "no runs recorded"
@@ -793,23 +759,6 @@ func renderPipelineStats(b *screenBuf, m *psModel, x, y, w, h int, colorless boo
 		}
 	}
 
-	renderNowLine(b, m, x, nowY, w)
-}
-
-// renderNowLine paints the statistics pane's NOW row: the newest captured
-// line of the watched run while it runs, absence otherwise — never a stale
-// line dressed as live.
-func renderNowLine(b *screenBuf, m *psModel, x, y, w int) {
-	b.text(x+2, y, ansiDim, "NOW")
-	target := m.logsTarget()
-	run, ok := findRun(m.snap, target)
-	if !ok || run.State != "running" || m.snap.LogsRun != target || len(m.snap.Logs) == 0 {
-		b.text(x+8, y, ansiDim, clipCells("▸ no process alive · absence renders as absence", w-10))
-		return
-	}
-	line := m.snap.Logs[len(m.snap.Logs)-1]
-	b.text(x+8, y, "", clipCells("▸ "+line, w-10-6))
-	b.text(x+w-3-len("live"), y, ansiCyan, "live")
 }
 
 // renderLaneStats is the statistics pane's lane shape: lane totals, lane load
@@ -878,101 +827,6 @@ func renderLaneStats(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 		ry := tblY + 1 + (r - top)
 		m.addClick(psClick{x: x + 1, y: ry, w: w - 2, kind: psClickTableRow, name: keys[r]})
 		m.addClick(psClick{x: x + 2, y: ry, w: 1, kind: psClickMarkPipeline, name: keys[r]})
-	}
-}
-
-// renderEventsPane paints the engine-wide events digest: its filter box and
-// the list box, newest first. Rows are poller-derived state changes (#238
-// phase 4) — never raw log text; the stamp is when this view observed the
-// change.
-func renderEventsPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
-	focused := m.pane == psPaneEvents
-	rows := m.filteredEvents()
-	right := ""
-	if hidden := len(m.snap.Events) - len(rows); hidden > 0 {
-		right = fmt.Sprintf("%d hidden", hidden)
-	}
-	renderFilterBox(b, x, y, w, "EVENTS · engine wide", "/ type to filter — pipeline, table, severity",
-		focused, m.evtInput, m.evtFilter, right, colorless)
-	m.addClick(psClick{x: x, y: y, w: w, h: psFilterBoxH, kind: psClickPsEvtFilter})
-
-	ly := y + psFilterBoxH
-	lh := h - psFilterBoxH
-	hint := fmt.Sprintf("state changes only, never raw text · %d observed", len(m.snap.Events))
-	b.box(x, ly, w, lh, ansiBorder, "", "")
-	bottomHint(b, x, ly+lh-1, w, hint)
-	m.addClick(psClick{x: x, y: ly, w: w, h: lh, kind: psClickPane, pane: psPaneEvents})
-
-	if len(rows) == 0 {
-		if len(m.snap.Events) == 0 {
-			b.text(x+2, ly+1, ansiDim, clipCells("nothing observed yet · state changes land here as they happen", w-4))
-		} else {
-			b.text(x+2, ly+1, ansiDim, clipCells("no events match · esc clears the filter", w-4))
-		}
-		return
-	}
-	innerH := lh - 2
-	// Newest first: the digest reads like notifications, not a tail.
-	for i := 0; i < innerH && i < len(rows); i++ {
-		e := rows[len(rows)-1-i]
-		ry := ly + 1 + i
-		b.text(x+2, ry, ansiDim, e.Stamp)
-		g, sgr := e.Severity.glyph()
-		b.text(x+12, ry, sgr, g)
-		b.text(x+15, ry, "", clipCells(e.Text, w-17))
-	}
-}
-
-// renderLogsFull paints the full-screen log view: the frame's investigation
-// surface, one run's whole capture with follow and scrollback.
-func renderLogsFull(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
-	target := m.logsTarget()
-	title := "LOGS"
-	if target != "" {
-		mode := "following"
-		if !m.follow {
-			mode = "paused"
-		}
-		if run, ok := findRun(m.snap, target); ok {
-			title = "LOGS · " + run.Pipeline + "/" + target + " · " + run.State
-			if run.ExitCode != nil {
-				title += fmt.Sprintf(" · exit %d", *run.ExitCode)
-			}
-			title += " · " + mode
-		} else {
-			title = "LOGS · " + target + " · " + mode
-		}
-	}
-	borderSGR, titleSGR, title := paneChrome(true, colorless, title)
-	b.box(x, y, w, h, borderSGR, titleSGR, title)
-
-	innerH := h - 2
-	if target == "" {
-		b.text(x+2, y+1, ansiDim, "pick a run · ⏎ on a run row · or :logs <id>")
-		return
-	}
-	logs := m.snap.Logs
-	if m.snap.LogsRun != target {
-		logs = nil
-	}
-	end := len(logs) - m.scroll
-	if end < 0 {
-		end = 0
-	}
-	start := end - innerH
-	if start < 0 {
-		start = 0
-	}
-	// The tail anchors to the pane's bottom like tail -f.
-	shown := logs[start:end]
-	yoff := innerH - len(shown)
-	for i, line := range shown {
-		paintLogLine(b, x+2, y+1+yoff+i, line)
-	}
-	b.text(x+3, y+h-1, ansiDim, " esc back · f follow · c cancel ")
-	if len(logs) > 0 {
-		tail := fmt.Sprintf(" %d lines ", len(logs))
-		b.text(x+w-2-len([]rune(tail)), y+h-1, ansiDim, tail)
 	}
 }
 

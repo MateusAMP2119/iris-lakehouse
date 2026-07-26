@@ -34,7 +34,6 @@ type psKeyMap struct {
 	Help    bkey.Binding
 	Quit    bkey.Binding
 	All     bkey.Binding
-	Follow  bkey.Binding
 	History bkey.Binding
 	Cancel  bkey.Binding
 }
@@ -51,7 +50,6 @@ func newPsKeyMap() psKeyMap {
 		Help:    bkey.NewBinding(bkey.WithKeys("?"), bkey.WithHelp("?", "help")),
 		Quit:    bkey.NewBinding(bkey.WithKeys("q", "ctrl+c"), bkey.WithHelp("q", "quit")),
 		All:     bkey.NewBinding(bkey.WithKeys("a"), bkey.WithHelp("a", "all / live runs")),
-		Follow:  bkey.NewBinding(bkey.WithKeys("f"), bkey.WithHelp("f", "follow logs")),
 		History: bkey.NewBinding(bkey.WithKeys("h"), bkey.WithHelp("h", "history strips")),
 		Cancel:  bkey.NewBinding(bkey.WithKeys("c"), bkey.WithHelp("c", "cancel run")),
 	}
@@ -67,7 +65,7 @@ func (k psKeyMap) FullHelp() [][]bkey.Binding {
 	return [][]bkey.Binding{
 		{k.Up, k.Down, k.Enter, k.Back, k.Tab},
 		{k.Search, k.Command, k.Help, k.History},
-		{k.All, k.Follow, k.Cancel, k.Quit},
+		{k.All, k.Cancel, k.Quit},
 	}
 }
 
@@ -89,10 +87,8 @@ type teaProgram struct {
 	help     help.Model
 	cmdInput textinput.Model
 
-	focusCh    chan<- string
 	cancelCh   chan<- string
 	runCatalog func(psCatalogReq)
-	sentFocus  string
 	spinning   bool // one spinner tick chain at a time
 	err        error
 	quitting   bool
@@ -105,7 +101,7 @@ func newTeaProgram(m *psModel, color bool) *teaProgram {
 	ti.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
 	ti.Cursor.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
 	ti.CharLimit = 128
-	ti.Placeholder = " catalog · logs · search · help · q"
+	ti.Placeholder = " catalog · search · help · q"
 	ti.PlaceholderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 
 	h := help.New()
@@ -164,19 +160,6 @@ type teaSpinMsg struct{}
 
 func spinTick() tea.Cmd {
 	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return teaSpinMsg{} })
-}
-
-func (t *teaProgram) pushFocus() {
-	if t.focusCh == nil {
-		return
-	}
-	if f := t.m.focus(); f != t.sentFocus {
-		select {
-		case t.focusCh <- f:
-			t.sentFocus = f
-		default:
-		}
-	}
 }
 
 // syncCmdInput pushes pure-model command state into the bubbles textinput
@@ -244,7 +227,6 @@ func (t teaProgram) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		spin := t.drainCatalog()
-		t.pushFocus()
 		t.syncCmdInput()
 		// Start cursor blink only once the palette opens (not in Init).
 		if t.m.command != nil {
@@ -261,7 +243,6 @@ func (t teaProgram) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return t, tea.Quit
 		}
 		spin := t.drainCatalog()
-		t.pushFocus()
 		t.syncCmdInput()
 		if t.m.command != nil {
 			return t, tea.Batch(textinput.Blink, spin)
@@ -295,7 +276,6 @@ func (t teaProgram) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		t.m.warn = pm.warn
 		t.m.absorb(pm.snap)
-		t.pushFocus()
 		// absorb can open the idle catalog (workspace just emptied) and park
 		// its list fetch; fire it without waiting for a keypress.
 		return t, t.drainCatalog()
@@ -307,7 +287,6 @@ func (t teaProgram) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return t, nil
 		}
 		t.m.absorbCatalog(psCatalogMsg(msg))
-		t.pushFocus()
 		return t, t.drainCatalog()
 	}
 	// Ignore textinput blink ticks (and any other noise) when the palette is
@@ -329,7 +308,6 @@ func (t *teaProgram) updateCommandKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if req := t.m.takeCatalogReq(); req != nil && t.runCatalog != nil {
 			t.runCatalog(*req)
 		}
-		t.pushFocus()
 		t.syncCmdInput()
 		return t, nil
 	}
@@ -340,7 +318,6 @@ func (t *teaProgram) updateCommandKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if s := msg.String(); s == "j" || s == "k" {
 			k := teaKeyToPs(msg)
 			t.m.update(k)
-			t.pushFocus()
 			t.syncCmdInput()
 			return t, nil
 		}
@@ -356,7 +333,6 @@ func (t *teaProgram) updateCommandKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		t.m.command.browse = false
 		t.m.command.syncSel()
 	}
-	t.pushFocus()
 	return t, cmd
 }
 
@@ -456,14 +432,12 @@ func RunLive(ctx context.Context, out io.Writer, color bool, c *Client, first Sn
 
 	polls := make(chan psPollMsg, 1)
 	notes := make(chan string, 1)
-	focusCh := make(chan string, 4)
 	cancelCh := make(chan string, 32) // roomy enough for a bulk cancel burst
 	catalogMsgs := make(chan psCatalogMsg, 4)
-	go pollPs(ctx, c, psPollInterval, focusCh, cancelCh, polls, notes)
+	go pollPs(ctx, c, psPollInterval, cancelCh, polls, notes)
 
 	m := newPsModel(first, target)
 	model := newTeaProgram(m, color)
-	model.focusCh = focusCh
 	model.cancelCh = cancelCh
 	model.runCatalog = func(req psCatalogReq) {
 		go func() {

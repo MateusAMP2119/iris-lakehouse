@@ -7,7 +7,7 @@
      │ state     idle                           │    “The only constant in life is change.”
      │ queue     empty                          │    - Heraclitus
      │ cpu       █░░░░░░░░░░░░░ -               │
-     │ mem       -                              │    :logs <id>  pin a run's log tail
+     │ mem       -                              │    ?           keyboard reference
      │ up        12s                            │    q           quit
      └──────────────────────────────────────────┘
 

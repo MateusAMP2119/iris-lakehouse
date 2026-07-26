@@ -32,8 +32,6 @@ type psCmdSpec struct {
 	detail   string
 	category psCmdCategory
 	keys     string // display-only chords, e.g. "/  :"
-	needsArg bool   // true when Enter on a bare name parks usage, not dispatch
-	argHint  string // completion mode after "name "
 }
 
 // psCommandRoster is the closed, stable-order command set the palette lists.
@@ -43,11 +41,6 @@ var psCommandRoster = []psCmdSpec{
 		name: "catalog", usage: ":catalog", summary: "Browse and install pipeline packs",
 		detail:   "Opens the catalog overlay over the dashboard: pack list on the left, README and tree on the right. Install and apply without leaving iris ps.",
 		category: psCmdNav, keys: ":catalog",
-	},
-	{
-		name: "logs", usage: ":logs <run>", summary: "Pin the logs pane on a run",
-		detail:   "Selects the run's lane and pipeline, pins the log tail, and focuses the LOGS pane. Tab after `:logs ` cycles run ids from the current snapshot.",
-		category: psCmdWatch, keys: "⏎ on a run", needsArg: true, argHint: "run",
 	},
 	{
 		name: "search", usage: ":search [query]", summary: "Fuzzy-find lanes, pipelines, runs",
@@ -60,18 +53,13 @@ var psCommandRoster = []psCmdSpec{
 		category: psCmdWatch, keys: "a",
 	},
 	{
-		name: "follow", usage: ":follow", summary: "Toggle log-tail follow mode",
-		detail:   "When following, the logs pane sticks to the newest lines. When paused, j/k scroll the buffer. Same as the f key in the logs pane.",
-		category: psCmdWatch, keys: "f",
-	},
-	{
 		name: "history", usage: ":history", summary: "Toggle day-deep load strips",
 		detail:   "Swaps every heat strip between the live fine ring and the coarse per-bucket history the daemon keeps. Same as the h key.",
 		category: psCmdWatch, keys: "h",
 	},
 	{
-		name: "cancel", usage: ":cancel", summary: "Cancel the watched running run",
-		detail:   "Arms a y/N confirm for the run the logs pane is watching, when that run is still running. Same as the c key in the logs pane.",
+		name: "cancel", usage: ":cancel", summary: "Cancel the run under the cursor",
+		detail:   "Arms a y/N confirm for the run the detail pane's table cursor sits on, when that run is still running. Same as the c key in that pane.",
 		category: psCmdAction, keys: "c",
 	},
 	{
@@ -159,39 +147,14 @@ func (m *psModel) updateCommand(k psKey) {
 		c.err, c.cycling, c.browse = "", false, false
 		c.syncSel()
 	case psKeyUp:
-		m.moveCommandSel(-1)
+		c.moveSel(-1)
 	case psKeyDown:
-		m.moveCommandSel(1)
+		c.moveSel(1)
 	case psKeyTab:
 		m.completeCommand()
 	case psKeyEnter:
 		m.runCommand(strings.TrimSpace(string(c.input)))
 	}
-}
-
-// moveCommandSel moves the palette cursor: over the filtered roster normally,
-// over matching run ids while the prompt is in `:logs <prefix>` mode.
-func (m *psModel) moveCommandSel(delta int) {
-	c := m.command
-	line := string(c.input)
-	if name, _, hasArg := strings.Cut(line, " "); hasArg && name == "logs" {
-		runs := filteredRuns(line, m.snap)
-		if len(runs) == 0 {
-			return
-		}
-		c.sel += delta
-		if c.sel < 0 {
-			c.sel = len(runs) - 1
-		}
-		if c.sel >= len(runs) {
-			c.sel = 0
-		}
-		// Mirror the selection into the prompt so Enter dispatches that run.
-		c.input = []rune("logs " + runs[c.sel])
-		c.err, c.cycling = "", false
-		return
-	}
-	c.moveSel(delta)
 }
 
 // moveSel shifts the filtered-list cursor, wrapping at the ends.
@@ -237,47 +200,13 @@ func (c *psCommand) syncSel() {
 }
 
 // filtered returns the roster rows matching the typed command name prefix.
-// After "logs " the list becomes run-id completions from the snapshot held by
-// the model at render/dispatch time — filtered() itself is pure over input.
+// No command takes an argument, so the whole input is the name prefix.
 func (c *psCommand) filtered() []psCmdSpec {
-	line := string(c.input)
-	if name, arg, hasArg := strings.Cut(line, " "); hasArg {
-		// Argument mode: only the command being completed is "active".
-		name = strings.TrimSpace(name)
-		for _, spec := range psCommandRoster {
-			if spec.name == name {
-				// Synthetic rows for run completions are built by filteredRuns.
-				if spec.argHint == "run" {
-					return []psCmdSpec{spec} // detail stays on the parent command
-				}
-				return []psCmdSpec{spec}
-			}
-		}
-		_ = arg
-		return nil
-	}
-	prefix := strings.TrimSpace(line)
+	prefix := strings.TrimSpace(string(c.input))
 	var out []psCmdSpec
 	for _, spec := range psCommandRoster {
 		if prefix == "" || strings.HasPrefix(spec.name, prefix) {
 			out = append(out, spec)
-		}
-	}
-	return out
-}
-
-// filteredRuns lists run-id rows for the logs argument, used by the renderer
-// when the input is in `:logs <prefix>` mode.
-func filteredRuns(base string, snap Snapshot) []string {
-	name, arg, hasArg := strings.Cut(base, " ")
-	if !hasArg || name != "logs" {
-		return nil
-	}
-	arg = strings.TrimSpace(arg)
-	var out []string
-	for _, r := range snap.Ps.Runs {
-		if strings.HasPrefix(r.ID, arg) {
-			out = append(out, r.ID)
 		}
 	}
 	return out
@@ -302,40 +231,18 @@ func (m *psModel) runCommand(line string) {
 			// Empty enter in help browse just keeps the palette open on help.
 			return
 		}
-		if spec, ok := c.selected(); ok && !spec.needsArg {
-			line = spec.name
-		} else if spec, ok := c.selected(); ok && spec.needsArg {
-			// Park the selected command name so the user can type the arg.
-			c.input = []rune(spec.name + " ")
-			c.err, c.cycling = "", false
-			c.syncSel()
-			return
-		} else {
+		spec, ok := c.selected()
+		if !ok {
 			m.command = nil
 			return
 		}
+		line = spec.name
 	}
 	name, arg, _ := strings.Cut(line, " ")
 	arg = strings.TrimSpace(arg)
 	switch name {
 	case "q":
 		m.quit = true
-	case "logs":
-		if arg == "" {
-			m.commandErr("usage: :logs <run>")
-			return
-		}
-		run, ok := findRun(m.snap, arg)
-		if !ok {
-			m.commandErr("no run " + arg + " in the current snapshot")
-			return
-		}
-		m.selectTree(psTreeRow{lane: runLaneOf(run), pipeline: run.Pipeline})
-		m.tblRun = run.ID
-		m.pinnedRun = run.ID
-		m.logsOpen = true
-		m.pane = psPaneStats
-		m.command = nil
 	case "catalog":
 		m.command = nil
 		m.openCatalog()
@@ -360,15 +267,6 @@ func (m *psModel) runCommand(line string) {
 		} else {
 			m.note = "showing live runs only"
 		}
-	case "follow":
-		m.follow = !m.follow
-		m.scroll = 0
-		m.command = nil
-		if m.follow {
-			m.note = "log follow on"
-		} else {
-			m.note = "log follow off"
-		}
 	case "history":
 		m.histView = !m.histView
 		m.command = nil
@@ -378,7 +276,7 @@ func (m *psModel) runCommand(line string) {
 			m.note = "load strips: live · the lane summary always shows the day"
 		}
 	case "cancel":
-		run, ok := findRun(m.snap, m.logsTarget())
+		run, ok := findRun(m.snap, m.cancelTarget())
 		if !ok || run.State != "running" {
 			m.commandErr("no running run under the current selection")
 			return
@@ -399,14 +297,7 @@ func (m *psModel) runCommand(line string) {
 	default:
 		// If the typed head is a prefix of exactly one command, accept it.
 		if matches := c.filtered(); len(matches) == 1 && !strings.Contains(line, " ") {
-			spec := matches[0]
-			if spec.needsArg {
-				c.input = []rune(spec.name + " ")
-				c.err, c.cycling = "", false
-				c.syncSel()
-				return
-			}
-			m.runCommand(spec.name)
+			m.runCommand(matches[0].name)
 			return
 		}
 		m.commandErr("unknown command :" + name)
@@ -419,14 +310,13 @@ func (m *psModel) commandErr(msg string) {
 	m.command.cycling = false
 }
 
-// completeCommand cycles tab completion over the base input: command names on
-// a bare prompt, run ids after "logs ".
+// completeCommand cycles tab completion over the base input: command names.
 func (m *psModel) completeCommand() {
 	c := m.command
 	if !c.cycling {
 		c.base, c.comp, c.cycling = string(c.input), 0, true
 	}
-	cands := commandCompletions(c.base, m.snap)
+	cands := commandCompletions(c.base)
 	if len(cands) == 0 {
 		c.cycling = false
 		return
@@ -438,19 +328,9 @@ func (m *psModel) completeCommand() {
 }
 
 // commandCompletions lists the completions for a prompt prefix, in stable order.
-func commandCompletions(base string, snap Snapshot) []string {
-	if name, arg, hasArg := strings.Cut(base, " "); hasArg {
-		if name != "logs" {
-			return nil
-		}
-		arg = strings.TrimSpace(arg)
-		var out []string
-		for _, r := range snap.Ps.Runs {
-			if strings.HasPrefix(r.ID, arg) {
-				out = append(out, "logs "+r.ID)
-			}
-		}
-		return out
+func commandCompletions(base string) []string {
+	if strings.Contains(base, " ") {
+		return nil
 	}
 	var out []string
 	for _, cmd := range psCommands {
@@ -474,7 +354,7 @@ func commandDetailBody(spec psCmdSpec, width int) []string {
 		lines = append(lines, "GLOBAL")
 		lines = append(lines, "  tab        cycle panes")
 		lines = append(lines, "  ↑↓ j/k     move")
-		lines = append(lines, "  ⏎ →        drill / open logs")
+		lines = append(lines, "  ⏎ →        drill")
 		lines = append(lines, "  ←          ascend")
 		lines = append(lines, "  /          filter focused pane")
 		lines = append(lines, "  :          commands")
@@ -487,11 +367,6 @@ func commandDetailBody(spec psCmdSpec, width int) []string {
 		lines = append(lines, "  a          all / live runs")
 		lines = append(lines, "  ␣          mark pipeline")
 		lines = append(lines, "  c          cancel marked runs")
-		lines = append(lines, "")
-		lines = append(lines, "LOGS (full screen, ⏎ on a run)")
-		lines = append(lines, "  f          follow on/off")
-		lines = append(lines, "  c          cancel run")
-		lines = append(lines, "  esc        back to the frame")
 		return lines
 	}
 	lines = append(lines, wrapWords(spec.summary, width)...)

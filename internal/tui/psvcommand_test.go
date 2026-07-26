@@ -67,22 +67,6 @@ func TestPsCommandMode(t *testing.T) {
 			}
 		})
 
-		t.Run(":logs <run> opens the full-screen log view on the run", func(t *testing.T) {
-			m := newPsModel(psvFixture(), "")
-			m.update(key(':'))
-			typeLine(m, "logs 6")
-			m.update(psKey{kind: psKeyEnter})
-			if m.command != nil {
-				t.Fatalf("successful :logs must close the palette (err %q)", m.command.err)
-			}
-			if m.pinnedRun != "6" || !m.logsOpen || m.tblRun != "6" {
-				t.Fatalf("pinned %q logsOpen %v tblRun %q, want run 6 full screen", m.pinnedRun, m.logsOpen, m.tblRun)
-			}
-			if m.selPipeline != "load_orders" || m.selLane != "ingest" {
-				t.Errorf("selection = %s/%s, want ingest/load_orders", m.selLane, m.selPipeline)
-			}
-		})
-
 		t.Run("an unknown command answers inline and keeps the palette", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
 			m.update(key(':'))
@@ -93,16 +77,6 @@ func TestPsCommandMode(t *testing.T) {
 			}
 			if m.quit {
 				t.Fatal("an unknown command must never tear the view down")
-			}
-		})
-
-		t.Run(":logs with a missing run answers inline", func(t *testing.T) {
-			m := newPsModel(psvFixture(), "")
-			m.update(key(':'))
-			typeLine(m, "logs 999")
-			m.update(psKey{kind: psKeyEnter})
-			if m.command == nil || !strings.Contains(m.command.err, "no run 999") {
-				t.Fatalf("command state = %+v, want the inline no-run error", m.command)
 			}
 		})
 
@@ -140,8 +114,8 @@ func TestPsCommandMode(t *testing.T) {
 				t.Fatalf("first tab = %q, want catalog", got)
 			}
 			m.update(psKey{kind: psKeyTab})
-			if got := string(m.command.input); got != "logs" {
-				t.Fatalf("second tab = %q, want logs", got)
+			if got := string(m.command.input); got != "search" {
+				t.Fatalf("second tab = %q, want search", got)
 			}
 			// Cycle through the remaining roster and wrap past the end.
 			for range len(psCommands) - 1 {
@@ -152,20 +126,6 @@ func TestPsCommandMode(t *testing.T) {
 			}
 		})
 
-		t.Run("tab after 'logs ' completes run ids from the snapshot", func(t *testing.T) {
-			m := newPsModel(psvFixture(), "")
-			m.update(key(':'))
-			typeLine(m, "logs 1")
-			m.update(psKey{kind: psKeyTab})
-			if got := string(m.command.input); got != "logs 14" {
-				t.Fatalf("first tab = %q, want logs 14 (newest first)", got)
-			}
-			m.update(psKey{kind: psKeyTab})
-			if got := string(m.command.input); got != "logs 12" {
-				t.Fatalf("second tab = %q, want logs 12", got)
-			}
-		})
-
 		t.Run("arrows move the filtered list selection", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
 			m.update(key(':'))
@@ -173,8 +133,8 @@ func TestPsCommandMode(t *testing.T) {
 				t.Fatalf("initial selection = %q, want catalog", spec.name)
 			}
 			m.update(psKey{kind: psKeyDown})
-			if spec, _ := m.command.selected(); spec.name != "logs" {
-				t.Fatalf("after down = %q, want logs", spec.name)
+			if spec, _ := m.command.selected(); spec.name != "search" {
+				t.Fatalf("after down = %q, want search", spec.name)
 			}
 			m.update(psKey{kind: psKeyUp})
 			if spec, _ := m.command.selected(); spec.name != "catalog" {
@@ -266,10 +226,10 @@ func TestPsCommandMode(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
 			m.update(key('c'))
 			if m.catalog != nil {
-				t.Fatal("'c' outside the logs pane must not open catalog when work is registered")
+				t.Fatal("'c' on the rail must not open catalog when work is registered")
 			}
 			if m.confirmCancel {
-				t.Fatal("'c' outside logs must not arm cancel either")
+				t.Fatal("'c' on the rail must not arm cancel either")
 			}
 		})
 	})
