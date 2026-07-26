@@ -87,7 +87,7 @@ func TestPsFrameGoldens(t *testing.T) {
 			m := newPsModel(psvFixture(), target)
 			m.update(key('j')) // extract
 			m.update(key('j'))
-			m.update(key('j')) // load_orders
+			m.update(key('j'))                // load_orders
 			m.update(psKey{kind: psKeyEnter}) // focus statistics
 			m.update(psKey{kind: psKeyEnter}) // open its cursored run full screen
 			withLogs(m, logLines...)
@@ -260,13 +260,13 @@ func TestPsFrameStyling(t *testing.T) {
 		t.Run("header card names the engine and its role under the banner", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
 			lines := renderPsFrame(m, 150, 40, false).plainLines()
-			if strings.Trim(lines[0], " ✦✧˚·") != "" {
-				t.Error("banner's breathing row may carry only sparkles")
+			if lines[0] != "" {
+				t.Error("banner must keep one blank breathing row on top")
 			}
-			if !strings.Contains(lines[1], "█") || strings.Contains(lines[1][:1], "█") {
-				t.Error("wide frame is missing the padded brand banner row")
+			if !strings.Contains(lines[1], "█") {
+				t.Error("wide frame is missing the brand banner art")
 			}
-			top := strings.Join(lines[4:4+psHeaderCardH], "\n")
+			top := strings.Join(lines[7:7+psHeaderCardH], "\n")
 			for _, want := range []string{"IRIS", "dev", "LEADER", "pid 42", "up 2h13m", "1 running", "1 queued"} {
 				if !strings.Contains(top, want) {
 					t.Errorf("header card %q missing %q", top, want)

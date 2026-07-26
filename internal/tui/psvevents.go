@@ -19,10 +19,10 @@ import (
 type psEventSeverity int
 
 const (
-	psEvInfo psEventSeverity = iota // ·
-	psEvCommit                      // ●
-	psEvOK                          // ✔
-	psEvFail                        // ✖
+	psEvInfo   psEventSeverity = iota // ·
+	psEvCommit                        // ●
+	psEvOK                            // ✔
+	psEvFail                          // ✖
 )
 
 // glyph is the severity's one-cell marker and its SGR.

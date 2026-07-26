@@ -159,11 +159,9 @@ type psModel struct {
 	coarse   map[string]*psRing
 	lastTick uint64
 
-	spin    int          // spinner phase, advanced by the event loop while catalog work is in flight
-	twinkle int          // banner sparkle clock, advanced one tick per absorbed poll
-	shimmer int          // banner shimmer step, advanced one letter per absorbed poll
-	quote   quotes.Quote // the idle card's ceremony quote, picked once per view
-	clicks  []psClick    // clickable regions of the last rendered frame
+	spin   int          // spinner phase, advanced by the event loop while catalog work is in flight
+	quote  quotes.Quote // the idle card's ceremony quote, picked once per view
+	clicks []psClick    // clickable regions of the last rendered frame
 
 	snap   Snapshot
 	target string // watched engine id for the disk cache ("remote <host>" / "local <socket>")
@@ -495,7 +493,6 @@ func (m *psModel) treeHidden() int {
 // log tail that belongs to a run other than the current target, and re-clamps
 // the cursors so vanished rows never leave them dangling.
 func (m *psModel) absorb(s Snapshot) {
-	m.twinkle++
 	if s.LogsRun != "" && s.LogsRun != m.logsTargetIn(s) {
 		s.Logs, s.LogsRun = nil, ""
 	}
