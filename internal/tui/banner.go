@@ -40,19 +40,23 @@ var bannerStacked = []string{
 // bannerText is the installer's plain fallback when neither art form fits.
 const bannerText = "IRIS LAKEHOUSE"
 
-// bannerIrisHalf and bannerLakeHalf are the ps frame's height-compact brand
-// words: three half-block rows each, 2x-scaled 3x5 pixel letters. The frame
-// joins them justified edge to edge (issue #238, C1d).
-var bannerIrisHalf = []string{
-	"▀▀██▀▀     ██▀▀▄▄     ▀▀██▀▀     ██▀▀▀▀",
-	"  ██       ██▀▀▄▄       ██       ▀▀▀▀██",
-	"▀▀▀▀▀▀     ▀▀  ▀▀     ▀▀▀▀▀▀     ▀▀▀▀▀▀",
+// bannerIrisBlock and bannerLakeBlock are the ps frame's brand words: five
+// full-block rows each, 2x-scaled 3x5 pixel letters — every font pixel a
+// solid ██ chunk. The frame joins them justified edge to edge (#238 C1d).
+var bannerIrisBlock = []string{
+	"██████     ████       ██████     ██████",
+	"  ██       ██  ██       ██       ██    ",
+	"  ██       ████         ██       ██████",
+	"  ██       ██  ██       ██           ██",
+	"██████     ██  ██     ██████     ██████",
 }
 
-var bannerLakeHalf = []string{
-	"██         ▄▄▀▀▄▄     ██▄▄▀▀     ██▀▀▀▀     ██  ██     ██▀▀██     ██  ██     ██▀▀▀▀     ██▀▀▀▀",
-	"██         ██▀▀██     ██▄▄       ██▀▀       ██▀▀██     ██  ██     ██  ██     ▀▀▀▀██     ██▀▀  ",
-	"▀▀▀▀▀▀     ▀▀  ▀▀     ▀▀  ▀▀     ▀▀▀▀▀▀     ▀▀  ▀▀     ▀▀▀▀▀▀     ▀▀▀▀▀▀     ▀▀▀▀▀▀     ▀▀▀▀▀▀",
+var bannerLakeBlock = []string{
+	"██           ██       ██  ██     ██████     ██  ██     ██████     ██  ██     ██████     ██████",
+	"██         ██  ██     ████       ██         ██  ██     ██  ██     ██  ██     ██         ██    ",
+	"██         ██████     ██         ████       ██████     ██  ██     ██  ██     ██████     ████  ",
+	"██         ██  ██     ████       ██         ██  ██     ██  ██     ██  ██         ██     ██    ",
+	"██████     ██  ██     ██  ██     ██████     ██  ██     ██████     ██████     ██████     ██████",
 }
 
 // psBannerMinGap is the smallest word gap the justified banner accepts.
@@ -68,16 +72,16 @@ const (
 // psBanner joins the two brand words justified across w cells with one cell
 // of breathing room each side, or nil when they cannot fit with a readable
 // gap. The second return is each letter's column span (start, end exclusive)
-// in final frame coordinates — the shimmer's sweep track.
+// in final frame coordinates.
 func psBanner(w int) ([]string, [][2]int) {
-	iw, lw := len([]rune(bannerIrisHalf[0])), len([]rune(bannerLakeHalf[0]))
+	iw, lw := len([]rune(bannerIrisBlock[0])), len([]rune(bannerLakeBlock[0]))
 	gap := w - 2 - iw - lw
 	if gap < psBannerMinGap {
 		return nil, nil
 	}
-	out := make([]string, len(bannerIrisHalf))
+	out := make([]string, len(bannerIrisBlock))
 	for i := range out {
-		row := " " + bannerIrisHalf[i] + strings.Repeat(" ", gap) + bannerLakeHalf[i]
+		row := " " + bannerIrisBlock[i] + strings.Repeat(" ", gap) + bannerLakeBlock[i]
 		out[i] = row + strings.Repeat(" ", w-len([]rune(row)))
 	}
 	var spans [][2]int

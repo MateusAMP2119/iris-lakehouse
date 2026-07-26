@@ -16,9 +16,9 @@ import (
 )
 
 const (
-	// psBannerMinHeight is the frame height at which the three-row brand
-	// banner earns its rows.
-	psBannerMinHeight = 34
+	// psBannerMinHeight is the frame height at which the five-row brand
+	// banner earns its rows (plus its blank breathing row).
+	psBannerMinHeight = 36
 	// psFilterBoxH is a pane filter input box: borders around one input row.
 	psFilterBoxH = 3
 	// psEventsBoxH is the events list box height: borders + nine event rows.
