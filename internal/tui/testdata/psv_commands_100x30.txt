@@ -1,23 +1,23 @@
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ IRIS  dev  ·  LEADER  ·  up 2h13m  ·  pid 42    CPU  3.2% · MEM 126.0MiB · 1 running · 1 queued  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ LA╭─ COMMANDS ───────────────────────╮i╭─ ABOUT · catalog ─────────────────────────────────╮────╮
-│▌▾ i│▌▸ catalog · Browse and install … │ │ Browse and install pipeline packs                 │    │
-│   5│   logs · Pin the logs pane on a… │ │                                                   │    │
-│ ○ ●│   search · Fuzzy-find lanes, pi… │ │ Opens the catalog overlay over the dashboard:     │    │
-│ ○ ●│   all · Toggle full run history… │i│ pack list on the left, README and tree on the     │    │
-│ ○ ●│   follow · Toggle log-tail foll… │e│ right. Install and apply without leaving iris ps. │    │
-│    │   history · Toggle hours-deep l… │ │                                                   │    │
-│ ▸ r│   cancel · Cancel the watched r… │─│ Usage  :catalog                                   │────╯
-│   -│   help · Keyboard reference      │o│ Keys   :catalog                                   │────╮
-│    │   q · Quit iris ps               │ │ Group  navigate                                   │    │
-│ ▸ s│                                  │ │                                                   │    │
-│   -│                                  │ │                                                   │    │
-│    │                                  │ │                                                   │    │
-│    │                                  │ │                                                   │    │
-│    │                                  │ │                                                   │    │
-│    │                                  │ │                                                   │    │
-│    │                                  │ │                                                   │    │
+╭─ [C╭─ COMMANDS ───────────────────────╮t╭─ ABOUT · catalog ─────────────────────────────────╮────╮
+│ / t│▌▸ catalog · Browse and install … │ │ Browse and install pipeline packs                 │00  │
+╰────│   logs · Pin the logs pane on a… │ │                                                   │    │
+╭────│   search · Fuzzy-find lanes, pi… │ │ Opens the catalog overlay over the dashboard:     │ow  │
+│▌ing│   all · Toggle full run history… │ │ pack list on the left, README and tree on the     │ak  │
+│ 51.│   follow · Toggle log-tail foll… │ │ right. Install and apply without leaving iris ps. │    │
+│ ● e│   history · Toggle hours-deep l… │ │                                                   │    │
+│ ○ h│   cancel · Cancel the watched r… │ │ Usage  :catalog                                   │    │
+│ ● l│   help · Keyboard reference      │i│ Keys   :catalog                                   │    │
+│    │   q · Quit iris ps               │e│ Group  navigate                                   │    │
+│ rep│                                  │ │                                                   │    │
+│ - -│                                  │─│                                                   │────╯
+│ ○ m│                                  │i│                                                   │────╮
+│    │                                  │t│                                                   │    │
+│ sol│                                  │─│                                                   │────╯
+│ - -│                                  │─│                                                   │────╮
+│ ○ s│                                  │ │                                                   │ver │
 │    │                                  │ │                                                   │    │
 │    │                                  │ │                                                   │    │
 │    │                                  │ │                                                   │    │

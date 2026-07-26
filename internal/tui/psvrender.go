@@ -421,8 +421,11 @@ func selIndex(sel string, keys []string) int {
 // marks its title.
 func paneChrome(focused, colorless bool, title string) (borderSGR, titleSGR, t string) {
 	if focused {
+		if title != "" {
+			title = "[" + title + "]"
+		}
 		if colorless {
-			return ansiBorder, "", title + " *"
+			return ansiBorder, "", title
 		}
 		return ansiAccent, ansiAccent, title
 	}
@@ -463,11 +466,16 @@ func renderPsFrame(m *psModel, w, h int, colorless bool) *screenBuf {
 
 	// Quiet engine: no full-width top chrome. Status splits into two chips
 	// above the welcome card inside the body; overlays still compose on top.
-	if psIsEmptyWorkspace(m) {
+	switch {
+	case psIsEmptyWorkspace(m):
 		renderEmptyWorkspace(b, m, 0, 0, w, h-footerH, colorless)
-	} else {
-		renderPsHeader(b, m)
-		top := psHeaderRows(h)
+	case m.logsOpen:
+		// The full-screen log view: the frame's only raw-text surface.
+		renderLogsFull(b, m, 0, 0, w, h-footerH, colorless)
+	default:
+		bannerH := renderPsBanner(b, w, h, colorless)
+		renderPsHeader(b, m, bannerH)
+		top := bannerH + psHeaderRows(h-bannerH)
 		paneH := h - top - footerH // rows between header and optional footer
 
 		railW := 0
@@ -479,38 +487,18 @@ func renderPsFrame(m *psModel, w, h int, colorless bool) *screenBuf {
 			if railW < 26 {
 				railW = 26
 			}
-			renderRailPane(b, m, 0, top, railW, paneH, colorless)
+			renderCatalogPane(b, m, 0, top, railW, paneH, colorless)
 		}
 
 		x := railW
 		rw := w - x
-		showDetail := w >= psDetailMinWidth && h >= psDetailMinRows
-		showLogs := w >= psLogsMinWidth
-
-		detailH := 0
-		if showDetail {
-			detailH = 5
+		eventsH := 0
+		if paneH >= psEventsMinPaneH {
+			eventsH = psFilterBoxH + psEventsBoxH
 		}
-		tableH := paneH
-		if showLogs {
-			rows := len(m.pipelineKeys())
-			if m.selPipeline != "" {
-				rows = len(m.runKeys())
-			}
-			tableH = rows + 5
-			if minLogs := 8; tableH > paneH-detailH-minLogs {
-				tableH = paneH - detailH - minLogs
-			}
-			if tableH < 6 {
-				tableH = 6
-			}
-		}
-		renderTablePane(b, m, x, top, rw, tableH, colorless)
-		if showDetail {
-			renderDetailPane(b, m, x, top+tableH, rw, detailH, colorless)
-		}
-		if showLogs {
-			renderLogsPane(b, m, x, top+tableH+detailH, rw, paneH-tableH-detailH, colorless)
+		renderStatsPane(b, m, x, top, rw, paneH-eventsH, colorless)
+		if eventsH > 0 {
+			renderEventsPane(b, m, x, top+paneH-eventsH, rw, eventsH, colorless)
 		}
 	}
 
@@ -918,24 +906,24 @@ func renderCompactEmpty(b *screenBuf, ox, oy, innerW, innerH int) {
 
 // renderPsHeader paints the header: a bordered identity card when the frame
 // affords it, else the legacy one-line readout.
-func renderPsHeader(b *screenBuf, m *psModel) {
-	if psHeaderRows(b.h) == psHeaderCardH {
-		renderPsHeaderCard(b, m)
+func renderPsHeader(b *screenBuf, m *psModel, y int) {
+	if psHeaderRows(b.h-y) == psHeaderCardH {
+		renderPsHeaderCard(b, m, y)
 		return
 	}
-	renderPsHeaderLine(b, m)
+	renderPsHeaderLine(b, m, y)
 }
 
 // renderPsHeaderCard paints rows 0..2: a full-width bordered card with one
 // content row — identity left, live CPU/MEM and run counts right-aligned.
 // The empty workspace does not use this chrome (see renderWelcomeCard).
-func renderPsHeaderCard(b *screenBuf, m *psModel) {
+func renderPsHeaderCard(b *screenBuf, m *psModel, y int) {
 	e := m.snap.Ps.Engine
-	b.box(0, 0, b.w, psHeaderCardH, ansiBorder, "", "")
+	b.box(0, y, b.w, psHeaderCardH, ansiBorder, "", "")
 
 	x := 2
 	put := func(sgr, s string) {
-		b.text(x, 1, sgr, s)
+		b.text(x, y+1, sgr, s)
 		x += len([]rune(s))
 	}
 
@@ -953,8 +941,12 @@ func renderPsHeaderCard(b *screenBuf, m *psModel) {
 	put(ansiDim, fmt.Sprintf("  ·  pid %d", e.PID))
 	idEnd := x
 
+	dead := deadPipelines(m.snap)
 	counts := fmt.Sprintf(" · %d running · %d queued", e.RunningRuns, e.QueuedRuns)
-	nx, ok := renderHeaderLoad(b, m, 1, idEnd, b.w-3, len([]rune(counts)))
+	if dead > 0 {
+		counts += fmt.Sprintf(" · %d dead", dead)
+	}
+	nx, ok := renderHeaderLoad(b, m, y+1, idEnd, b.w-3, len([]rune(counts)))
 	if !ok {
 		return // identity only; the panes still carry the numbers
 	}
@@ -970,15 +962,19 @@ func renderPsHeaderCard(b *screenBuf, m *psModel) {
 	put(rc, fmt.Sprintf("%d running", e.RunningRuns))
 	put(ansiDim, " · ")
 	put(qc, fmt.Sprintf("%d queued", e.QueuedRuns))
+	if dead > 0 {
+		put(ansiDim, " · ")
+		put(ansiRed, fmt.Sprintf("%d dead", dead))
+	}
 }
 
 // renderPsHeaderLine paints the one-line header: identity left, live CPU/MEM
 // and run counts right. The empty workspace does not use this chrome.
-func renderPsHeaderLine(b *screenBuf, m *psModel) {
+func renderPsHeaderLine(b *screenBuf, m *psModel, y int) {
 	e := m.snap.Ps.Engine
 	x := 1
 	put := func(sgr, s string) {
-		b.text(x, 0, sgr, s)
+		b.text(x, y, sgr, s)
 		x += len([]rune(s))
 	}
 
@@ -991,8 +987,12 @@ func renderPsHeaderLine(b *screenBuf, m *psModel) {
 
 	// The right side: CPU heat strip, MEM, run counts, sized to fit and shed
 	// leftmost-first when the terminal narrows.
+	dead := deadPipelines(m.snap)
 	counts := fmt.Sprintf(" · %d running · %d queued", e.RunningRuns, e.QueuedRuns)
-	nx, ok := renderHeaderLoad(b, m, 0, idEnd, b.w-1, len([]rune(counts)))
+	if dead > 0 {
+		counts += fmt.Sprintf(" · %d dead", dead)
+	}
+	nx, ok := renderHeaderLoad(b, m, y, idEnd, b.w-1, len([]rune(counts)))
 	if !ok {
 		return // identity row only; the panes still carry the numbers
 	}
@@ -1008,6 +1008,10 @@ func renderPsHeaderLine(b *screenBuf, m *psModel) {
 	put(rc, fmt.Sprintf("%d running", e.RunningRuns))
 	put(ansiDim, " · ")
 	put(qc, fmt.Sprintf("%d queued", e.QueuedRuns))
+	if dead > 0 {
+		put(ansiDim, " · ")
+		put(ansiRed, fmt.Sprintf("%d dead", dead))
+	}
 }
 
 // renderHeaderLoad right-aligns the CPU heat strip and CPU/MEM readout on
@@ -1187,113 +1191,6 @@ func psFooterHints(m *psModel) []footerHint {
 	return nil
 }
 
-// railEntry is one display row of the lanes rail.
-type railEntry struct {
-	kind     int // 0 lane, 1 metrics, 2 pipeline, 3 blank
-	lane     psLaneRow
-	pipeline psPipelineRow
-}
-
-// renderRailPane paints the LANES rail: per lane a header row with its queue
-// badges, a dim metrics line (CPU, MEM, heat strip), and -- unfolded -- its
-// member pipelines with state dots.
-func renderRailPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
-	borderSGR, titleSGR, title := paneChrome(m.pane == psPaneLanes, colorless, "LANES")
-	b.box(x, y, w, h, borderSGR, titleSGR, title)
-	m.addClick(psClick{x: x, y: y, w: w, h: h, kind: psClickPane, pane: psPaneLanes})
-
-	// Resident turn tallies (#206): a quiet loop records no rows, so the rail
-	// badges its idle pipelines with turns since the last recorded run.
-	sinceRun := map[string]uint64{}
-	for _, r := range m.snap.Ps.Residents {
-		sinceRun[r.Pipeline] = r.TurnsSinceRun
-	}
-
-	var entries []railEntry
-	cursor := 0
-	lanes := deriveLanes(m.snap)
-	if len(lanes) == 0 {
-		b.text(x+2, y+2, ansiDim, clipCells("no lanes yet", w-4))
-		b.text(x+2, y+3, ansiDim, clipCells(":catalog to start", w-4))
-		return
-	}
-	for _, l := range lanes {
-		if len(entries) > 0 {
-			entries = append(entries, railEntry{kind: 3})
-		}
-		if l.name == m.selLane && m.selPipeline == "" {
-			cursor = len(entries)
-		}
-		entries = append(entries, railEntry{kind: 0, lane: l})
-		entries = append(entries, railEntry{kind: 1, lane: l})
-		if m.expanded[l.name] {
-			for _, p := range derivePipelines(m.snap, l.name) {
-				if l.name == m.selLane && p.name == m.selPipeline {
-					cursor = len(entries)
-				}
-				entries = append(entries, railEntry{kind: 2, lane: l, pipeline: p})
-			}
-		}
-	}
-
-	innerH := h - 2
-	top := 0
-	if cursor >= innerH {
-		top = cursor - innerH + 1
-	}
-	for i := top; i < len(entries) && i-top < innerH; i++ {
-		ry := y + 1 + (i - top)
-		e := entries[i]
-		switch e.kind {
-		case 0:
-			m.addClick(psClick{x: x + 1, y: ry, w: w - 2, kind: psClickLane, lane: e.lane.name})
-			fold := "▸"
-			if m.expanded[e.lane.name] {
-				fold = "▾"
-			}
-			b.text(x+2, ry, "", fold+" "+e.lane.name)
-			badge := fmt.Sprintf("%dr·%dq", e.lane.running, e.lane.queued)
-			badgeSGR := ansiDim
-			if e.lane.running > 0 {
-				badgeSGR = ansiCyan
-			}
-			b.text(x+w-2-len([]rune(badge)), ry, badgeSGR, badge)
-		case 1:
-			cpu, mem := cpuText(e.lane.load), memText(e.lane.load)
-			b.text(x+4, ry, ansiDim, cpu+" "+mem)
-			sx := x + 4 + len([]rune(cpu)) + 1 + len([]rune(mem)) + 1
-			sw := x + w - 2 - sx
-			b.renderHeatStrip(sx, ry, sw, m.stripCPU("l:"+e.lane.name, sw))
-		case 2:
-			m.addClick(psClick{x: x + 1, y: ry, w: w - 2, kind: psClickRailPipeline, lane: e.lane.name, name: e.pipeline.name})
-			// Mark circle: ○ unpicked, ● picked; clicking one toggles it.
-			if m.markedPipes[e.pipeline.name] {
-				b.text(x+2, ry, ansiMagenta, "●")
-			} else {
-				b.text(x+2, ry, ansiDim, "○")
-			}
-			m.addClick(psClick{x: x + 2, y: ry, w: 1, kind: psClickMarkPipeline, name: e.pipeline.name})
-			b.text(x+4, ry, psStateSGR(e.pipeline.latest), "●")
-			b.text(x+6, ry, "", e.pipeline.name)
-			badge, badgeSGR := "", ""
-			switch {
-			case e.pipeline.running > 0:
-				badge, badgeSGR = "run", ansiCyan
-			case e.pipeline.queued > 0:
-				badge, badgeSGR = fmt.Sprintf("%dq", e.pipeline.queued), ansiYellow
-			case sinceRun[e.pipeline.name] > 0:
-				badge, badgeSGR = fmt.Sprintf("t+%d", sinceRun[e.pipeline.name]), ansiDim
-			}
-			if badge != "" {
-				b.text(x+w-2-len([]rune(badge)), ry, badgeSGR, badge)
-			}
-		}
-		if i == cursor && (e.kind == 0 || e.kind == 2) {
-			paintSelAccent(b, x+1, ry, colorless)
-		}
-	}
-}
-
 // pipelinesColumns builds the pipelines table's columns behind the leading
 // mark-circle column. The timing columns render dashes until the engine
 // records run timestamps (issue #200), and a narrow pane sheds them whole
@@ -1325,190 +1222,6 @@ func pipelinesColumns(rows []psPipelineRow, wide bool, marked map[string]bool) [
 		)
 	}
 	return cols
-}
-
-// runsColumns builds the runs table's columns.
-func runsColumns(runs []api.PsRun) []psColumn {
-	n := len(runs)
-	return []psColumn{
-		psCol("RUN", n, func(i int) string { return runs[i].ID }),
-		psColStyled("STATE", n, func(i int) (string, string) { return runs[i].State, psStateSGR(runs[i].State) }),
-		psCol("EXIT", n, func(i int) string { return exitCodeCell(runs[i].ExitCode) }),
-		psCol("CPU", n, func(i int) string { return cpuText(runs[i].Load) }),
-		psCol("MEM", n, func(i int) string { return memText(runs[i].Load) }),
-	}
-}
-
-// renderTablePane paints the table pane: the selected lane's pipelines, or the
-// selected pipeline's runs. An empty selection gets a short nudge instead of a
-// header-only table that looks broken.
-func renderTablePane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
-	var (
-		title string
-		cols  []psColumn
-		sel   int
-		empty string
-	)
-	if m.selPipeline != "" {
-		title = "RUNS · " + m.selLane + "/" + m.selPipeline
-		runs := deriveRuns(m.snap, m.selPipeline, m.showAll)
-		cols = runsColumns(runs)
-		sel = selIndex(m.tblRun, m.runKeys())
-		if len(runs) == 0 {
-			if m.showAll {
-				empty = "no runs in history · press a for live filter"
-			} else {
-				empty = "no live runs · press a for full history · :logs <id> to pin"
-			}
-		}
-	} else {
-		title = "PIPELINES · " + m.selLane
-		if m.selLane == "" {
-			title = "PIPELINES"
-		}
-		rows := derivePipelines(m.snap, m.selLane)
-		cols = pipelinesColumns(rows, w >= 90, m.markedPipes)
-		sel = selIndex(m.tblPipeline, m.pipelineKeys())
-		if len(rows) == 0 {
-			empty = "no pipelines in this lane · :catalog to install a pack"
-		}
-	}
-	borderSGR, titleSGR, title := paneChrome(m.pane == psPaneTable, colorless, title)
-	b.box(x, y, w, h, borderSGR, titleSGR, title)
-	m.addClick(psClick{x: x, y: y, w: w, h: h, kind: psClickPane, pane: psPaneTable})
-	if h < 4 {
-		return
-	}
-	if empty != "" {
-		b.text(x+3, y+2, ansiDim, clipCells(empty, w-6))
-		return
-	}
-	sub := newScreenBuf(w-4, h-3)
-	renderTable(sub, 0, sub.h, cols, sel, colorless)
-	b.blit(sub, x+2, y+2)
-
-	// Row click regions mirror renderTable's windowing over the keys.
-	keys := m.pipelineKeys()
-	if m.selPipeline != "" {
-		keys = m.runKeys()
-	}
-	visible := (h - 3) - 1
-	top := 0
-	if sel >= visible {
-		top = sel - visible + 1
-	}
-	for r := top; r < len(keys) && r-top < visible; r++ {
-		m.addClick(psClick{x: x + 1, y: y + 3 + (r - top), w: w - 2, kind: psClickTableRow, name: keys[r]})
-		if m.selPipeline == "" {
-			// The pipelines table's leading mark circle wins over the row.
-			m.addClick(psClick{x: x + 2, y: y + 3 + (r - top), w: 1, kind: psClickMarkPipeline, name: keys[r]})
-		}
-	}
-}
-
-// renderDetailPane paints the selected pipeline's chart box: CPU and MEM heat
-// strips over the recorded load history (recent detail live, the hours-deep
-// coarse history under the 'h' toggle), and the TIME row that waits on issue
-// #200.
-func renderDetailPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
-	name := m.detailPipeline()
-	title := name
-	if name != "" && m.histView {
-		title += " · history"
-	}
-	borderSGR, titleSGR, title := paneChrome(false, colorless, title)
-	b.box(x, y, w, h, borderSGR, titleSGR, title)
-	if name == "" {
-		b.text(x+3, y+2, ansiDim, "no pipeline selected")
-		return
-	}
-	key := "p:" + name
-	ring := m.stripRing(key)
-	if ring == nil {
-		ring = &psRing{}
-	}
-
-	cpuNow, memNow := "-", "-"
-	for _, p := range derivePipelines(m.snap, m.selLane) {
-		if p.name == name {
-			cpuNow, memNow = cpuText(p.load), memText(p.load)
-		}
-	}
-	cpuVal := cpuNow + " now"
-	memVal := memNow + " now"
-	if peak := ring.memPeak(); peak > 0 {
-		memVal += " · " + memBytes(peak) + " peak"
-	}
-
-	valW := len([]rune(cpuVal))
-	if l := len([]rune(memVal)); l > valW {
-		valW = l
-	}
-	stripX := x + 8
-	stripW := x + w - 3 - valW - 2 - stripX
-	if stripW < 8 {
-		return
-	}
-	row := func(ry int, label string, samples []float64, val string) {
-		b.text(x+3, ry, ansiDim, label)
-		b.renderHeatStrip(stripX, ry, stripW, samples)
-		b.text(x+w-3-len([]rune(val)), ry, "", val)
-	}
-	row(y+1, "CPU", m.stripCPU(key, stripW), cpuVal)
-	row(y+2, "MEM", m.stripMem(key, stripW), memVal)
-	b.text(x+3, y+3, ansiDim, "TIME")
-	b.text(stripX, y+3, ansiDim, "run durations arrive with engine timestamps (#200)")
-}
-
-// renderLogsPane paints the log tail of the watched run.
-func renderLogsPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
-	target := m.logsTarget()
-	title := "LOGS"
-	if target != "" {
-		mode := "following"
-		if !m.follow {
-			mode = "paused"
-		}
-		state := ""
-		if run, ok := findRun(m.snap, target); ok {
-			state = " · " + run.State
-			title = "LOGS · " + run.Pipeline + "/" + target + state + " · " + mode
-		} else {
-			title = "LOGS · " + target + " · " + mode
-		}
-	}
-	borderSGR, titleSGR, title := paneChrome(m.pane == psPaneLogs, colorless, title)
-	b.box(x, y, w, h, borderSGR, titleSGR, title)
-	m.addClick(psClick{x: x, y: y, w: w, h: h, kind: psClickPane, pane: psPaneLogs})
-
-	innerH := h - 2
-	if target == "" {
-		b.text(x+2, y+1, ansiDim, "pick a run · ⏎ on a row · or :logs <id>")
-		return
-	}
-	logs := m.snap.Logs
-	if m.snap.LogsRun != target {
-		logs = nil
-	}
-	end := len(logs) - m.scroll
-	if end < 0 {
-		end = 0
-	}
-	start := end - innerH
-	if start < 0 {
-		start = 0
-	}
-	// The tail anchors to the pane's bottom like tail -f: a short capture
-	// leaves the top blank, and new lines arrive at the bottom edge.
-	shown := logs[start:end]
-	yoff := innerH - len(shown)
-	for i, line := range shown {
-		paintLogLine(b, x+2, y+1+yoff+i, line)
-	}
-	if len(logs) > 0 {
-		tail := fmt.Sprintf(" %d lines ", len(logs))
-		b.text(x+w-2-len([]rune(tail)), y+h-1, ansiDim, tail)
-	}
 }
 
 // renderCommandOverlay paints the dedicated COMMANDS section over a dimmed

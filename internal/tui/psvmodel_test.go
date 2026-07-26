@@ -111,20 +111,17 @@ func key(r rune) psKey { return psKey{kind: psKeyRune, r: r} }
 // across re-polls, the cancel confirm, and quit paths.
 func TestPsModelUpdate(t *testing.T) {
 	t.Run("ps-model-update", func(t *testing.T) {
-		t.Run("opens on the first lane, unfolded, logs on its running run", func(t *testing.T) {
+		t.Run("opens on the first lane, logs on its running run", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "local /tmp/iris.sock")
 			if m.pane != psPaneLanes || m.selLane != "ingest" || m.selPipeline != "" {
 				t.Fatalf("initial cursor: pane %d lane %q pipeline %q", m.pane, m.selLane, m.selPipeline)
-			}
-			if !m.expanded["ingest"] {
-				t.Fatal("the initially selected lane must open unfolded")
 			}
 			if m.focus() != "14" {
 				t.Fatalf("initial logs target = %q, want the newest running run 14", m.focus())
 			}
 		})
 
-		t.Run("tree walk crosses pipeline rows and folds on enter", func(t *testing.T) {
+		t.Run("tree walk crosses pipeline rows, nothing folds", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
 			m.update(key('j')) // into ingest's members: extract first (sorted)
 			if m.selLane != "ingest" || m.selPipeline != "extract" {
@@ -139,24 +136,19 @@ func TestPsModelUpdate(t *testing.T) {
 			if m.selLane != "reporting" || m.selPipeline != "" {
 				t.Fatalf("after jjjj: lane %q pipeline %q, want reporting lane row", m.selLane, m.selPipeline)
 			}
-			m.update(psKey{kind: psKeyLeft})
-			m.update(key('k')) // back onto ingest's last member
+			m.update(key('k')) // back onto ingest's last member — no fold state
 			if m.selPipeline != "load_orders" {
-				t.Fatalf("k after collapse of reporting: pipeline %q", m.selPipeline)
+				t.Fatalf("k back over the lane boundary: pipeline %q", m.selPipeline)
 			}
 			m.update(psKey{kind: psKeyLeft}) // pipeline row climbs to its lane
 			if m.selLane != "ingest" || m.selPipeline != "" {
 				t.Fatalf("left on a pipeline row: lane %q pipeline %q", m.selLane, m.selPipeline)
 			}
-			m.update(psKey{kind: psKeyEnter}) // lane row folds
-			if m.expanded["ingest"] {
-				t.Fatal("enter on an unfolded lane must fold it")
-			}
 		})
 
 		t.Run("tab cycles panes", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
-			for _, want := range []psPane{psPaneTable, psPaneLogs, psPaneLanes} {
+			for _, want := range []psPane{psPaneStats, psPaneEvents, psPaneLanes} {
 				m.update(psKey{kind: psKeyTab})
 				if m.pane != want {
 					t.Fatalf("pane = %d, want %d", m.pane, want)
@@ -222,8 +214,9 @@ func TestPsModelUpdate(t *testing.T) {
 
 		t.Run("selection survives a re-poll reorder and clamps when gone", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
-			m.update(psKey{kind: psKeyEnter}) // fold ingest
-			m.update(key('j'))                // reporting
+			for range 4 {
+				m.update(key('j')) // over ingest's three members onto reporting
+			}
 			if m.selLane != "reporting" {
 				t.Fatalf("selLane = %q", m.selLane)
 			}
@@ -241,7 +234,8 @@ func TestPsModelUpdate(t *testing.T) {
 
 		t.Run("cancel confirm arms on a running target and disarms on anything but y", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
-			m.pane = psPaneLogs // target is running 14
+			m.selPipeline = "load_orders" // target is running 14
+			m.pane = psPaneStats
 			m.update(key('c'))
 			if !m.confirmCancel {
 				t.Fatal("c on a running target did not arm the confirm")
@@ -260,9 +254,9 @@ func TestPsModelUpdate(t *testing.T) {
 			}
 		})
 
-		t.Run("follow toggles and scroll clamps in the logs pane", func(t *testing.T) {
+		t.Run("follow toggles and scroll clamps in the full-screen log view", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
-			m.pane = psPaneLogs
+			m.logsOpen = true
 			m.snap.Logs, m.snap.LogsRun = []string{"a", "b", "c", "d"}, "14"
 			m.update(key('f'))
 			if m.follow {
@@ -439,9 +433,9 @@ func TestPsSearch(t *testing.T) {
 
 		t.Run("narrowing, jump, and esc", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
-			m.update(key('/'))
+			m.openSearch()
 			if m.search == nil {
-				t.Fatal("/ did not open search")
+				t.Fatal(":search did not open the overlay")
 			}
 			// Empty query holds every entity: 3 lanes + 5 pipelines + 5 runs.
 			if got := len(m.search.hits); got != 13 {
@@ -459,19 +453,19 @@ func TestPsSearch(t *testing.T) {
 				t.Fatalf("best hit = %+v, want the load_orders pipeline", m.search.hits[0])
 			}
 			m.update(psKey{kind: psKeyEnter})
-			if m.search != nil || m.pane != psPaneTable || m.selPipeline != "load_orders" || m.selLane != "ingest" {
+			if m.search != nil || m.pane != psPaneStats || m.selPipeline != "load_orders" || m.selLane != "ingest" {
 				t.Fatalf("enter on a pipeline hit must select it and focus the table: %+v", m)
 			}
 		})
 
 		t.Run("run hit pins the logs target", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
-			m.update(key('/'))
+			m.openSearch()
 			m.update(key('1'))
 			m.update(key('4'))
 			m.update(psKey{kind: psKeyEnter})
-			if m.pane != psPaneLogs || m.pinnedRun != "14" || m.focus() != "14" {
-				t.Fatalf("run jump landed wrong: pane %d pinned %q focus %q", m.pane, m.pinnedRun, m.focus())
+			if !m.logsOpen || m.pinnedRun != "14" || m.focus() != "14" {
+				t.Fatalf("run jump landed wrong: logsOpen %v pinned %q focus %q", m.logsOpen, m.pinnedRun, m.focus())
 			}
 			if m.selLane != "ingest" || m.selPipeline != "load_orders" {
 				t.Errorf("run jump selection: lane %q pipeline %q", m.selLane, m.selPipeline)
@@ -480,7 +474,7 @@ func TestPsSearch(t *testing.T) {
 
 		t.Run("esc closes and only closes", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
-			m.update(key('/'))
+			m.openSearch()
 			m.update(psKey{kind: psKeyEsc})
 			if m.search != nil || m.quit {
 				t.Fatal("esc must close the overlay and nothing else")
@@ -493,7 +487,7 @@ func TestPsSearch(t *testing.T) {
 
 		t.Run("j and k are literal query characters while open", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
-			m.update(key('/'))
+			m.openSearch()
 			m.update(key('j'))
 			m.update(key('k'))
 			if got := string(m.search.query); got != "jk" {

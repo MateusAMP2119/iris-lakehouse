@@ -1,6 +1,9 @@
 package tui
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // The idle view's brand banner: the same pre-rendered oh-my-logo art the
 // installer prints (install.sh banner_wide/banner_stacked), tinted row by row
@@ -36,6 +39,39 @@ var bannerStacked = []string{
 
 // bannerText is the installer's plain fallback when neither art form fits.
 const bannerText = "IRIS LAKEHOUSE"
+
+// bannerIrisHalf and bannerLakeHalf are the ps frame's height-compact brand
+// words: three half-block rows each, 2x-scaled 3x5 pixel letters. The frame
+// joins them justified edge to edge (issue #238, C1d).
+var bannerIrisHalf = []string{
+	"▀▀██▀▀     ██▀▀▄▄     ▀▀██▀▀     ██▀▀▀▀",
+	"  ██       ██▀▀▄▄       ██       ▀▀▀▀██",
+	"▀▀▀▀▀▀     ▀▀  ▀▀     ▀▀▀▀▀▀     ▀▀▀▀▀▀",
+}
+
+var bannerLakeHalf = []string{
+	"██         ▄▄▀▀▄▄     ██▄▄▀▀     ██▀▀▀▀     ██  ██     ██▀▀██     ██  ██     ██▀▀▀▀     ██▀▀▀▀",
+	"██         ██▀▀██     ██▄▄       ██▀▀       ██▀▀██     ██  ██     ██  ██     ▀▀▀▀██     ██▀▀  ",
+	"▀▀▀▀▀▀     ▀▀  ▀▀     ▀▀  ▀▀     ▀▀▀▀▀▀     ▀▀  ▀▀     ▀▀▀▀▀▀     ▀▀▀▀▀▀     ▀▀▀▀▀▀     ▀▀▀▀▀▀",
+}
+
+// psBannerMinGap is the smallest word gap the justified banner accepts.
+const psBannerMinGap = 3
+
+// psBanner joins the two brand words justified across w cells, or nil when
+// they cannot fit with a readable gap.
+func psBanner(w int) []string {
+	iw, lw := len([]rune(bannerIrisHalf[0])), len([]rune(bannerLakeHalf[0]))
+	gap := w - iw - lw
+	if gap < psBannerMinGap {
+		return nil
+	}
+	out := make([]string, len(bannerIrisHalf))
+	for i := range out {
+		out[i] = bannerIrisHalf[i] + strings.Repeat(" ", gap) + bannerLakeHalf[i]
+	}
+	return out
+}
 
 // bannerGradient is the installer's G1..G6 purple ramp, one stop per art row;
 // stacked blocks cycle it so both halves fade the same way.

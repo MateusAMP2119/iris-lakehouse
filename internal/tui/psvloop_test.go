@@ -91,7 +91,8 @@ func TestRunPsLoop(t *testing.T) {
 			sb := &syncBuffer{}
 			s.v.out = sb
 			m := newPsModel(psvFixture(), "")
-			m.pane = psPaneLogs // the target is the running run 14
+			m.selPipeline = "load_orders" // the target is the running run 14
+			m.pane = psPaneStats
 
 			done := make(chan error, 1)
 			go func() { done <- runPsLoop(context.Background(), s.v, m) }()

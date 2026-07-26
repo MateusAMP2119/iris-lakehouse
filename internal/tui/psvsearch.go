@@ -96,23 +96,23 @@ func (m *psModel) updateSearch(k psKey) {
 	}
 }
 
-// jumpTo lands on the hit: a lane selects and unfolds its rail row, a
-// pipeline selects its rail row and focuses the runs table, a run selects its
-// pipeline and pins the logs target on it.
+// jumpTo lands on the hit: a lane selects its catalog row, a pipeline selects
+// its row and focuses the statistics pane, a run pins the target and opens
+// the full-screen log view.
 func (m *psModel) jumpTo(h psHit) {
-	m.expanded[h.lane] = true
 	switch h.kind {
 	case psHitLane:
 		m.selectTree(psTreeRow{lane: h.lane})
 		m.pane = psPaneLanes
 	case psHitPipeline:
 		m.selectTree(psTreeRow{lane: h.lane, pipeline: h.pipeline})
-		m.pane = psPaneTable
+		m.pane = psPaneStats
 	case psHitRun:
 		m.selectTree(psTreeRow{lane: h.lane, pipeline: h.pipeline})
 		m.tblRun = h.runID
 		m.pinnedRun = h.runID
-		m.pane = psPaneLogs
+		m.logsOpen = true
+		m.pane = psPaneStats
 	}
 }
 

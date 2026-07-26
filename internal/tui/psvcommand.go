@@ -8,7 +8,7 @@ import (
 )
 
 // This file is the `iris ps` command palette (#218, reworked): a dedicated
-// COMMANDS overlay — list + detail + prompt — beside the '/' telescope search.
+// COMMANDS overlay — list + detail + prompt — beside the :search telescope.
 // The closed roster stays small; each entry carries usage, description, and
 // category so the right pane is a living cheat-sheet, not a vim empire.
 
@@ -51,7 +51,7 @@ var psCommandRoster = []psCmdSpec{
 	},
 	{
 		name: "search", usage: ":search [query]", summary: "Fuzzy-find lanes, pipelines, runs",
-		detail:   "Opens the telescope search overlay. An optional query is applied immediately. Outside the palette, press /.",
+		detail:   "Opens the telescope search overlay. An optional query is applied immediately. Outside the palette, / filters the focused pane instead.",
 		category: psCmdNav, keys: "/",
 	},
 	{
@@ -330,11 +330,11 @@ func (m *psModel) runCommand(line string) {
 			m.commandErr("no run " + arg + " in the current snapshot")
 			return
 		}
-		m.expanded[runLaneOf(run)] = true
 		m.selectTree(psTreeRow{lane: runLaneOf(run), pipeline: run.Pipeline})
 		m.tblRun = run.ID
 		m.pinnedRun = run.ID
-		m.pane = psPaneLogs
+		m.logsOpen = true
+		m.pane = psPaneStats
 		m.command = nil
 	case "catalog":
 		m.command = nil
@@ -353,7 +353,7 @@ func (m *psModel) runCommand(line string) {
 		}
 		m.showAll = !m.showAll
 		m.tblRun = clampKey(m.tblRun, m.runKeys())
-		m.pane = psPaneTable
+		m.pane = psPaneStats
 		m.command = nil
 		if m.showAll {
 			m.note = "showing full run history"
@@ -363,7 +363,6 @@ func (m *psModel) runCommand(line string) {
 	case "follow":
 		m.follow = !m.follow
 		m.scroll = 0
-		m.pane = psPaneLogs
 		m.command = nil
 		if m.follow {
 			m.note = "log follow on"
@@ -384,7 +383,6 @@ func (m *psModel) runCommand(line string) {
 			m.commandErr("no running run under the current selection")
 			return
 		}
-		m.pane = psPaneLogs
 		m.confirmCancel = true
 		m.command = nil
 	case "help":
@@ -476,23 +474,24 @@ func commandDetailBody(spec psCmdSpec, width int) []string {
 		lines = append(lines, "GLOBAL")
 		lines = append(lines, "  tab        cycle panes")
 		lines = append(lines, "  ↑↓ j/k     move")
-		lines = append(lines, "  ⏎ →        unfold / drill")
+		lines = append(lines, "  ⏎ →        drill / open logs")
 		lines = append(lines, "  ←          ascend")
-		lines = append(lines, "  /          search")
+		lines = append(lines, "  /          filter focused pane")
 		lines = append(lines, "  :          commands")
 		lines = append(lines, "  ?          this help")
 		lines = append(lines, "  p          freeze (select & copy)")
 		lines = append(lines, "  h          history strips")
 		lines = append(lines, "  q          quit")
 		lines = append(lines, "")
-		lines = append(lines, "TABLE / LANES")
+		lines = append(lines, "CATALOG / STATISTICS")
 		lines = append(lines, "  a          all / live runs")
 		lines = append(lines, "  ␣          mark pipeline")
 		lines = append(lines, "  c          cancel marked runs")
 		lines = append(lines, "")
-		lines = append(lines, "LOGS")
+		lines = append(lines, "LOGS (full screen, ⏎ on a run)")
 		lines = append(lines, "  f          follow on/off")
 		lines = append(lines, "  c          cancel run")
+		lines = append(lines, "  esc        back to the frame")
 		return lines
 	}
 	lines = append(lines, wrapWords(spec.summary, width)...)

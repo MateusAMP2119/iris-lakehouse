@@ -67,7 +67,7 @@ func TestPsCommandMode(t *testing.T) {
 			}
 		})
 
-		t.Run(":logs <run> pins the logs pane on the run", func(t *testing.T) {
+		t.Run(":logs <run> opens the full-screen log view on the run", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
 			m.update(key(':'))
 			typeLine(m, "logs 6")
@@ -75,8 +75,8 @@ func TestPsCommandMode(t *testing.T) {
 			if m.command != nil {
 				t.Fatalf("successful :logs must close the palette (err %q)", m.command.err)
 			}
-			if m.pinnedRun != "6" || m.pane != psPaneLogs || m.tblRun != "6" {
-				t.Fatalf("pinned %q pane %v tblRun %q, want run 6 in the logs pane", m.pinnedRun, m.pane, m.tblRun)
+			if m.pinnedRun != "6" || !m.logsOpen || m.tblRun != "6" {
+				t.Fatalf("pinned %q logsOpen %v tblRun %q, want run 6 full screen", m.pinnedRun, m.logsOpen, m.tblRun)
 			}
 			if m.selPipeline != "load_orders" || m.selLane != "ingest" {
 				t.Errorf("selection = %s/%s, want ingest/load_orders", m.selLane, m.selPipeline)

@@ -20,6 +20,8 @@ const (
 	psClickMarkPack     // a pack row's ○/● mark circle (inline list and overlay)
 	psClickMarkPipeline // a pipeline row's ○/● mark circle (rail and table)
 	psClickCatalogApply // the "apply N marked" affordance (inline list and overlay)
+	psClickPsCatFilter  // the catalog pane's filter input box (#238 C1d)
+	psClickPsEvtFilter  // the events pane's filter input box (#238 C1d)
 )
 
 // psClick is one clickable rectangle (h defaults to a single row).
@@ -66,16 +68,12 @@ func (m *psModel) clickOn(r psClick) {
 		m.pane = r.pane
 	case psClickLane:
 		m.pane = psPaneLanes
-		if m.selLane == r.lane && m.selPipeline == "" {
-			m.expanded[r.lane] = !m.expanded[r.lane] // second click folds/unfolds
-			return
-		}
 		m.selectTree(psTreeRow{lane: r.lane})
 	case psClickRailPipeline:
 		m.pane = psPaneLanes
 		m.selectTree(psTreeRow{lane: r.lane, pipeline: r.name})
 	case psClickTableRow:
-		m.pane = psPaneTable
+		m.pane = psPaneStats
 		if m.selPipeline != "" {
 			if m.tblRun == r.name {
 				m.enter() // second click pins the run's logs
@@ -99,6 +97,12 @@ func (m *psModel) clickOn(r psClick) {
 		if m.idleCat != nil {
 			m.idleCat.searching = true
 		}
+	case psClickPsCatFilter:
+		m.pane = psPaneLanes
+		m.catInput = true
+	case psClickPsEvtFilter:
+		m.pane = psPaneEvents
+		m.evtInput = true
 	case psClickActionLogs:
 		m.openCommand()
 		m.command.input = []rune("logs ")

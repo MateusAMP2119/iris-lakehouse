@@ -68,6 +68,26 @@ func TestPsFrameGoldens(t *testing.T) {
 			golden.Assert(t, []byte(framePlain(m, 150, 40)), "testdata/psv_runs_150x40.txt")
 		})
 
+		t.Run("catalog filter typed 150x40", func(t *testing.T) {
+			m := newPsModel(psvFixture(), target)
+			m.update(key('/'))
+			for _, r := range "ord" {
+				m.update(key(r))
+			}
+			golden.Assert(t, []byte(framePlain(m, 150, 40)), "testdata/psv_filter_150x40.txt")
+		})
+
+		t.Run("full-screen logs 150x40", func(t *testing.T) {
+			m := newPsModel(psvFixture(), target)
+			m.update(key('j')) // extract
+			m.update(key('j'))
+			m.update(key('j')) // load_orders
+			m.update(psKey{kind: psKeyEnter}) // focus statistics
+			m.update(psKey{kind: psKeyEnter}) // open its cursored run full screen
+			withLogs(m, logLines...)
+			golden.Assert(t, []byte(framePlain(m, 150, 40)), "testdata/psv_logs_full_150x40.txt")
+		})
+
 		t.Run("search overlay 100x30", func(t *testing.T) {
 			m := newPsModel(psvFixture(), target)
 			m.update(key('/'))
@@ -215,15 +235,15 @@ func TestPsFrameStyling(t *testing.T) {
 			}
 		})
 
-		t.Run("logs pane titles the watched run and pauses read honestly", func(t *testing.T) {
+		t.Run("full-screen log view titles the watched run and pauses read honestly", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
 			withLogs(m, "one", "two")
+			m.logsOpen = true
 			lines := renderPsFrame(m, 150, 40, false).plainLines()
 			joined := strings.Join(lines, "\n")
 			if !strings.Contains(joined, "LOGS · load_orders/14 · running · following") {
 				t.Errorf("logs title missing, frame:\n%s", joined)
 			}
-			m.pane = psPaneLogs
 			m.update(key('f'))
 			joined = strings.Join(renderPsFrame(m, 150, 40, false).plainLines(), "\n")
 			if !strings.Contains(joined, "paused") {
@@ -231,9 +251,13 @@ func TestPsFrameStyling(t *testing.T) {
 			}
 		})
 
-		t.Run("header card names the engine and its role", func(t *testing.T) {
+		t.Run("header card names the engine and its role under the banner", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
-			top := strings.Join(renderPsFrame(m, 150, 40, false).plainLines()[:psHeaderCardH], "\n")
+			lines := renderPsFrame(m, 150, 40, false).plainLines()
+			if !strings.Contains(lines[0], "█") {
+				t.Error("wide frame is missing the brand banner row")
+			}
+			top := strings.Join(lines[3:3+psHeaderCardH], "\n")
 			for _, want := range []string{"IRIS", "dev", "LEADER", "pid 42", "up 2h13m", "1 running", "1 queued"} {
 				if !strings.Contains(top, want) {
 					t.Errorf("header card %q missing %q", top, want)

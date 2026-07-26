@@ -66,7 +66,7 @@ func TestPsClick(t *testing.T) {
 
 		var logsPane, tableRow psClick
 		for _, r := range m.clicks {
-			if r.kind == psClickPane && r.pane == psPaneLogs {
+			if r.kind == psClickPane && r.pane == psPaneEvents {
 				logsPane = r
 			}
 			if r.kind == psClickTableRow && tableRow.w == 0 {
@@ -77,11 +77,11 @@ func TestPsClick(t *testing.T) {
 			t.Fatalf("dashboard regions missing: logs=%+v row=%+v", logsPane, tableRow)
 		}
 		m.click(logsPane.x+1, logsPane.y+1)
-		if m.pane != psPaneLogs {
+		if m.pane != psPaneEvents {
 			t.Fatalf("logs pane click should focus logs, pane=%d", m.pane)
 		}
 		m.click(tableRow.x, tableRow.y)
-		if m.pane != psPaneTable || m.tblPipeline != tableRow.name {
+		if m.pane != psPaneStats || m.tblPipeline != tableRow.name {
 			t.Fatalf("table row click should focus table and select %q, got pane=%d sel=%q",
 				tableRow.name, m.pane, m.tblPipeline)
 		}
