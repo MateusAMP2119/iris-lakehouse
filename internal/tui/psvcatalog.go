@@ -111,6 +111,12 @@ func (c *psCatalog) toggleMarkAt(i int) {
 	c.banner = ""
 }
 
+// working reports whether the surface owns an in-flight request or an
+// unfinished batch — state that must outlive the view that opened it.
+func (c *psCatalog) working() bool {
+	return c.busy != "" || len(c.queue) > 0
+}
+
 // batch lists the marked packs in catalog order (nil when none marked).
 func (c *psCatalog) batch() []string {
 	if len(c.marked) == 0 {
@@ -345,6 +351,9 @@ func (m *psModel) parkBatchHead(c *psCatalog) {
 	total := c.done + len(c.queue)
 	next := c.queue[0]
 	c.busy = fmt.Sprintf("applying %s… (%d/%d)", next, c.done+1, total)
+	if c == m.idleCat && !psIsEmptyWorkspace(m) {
+		m.note = c.busy // the inline card is off-frame by now; the footer carries it
+	}
 	m.parkCatalogReqFor(c, psCatalogReq{kind: psCatalogApply, pack: next, force: true})
 }
 

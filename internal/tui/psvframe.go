@@ -16,9 +16,6 @@ import (
 )
 
 const (
-	// psBannerMinHeight is the frame height at which the three-row brand
-	// banner earns its rows.
-	psBannerMinHeight = 34
 	// psFilterBoxH is a pane filter input box: borders around one input row.
 	psFilterBoxH = 3
 	// psEventsBoxH is the events list box height: borders + nine event rows.
@@ -65,7 +62,7 @@ func deadPipelines(s Snapshot) int {
 
 // catalogEntry is one display row of the catalog rail.
 type catalogEntry struct {
-	kind     int // 0 lane, 1 metrics, 2 pipeline, 3 blank, 4 table
+	kind     int // 0 lane, 2 pipeline, 4 table
 	lane     psLaneRow
 	dead     int // lane rows: member pipelines whose latest run dead-lettered
 	pipeline psPipelineRow
@@ -87,37 +84,77 @@ func catalogDot(p psPipelineRow) (string, string) {
 	}
 }
 
-// renderCatalogPane paints the catalog rail: the filter box, then the
-// flush-left list — every lane always showing its pipelines (#238 C1d: the
-// only concealment is scroll, and the filter).
-func renderCatalogPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
-	focused := m.pane == psPaneLanes
-	right := ""
-	if hidden := m.treeHidden(); hidden > 0 {
-		right = fmt.Sprintf("%d hidden", hidden)
-	}
-	renderFilterBox(b, x, y, w, "CATALOG", "/ type to filter the catalog",
-		focused, m.catInput, m.catFilter, right, colorless)
-	m.addClick(psClick{x: x, y: y, w: w, h: psFilterBoxH, kind: psClickPsCatFilter})
+// The rail's vertical blocks inside its one box.
+const (
+	// psRailFilterH is the filter block: the input row, its divider being that
+	// row's own underline.
+	psRailFilterH = 1
+	// psRailFootFixedH is the lane summary's fixed part: the lane row and the
+	// CPU and MEM strip rows.
+	psRailFootFixedH = 3
+	// psRailFootTables bounds the table rows the summary names; a lane with more
+	// spends its last row saying how many it left out.
+	psRailFootTables = 4
+	// psRailFootMinList is the shortest list the summary will leave behind;
+	// tighter rails keep every row for the tree.
+	psRailFootMinList = 4
+)
 
-	ly := y + psFilterBoxH
-	lh := h - psFilterBoxH
-	b.box(x, ly, w, lh, ansiBorder, "", "")
-	m.addClick(psClick{x: x, y: ly, w: w, h: lh, kind: psClickPane, pane: psPaneLanes})
+// railFootH is the lane summary's height for a lane owning n written tables.
+func railFootH(n int) int {
+	if n > psRailFootTables {
+		n = psRailFootTables
+	}
+	return psRailFootFixedH + n
+}
+
+// renderCatalogPane paints the catalog rail in the statusline's chrome: side
+// pipes, horizontal edges as SGR rules on the rows themselves, the title row
+// carrying the gradient mark, then the filter row, the flush-left list — every
+// lane always showing its pipelines (#238 C1d: the only concealment is scroll,
+// and the filter) — and the selected lane's summary pinned to the bottom.
+func renderCatalogPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
+	borderSGR, titleSGR, title := paneChrome(m.pane == psPaneLanes, colorless, "[CATALOG]")
+	b.hairBox(x, y, w, h, borderSGR)
+	m.addClick(psClick{x: x, y: y, w: w, h: h, kind: psClickPane, pane: psPaneLanes})
+
+	// The title is a row of its own now, wearing the wordmark's ramp; focus
+	// still reads through the chrome colour the pipes and rules carry.
+	if colorless {
+		b.text(x+2, y, titleSGR, title)
+	} else {
+		b.gradText(x+2, y, title)
+	}
+	defer b.ruleRow(x, y, w)          // the title row's edges, drawn last
+	defer b.underlineRow(x, y+h-1, w) // the rail's bottom edge
+
+	renderRailFilter(b, m, x, y+1, w)
+	m.addClick(psClick{x: x + 1, y: y + 1, w: w - 2, kind: psClickPsCatFilter})
+	b.underlineRow(x, y+1, w) // the filter's divider, as the row's own rule
+
+	ly := y + 1 + psRailFilterH
+	lh := h - 1 - psRailFilterH
+	if footH := railFootH(len(m.laneTables()[m.selLane])); lh >= psRailFootMinList+footH {
+		lh -= footH
+		// The summary's divider, likewise the last list row's own rule —
+		// deferred so the rows the list paints below still take it.
+		defer b.underlineRow(x, ly+lh-1, w)
+		renderRailFooter(b, m, x, ly+lh, w)
+	}
 
 	rows := m.treeRows()
 	if len(rows) == 0 {
 		if len(m.catFilter) > 0 {
-			b.text(x+2, ly+2, ansiDim, clipCells("no rows match · esc clears the filter", w-4))
+			b.text(x+2, ly+1, ansiDim, clipCells("no rows match · esc clears the filter", w-4))
 		} else {
-			b.text(x+2, ly+2, ansiDim, clipCells("no lanes yet", w-4))
-			b.text(x+2, ly+3, ansiDim, clipCells(":catalog to start", w-4))
+			b.text(x+2, ly+1, ansiDim, clipCells("no lanes yet", w-4))
+			b.text(x+2, ly+2, ansiDim, clipCells(":catalog to start", w-4))
 		}
 		return
 	}
 
-	// Lane and pipeline rows come from treeRows (the filtered nav order);
-	// metrics and blank rows are display-only interleavings.
+	// Lane headings and pipeline rows come from treeRows (the filtered nav
+	// order); only the pipeline rows can hold the cursor.
 	deadByLane := map[string]int{}
 	for _, l := range deriveLanes(m.snap) {
 		for _, p := range derivePipelines(m.snap, l.name) {
@@ -138,29 +175,16 @@ func renderCatalogPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool)
 	}
 
 	var entries []catalogEntry
-	cursor := 0
+	cursor := -1
 	for _, r := range rows {
-		switch {
-		case r.pipeline == "" && r.table == "":
-			if len(entries) > 0 {
-				entries = append(entries, catalogEntry{kind: 3})
-			}
-			if r.lane == m.selLane && m.selPipeline == "" && m.selTable == "" {
-				cursor = len(entries)
-			}
+		if r.pipeline == "" {
 			entries = append(entries, catalogEntry{kind: 0, lane: laneByName[r.lane], dead: deadByLane[r.lane]})
-			entries = append(entries, catalogEntry{kind: 1, lane: laneByName[r.lane]})
-		case r.table != "":
-			if r.lane == m.selLane && r.table == m.selTable {
-				cursor = len(entries)
-			}
-			entries = append(entries, catalogEntry{kind: 4, lane: laneByName[r.lane], table: r.table})
-		default:
-			if r.lane == m.selLane && r.pipeline == m.selPipeline && m.selTable == "" {
-				cursor = len(entries)
-			}
-			entries = append(entries, catalogEntry{kind: 2, lane: laneByName[r.lane], pipeline: pipeByName[r.lane+"/"+r.pipeline]})
+			continue
 		}
+		if r.lane == m.selLane && r.pipeline == m.selPipeline {
+			cursor = len(entries)
+		}
+		entries = append(entries, catalogEntry{kind: 2, lane: laneByName[r.lane], pipeline: pipeByName[r.lane+"/"+r.pipeline]})
 	}
 
 	sinceRun := map[string]uint64{}
@@ -168,41 +192,44 @@ func renderCatalogPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool)
 		sinceRun[r.Pipeline] = r.TurnsSinceRun
 	}
 
-	innerH := lh - 2
+	innerH := lh
 	top := 0
 	if cursor >= innerH {
 		top = cursor - innerH + 1
 	}
 	for i := top; i < len(entries) && i-top < innerH; i++ {
-		ry := ly + 1 + (i - top)
+		ry := ly + (i - top)
 		e := entries[i]
 		switch e.kind {
 		case 0:
+			// A lane heading names itself and its counts. It is not a cursor
+			// stop; the lane the cursor sits in is marked instead.
+			here := e.lane.name == m.selLane
 			m.addClick(psClick{x: x + 1, y: ry, w: w - 2, kind: psClickLane, lane: e.lane.name})
-			b.text(x+2, ry, "", e.lane.name)
+			nameSGR := ""
+			if here {
+				nameSGR = ansiMagenta
+			}
+			b.text(x+2, ry, nameSGR, clipCells(e.lane.name, w-12))
+			// Counts stay quiet; only the dead cross earns the alarm colour.
 			badge := fmt.Sprintf("%dr·%dq", e.lane.running, e.lane.queued)
+			if here {
+				badge += fmt.Sprintf(" · %d pipelines", len(derivePipelines(m.snap, e.lane.name)))
+			}
 			badgeSGR := ansiDim
 			if e.lane.running > 0 {
 				badgeSGR = ansiCyan
 			}
+			cross := ""
 			if e.dead > 0 {
-				badge += fmt.Sprintf("·%d✖", e.dead)
-				badgeSGR = ansiRed
+				cross = fmt.Sprintf("%d✖", e.dead)
 			}
-			b.text(x+w-2-len([]rune(badge)), ry, badgeSGR, badge)
-		case 1:
-			cpu, mem := cpuText(e.lane.load), memText(e.lane.load)
-			b.text(x+2, ry, ansiDim, cpu+" "+mem)
-			sx := x + 2 + len([]rune(cpu)) + 1 + len([]rune(mem)) + 1
-			sw := x + w - 2 - sx
-			b.renderHeatStrip(sx, ry, sw, m.stripCPU("l:"+e.lane.name, sw))
-		case 4:
-			m.addClick(psClick{x: x + 1, y: ry, w: w - 2, kind: psClickRailTable, lane: e.lane.name, name: e.table})
-			b.text(x+2, ry, "", clipCells(e.table, w-12))
-			if d := latestRunDelta(m.snap, e.table); d != 0 {
-				badge := fmt.Sprintf("%+d", d)
-				b.text(x+w-2-len([]rune(badge)), ry, ansiCyan, badge)
+			bx := x + w - 2 - len([]rune(badge))
+			if cross != "" {
+				bx -= len([]rune(cross)) + 1
+				b.text(x+w-2-len([]rune(cross)), ry, ansiRed, cross)
 			}
+			b.text(bx, ry, badgeSGR, badge)
 		case 2:
 			m.addClick(psClick{x: x + 1, y: ry, w: w - 2, kind: psClickRailPipeline, lane: e.lane.name, name: e.pipeline.name})
 			dot, dotSGR := catalogDot(e.pipeline)
@@ -211,7 +238,11 @@ func renderCatalogPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool)
 			}
 			b.text(x+2, ry, dotSGR, dot)
 			m.addClick(psClick{x: x + 2, y: ry, w: 1, kind: psClickMarkPipeline, name: e.pipeline.name})
-			b.text(x+4, ry, "", clipCells(e.pipeline.name, w-12))
+			nameSGR := ""
+			if i == cursor {
+				nameSGR = ansiBold
+			}
+			b.text(x+4, ry, nameSGR, clipCells(e.pipeline.name, w-12))
 			badge, badgeSGR := "", ""
 			switch {
 			case e.pipeline.running > 0:
@@ -227,10 +258,131 @@ func renderCatalogPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool)
 				b.text(x+w-2-len([]rune(badge)), ry, badgeSGR, badge)
 			}
 		}
-		if i == cursor && (e.kind == 0 || e.kind == 2 || e.kind == 4) {
+		// One background per row: the cursor's bright wash, else the quiet
+		// lane wash over the block the cursor sits in.
+		switch {
+		case i == cursor:
 			paintSelAccent(b, x+1, ry, w-2, colorless)
+		case e.lane.name == m.selLane:
+			paintLaneWash(b, x+1, ry, w-2, colorless)
 		}
 	}
+}
+
+// laneLoad is the lane's sampled load, nil when the snapshot carries none.
+func (m *psModel) laneLoad(lane string) *api.PsLoad {
+	for _, l := range deriveLanes(m.snap) {
+		if l.name == lane {
+			return l.load
+		}
+	}
+	return nil
+}
+
+// renderRailFilter paints the rail's filter row: the dim placeholder, or the
+// typed query (a trailing block cursor while the input holds typing focus),
+// with the hidden-row count right-aligned.
+func renderRailFilter(b *screenBuf, m *psModel, x, y, w int) {
+	switch {
+	case m.catInput:
+		b.text(x+2, y, ansiYellow, "/")
+		b.text(x+4, y, "", clipCells(string(m.catFilter)+"█", w-8))
+	case len(m.catFilter) > 0:
+		b.text(x+2, y, ansiYellow, "/")
+		b.text(x+4, y, "", clipCells(string(m.catFilter), w-8))
+	default:
+		b.text(x+2, y, ansiDim, clipCells("/ type to filter", w-6))
+	}
+	if hidden := m.treeHidden(); hidden > 0 {
+		right := fmt.Sprintf("%d hidden", hidden)
+		if len([]rune(right))+8 < w {
+			b.text(x+w-2-len([]rune(right)), y, ansiDim, right)
+		}
+	}
+}
+
+// renderRailFooter paints the rail's bottom summary for the lane the cursor
+// sits in: the lane name with the stamp of the last commit this view observed,
+// one row per written table with its newest delta, then the lane's CPU and MEM
+// strips. Its divider is the underline of the row above (see
+// renderCatalogPane). No clock math — the stamp is an observation, the deltas
+// are watermark arithmetic.
+func renderRailFooter(b *screenBuf, m *psModel, x, y, w int) {
+	lane := m.selLane
+	b.text(x+2, y, ansiDim, "LANE · ")
+	b.text(x+9, y, ansiMagenta, clipCells(orDefault(lane, "none"), w-24))
+	if stamp := m.laneLastCommit(lane); stamp != "" {
+		label := "last " + stamp
+		b.text(x+w-2-len([]rune(label)), y, ansiDim, "last ")
+		b.text(x+w-2-len([]rune(stamp)), y, "", stamp)
+	}
+
+	ry := y + 1
+	tables := m.laneTables()[lane]
+	shown := tables
+	if len(shown) > psRailFootTables {
+		shown = shown[:psRailFootTables-1]
+	}
+	for _, name := range shown {
+		m.addClick(psClick{x: x + 1, y: ry, w: w - 2, kind: psClickRailTable, lane: lane, name: name})
+		nameSGR := ""
+		if name == m.selTable {
+			nameSGR = ansiMagenta
+		}
+		b.text(x+2, ry, nameSGR, clipCells(name, w-12))
+		if d := latestRunDelta(m.snap, name); d != 0 {
+			badge := fmt.Sprintf("%+d", d)
+			b.text(x+w-2-len([]rune(badge)), ry, ansiCyan, badge)
+		}
+		ry++
+	}
+	if n := len(tables) - len(shown); n > 0 {
+		b.text(x+2, ry, ansiDim, clipCells(fmt.Sprintf("+%d more tables", n), w-4))
+		ry++
+	}
+
+	// The lane's load, the strip rows the tree no longer carries. The strips are
+	// the day-deep ring (they span what the collector has recorded, growing to
+	// its full depth and then rolling); the numbers stay live.
+	key := "l:" + lane
+	load := m.scopeLoad(m.laneLoad(lane))
+	cpuVal, memVal := cpuText(load), memText(load)
+	valW := loadValW(cpuVal, memVal)
+	railStripRow(b, x, ry, w, valW, "CPU", func(n int) []float64 { return m.dayCPU(key, n) }, cpuVal)
+	railStripRow(b, x, ry+1, w, valW, "MEM", func(n int) []float64 { return m.dayMem(key, n) }, memVal)
+}
+
+// railStripRow paints one labelled heat strip in the rail summary with its
+// value right-aligned in a valW-wide column. The strip's geometry comes from
+// valW, never from this row's own reading, so the CPU and MEM bars line up and
+// neither one re-fits when its number changes width. samples is asked for the
+// width actually painted, so the bar spans the whole ring instead of being
+// truncated to its newest cells.
+func railStripRow(b *screenBuf, x, y, w, valW int, label string, samples func(int) []float64, val string) {
+	b.text(x+2, y, ansiDim, label)
+	sx := x + 2 + len([]rune(label)) + 1
+	valX := x + w - 2 - valW
+	sw := valX - 1 - sx
+	if sw > 0 {
+		b.renderHeatStrip(sx, y, sw, samples(sw))
+	}
+	b.text(x+w-2-len([]rune(val)), y, "", val)
+}
+
+// laneLastCommit is the newest commit stamp this view observed for the lane's
+// pipelines ("" when it has seen none).
+func (m *psModel) laneLastCommit(lane string) string {
+	inLane := map[string]bool{}
+	for _, p := range derivePipelines(m.snap, lane) {
+		inLane[p.name] = true
+	}
+	for i := len(m.snap.Events) - 1; i >= 0; i-- {
+		e := m.snap.Events[i]
+		if e.Severity == psEvCommit && inLane[e.Pipeline] {
+			return e.Stamp
+		}
+	}
+	return ""
 }
 
 // bottomHint splices a right-aligned dim hint into a box's bottom border row.
@@ -241,16 +393,29 @@ func bottomHint(b *screenBuf, x, y, w int, hint string) {
 	b.text(x+w-3-len([]rune(hint)), y, ansiDim, " "+hint+" ")
 }
 
-// statsStripRow paints one labeled heat-strip row with a right-aligned value.
-func statsStripRow(b *screenBuf, x, y, w int, label string, samples []float64, val string) {
+// statsStripRow paints one labeled heat-strip row with its value right-aligned
+// in a valW-wide column. Like railStripRow the strip's geometry is valW's, not
+// this reading's, so the rows align and the bar holds still as the numbers move.
+func statsStripRow(b *screenBuf, x, y, w, valW int, label string, samples func(int) []float64, val string) {
 	b.text(x+2, y, ansiDim, label)
 	stripX := x + 8
-	stripW := x + w - 3 - len([]rune(val)) - 2 - stripX
+	stripW := x + w - 3 - valW - 2 - stripX
 	if stripW < 8 {
 		return
 	}
-	b.renderHeatStrip(stripX, y, stripW, samples)
+	b.renderHeatStrip(stripX, y, stripW, samples(stripW))
 	b.text(x+w-3-len([]rune(val)), y, "", val)
+}
+
+// psLoadValW floors the load readout column so the common width changes -- a
+// CPU crossing 10%, a MEM crossing into MiB -- never move the bar beside it.
+// "1023.9MiB" is the widest ordinary reading.
+const psLoadValW = 9
+
+// loadValW is the column two load readouts share: the wider of them, never
+// below the floor.
+func loadValW(a, b string) int {
+	return max(psLoadValW, len([]rune(a)), len([]rune(b)))
 }
 
 // renderStatsPane paints the frame's main surface: the selected pipeline's
@@ -334,7 +499,8 @@ func renderTableStats(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) 
 		}
 	}
 	rateVal := fmt.Sprintf("%d rows this poll · %d peak", int64(latest), int64(peak))
-	statsStripRow(b, x, y+3, w, "RATE", scaled, rateVal)
+	// A lone row with no sibling to line up against: its own width is the column.
+	statsStripRow(b, x, y+3, w, len([]rune(rateVal)), "RATE", func(int) []float64 { return scaled }, rateVal)
 
 	ops := opsSplit(j, name)
 	b.text(x+2, y+4, ansiDim, "OPS")
@@ -530,20 +696,23 @@ func renderPipelineStats(b *screenBuf, m *psModel, x, y, w, h int, colorless boo
 
 	// Load strips: CPU, MEM, and the TIME row that waits on issue #200.
 	key := "p:" + name
-	cpuNow, memNow := "-", "-"
+	load := m.scopeLoad(nil)
 	for _, p := range derivePipelines(m.snap, m.selLane) {
 		if p.name == name {
-			cpuNow, memNow = cpuText(p.load), memText(p.load)
+			load = m.scopeLoad(p.load)
 		}
 	}
+	cpuNow, memNow := cpuText(load), memText(load)
 	memVal := memNow + " now"
 	if ring := m.stripRing(key); ring != nil {
 		if peak := ring.memPeak(); peak > 0 {
 			memVal += " · " + memBytes(peak) + " peak"
 		}
 	}
-	statsStripRow(b, x, y+3, w, "CPU", m.stripCPU(key, w), cpuNow+" now")
-	statsStripRow(b, x, y+4, w, "MEM", m.stripMem(key, w), memVal)
+	cpuVal := cpuNow + " now"
+	valW := loadValW(cpuVal, memVal)
+	statsStripRow(b, x, y+3, w, valW, "CPU", func(n int) []float64 { return m.stripCPU(key, n) }, cpuVal)
+	statsStripRow(b, x, y+4, w, valW, "MEM", func(n int) []float64 { return m.stripMem(key, n) }, memVal)
 	b.text(x+2, y+5, ansiDim, "TIME")
 	pt, hasTimes := pipeTimes(m.snap)[name]
 	timeVal := ""
@@ -674,14 +843,17 @@ func renderLaneStats(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 	b.text(x+2, y+1, "", clipCells(counts, leftW))
 
 	key := "l:" + name
-	memVal := memText(lane.load) + " now"
+	load := m.scopeLoad(lane.load)
+	memVal := memText(load) + " now"
 	if ring := m.stripRing(key); ring != nil {
 		if peak := ring.memPeak(); peak > 0 {
 			memVal += " · " + memBytes(peak) + " peak"
 		}
 	}
-	statsStripRow(b, x, y+3, w, "CPU", m.stripCPU(key, w), cpuText(lane.load)+" now")
-	statsStripRow(b, x, y+4, w, "MEM", m.stripMem(key, w), memVal)
+	cpuVal := cpuText(load) + " now"
+	valW := loadValW(cpuVal, memVal)
+	statsStripRow(b, x, y+3, w, valW, "CPU", func(n int) []float64 { return m.stripCPU(key, n) }, cpuVal)
+	statsStripRow(b, x, y+4, w, valW, "MEM", func(n int) []float64 { return m.stripMem(key, n) }, memVal)
 
 	tblY := y + 6
 	tblH := y + h - 1 - tblY
@@ -802,34 +974,6 @@ func renderLogsFull(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 		tail := fmt.Sprintf(" %d lines ", len(logs))
 		b.text(x+w-2-len([]rune(tail)), y+h-1, ansiDim, tail)
 	}
-}
-
-// renderPsBanner paints the brand banner: the chunky rework of the
-// installer's ANSI-shadow art (banner.go) justified edge to edge, one blank
-// row above, tinted with the same per-row purple gradient the idle card
-// uses. A frame too narrow for the chunky form falls back to the original
-// bannerWide centered; too small gets none. Returns the rows spent.
-func renderPsBanner(b *screenBuf, w, h int, colorless bool) int {
-	if h < psBannerMinHeight {
-		return 0
-	}
-	art, x := psBannerRows(w), 0
-	if art == nil {
-		if aw := logoWidth(bannerWide); aw <= w {
-			art, x = bannerWide, (w-aw)/2
-		}
-	}
-	if art == nil {
-		return 0
-	}
-	for i, row := range art {
-		sgr := bannerRowSGR(i)
-		if colorless {
-			sgr = ""
-		}
-		b.text(x, i+1, sgr, row)
-	}
-	return len(art) + 1
 }
 
 // runsColumns builds the statistics pane's run history columns. ELAPSED is

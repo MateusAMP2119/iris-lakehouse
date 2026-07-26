@@ -526,23 +526,28 @@ func pollPs(ctx context.Context, c *Client, every time.Duration,
 				} else {
 					lastLogs = mergeLogTail(lastLogs, win)
 				}
-			} else if warn == "" {
+			} else if warn == "" && runStateOf(ps.Runs, focus) == "running" {
+				// A queued run has not opened a capture yet, and a pruned one
+				// never will: neither is a failure. Only a live run missing its
+				// tail is worth the footer.
 				warn = "run logs unavailable"
 			}
 		}
-		// A failing declared source outranks softer warnings: its turns stay
-		// quiet, so this line is the pane's only live trace of the failure.
-		for _, sh := range ps.Sources {
-			if sh.ConsecutiveFails > 0 {
-				warn = fmt.Sprintf("source %s failing ×%d (%s) · backing off", sh.Pipeline, sh.ConsecutiveFails, sh.Error)
-				break
-			}
-		}
+		// A failing declared source needs no footer line: the events digest
+		// already carries the fail row (deriveEvents), and a long fetch error
+		// would swallow the whole row.
 		// The activity aggregate is soft like the listing: a failing (or
 		// missing) route leaves the last accumulated state riding along.
 		since := int64(0)
 		if journal != nil {
 			since = journal.Watermark
+		} else {
+			// The first fold reads the journal whole (since_id 0), so it is the
+			// one activity read that can outlast its poll. Ship what is already
+			// in hand first -- the frame opens live and the tables land when
+			// the aggregate answers. prevSnap stays untouched: this journal-less
+			// snapshot must never become the events diff base.
+			sendPoll(polls, psPollMsg{snap: Snapshot{Ps: ps, Pipelines: lastPipes, Events: events}, warn: warn})
 		}
 		var actDelta []api.JournalActivityGroup
 		if act, aerr := c.fetchJournalActivity(ctx, since); aerr == nil {
@@ -565,6 +570,12 @@ func pollPs(ctx context.Context, c *Client, every time.Duration,
 		return true
 	}
 
+	// The seed the view opened on carries /ps and the listing only, so every
+	// poll-derived surface (the journal tables, the events digest) is empty
+	// until a poll lands. Take one now rather than a tick from now.
+	if !poll(false) {
+		return
+	}
 	tick := time.NewTicker(every)
 	defer tick.Stop()
 	for {
@@ -600,6 +611,17 @@ func pollPs(ctx context.Context, c *Client, every time.Duration,
 			}
 		}
 	}
+}
+
+// runStateOf is the state the payload reports for one run ("" when it lists
+// no such run).
+func runStateOf(runs []api.PsRun, id string) string {
+	for _, r := range runs {
+		if r.ID == id {
+			return r.State
+		}
+	}
+	return ""
 }
 
 // sendPoll ships a snapshot with drop-and-replace semantics on the buffered

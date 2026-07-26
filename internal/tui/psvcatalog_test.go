@@ -217,6 +217,49 @@ func TestPsCatalogBatch(t *testing.T) {
 			}
 		})
 
+		t.Run("the idle card's batch survives the workspace filling mid-flight", func(t *testing.T) {
+			// The empty workspace's inline card owns the batch state.
+			m := newPsModel(Snapshot{Ps: api.PsPayload{Engine: api.PsEngine{Version: "dev"}}}, "")
+			req := m.takeCatalogReq()
+			if req == nil || req.kind != psCatalogList {
+				t.Fatalf("idle card parked %+v, want its list fetch", req)
+			}
+			m.absorbCatalog(psCatalogMsg{kind: psCatalogList, seq: req.seq,
+				packs: []api.CatalogPack{{Name: "quake-monitor"}, {Name: "dlq-demo"}}})
+			m.idleCat.marked = map[string]bool{"quake-monitor": true, "dlq-demo": true}
+			m.catalogApply(m.idleCat)
+			head := m.takeCatalogReq()
+			if head == nil || head.pack != "quake-monitor" {
+				t.Fatalf("batch head = %+v, want quake-monitor", head)
+			}
+
+			// Applying the first pack registers work: the workspace stops being
+			// empty, but the card still owns the rest of the batch.
+			m.absorb(psvFixture())
+			if m.idleCat == nil {
+				t.Fatal("a working card must outlive the empty workspace, else the batch strands")
+			}
+			m.absorbCatalog(psCatalogMsg{kind: psCatalogApply, seq: head.seq,
+				res: &api.CatalogInstallResult{Pack: "quake-monitor"}})
+			next := m.takeCatalogReq()
+			if next == nil || next.pack != "dlq-demo" {
+				t.Fatalf("chained request = %+v, want dlq-demo's apply", next)
+			}
+			if !strings.Contains(m.note, "dlq-demo") {
+				t.Errorf("note = %q, want the off-frame progress", m.note)
+			}
+			m.absorbCatalog(psCatalogMsg{kind: psCatalogApply, seq: next.seq,
+				res: &api.CatalogInstallResult{Pack: "dlq-demo"}})
+			if !strings.Contains(m.note, "2 packs applied") {
+				t.Errorf("note = %q, want the batch summary", m.note)
+			}
+			// Batch done: the next poll retires the surface.
+			m.absorb(psvFixture())
+			if m.idleCat != nil {
+				t.Error("an idle card with nothing in flight must retire with the empty workspace")
+			}
+		})
+
 		t.Run("a mid-batch failure banners and drops the tail", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
 			openLoadedCatalog(m)

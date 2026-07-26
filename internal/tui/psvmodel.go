@@ -135,7 +135,7 @@ type psModel struct {
 	// marks outlive selection moves and are pruned when their pipeline leaves
 	// the snapshot.
 	markedPipes map[string]bool
-	histView    bool   // strips: 'h' toggled the coarse hours-deep history in
+	histView    bool   // strips: 'h' toggled the coarse day-deep history in (the rail's lane summary ignores it)
 	note        string // transient action outcome, cleared on the next key
 	warn        string // standing soft-fetch warning, cleared by the next good poll
 	frozen      bool   // live polls paused so terminal select/copy is stable
@@ -153,7 +153,7 @@ type psModel struct {
 	// recorded history and grown one slot per collector tick (the payload's
 	// sample_tick names the tick, so a poll that races the collector never
 	// double-counts). coarse holds the same keys' coarse (per-bucket-maximum)
-	// history, hours deep, refreshed only on a history re-seed -- exactly its
+	// history, a day deep, refreshed only on a history re-seed -- exactly its
 	// own cadence. lastTick is the newest absorbed collector tick.
 	rings    map[string]*psRing
 	coarse   map[string]*psRing
@@ -293,6 +293,21 @@ func sumLoad(total *api.PsLoad, l *api.PsLoad) *api.PsLoad {
 	return total
 }
 
+// probed reports whether the newest payload carries a host probe: the engine
+// tree answered, so a scope with no attributed process is genuinely idle rather
+// than unknown.
+func (m *psModel) probed() bool { return m.snap.Ps.Engine.Load != nil }
+
+// scopeLoad resolves a lane's or a pipeline's load for display: nil on a probed
+// host is a real zero (nothing was running, so nothing burned), nil on an
+// unprobed one stays absent.
+func (m *psModel) scopeLoad(l *api.PsLoad) *api.PsLoad {
+	if l == nil && m.probed() {
+		return &api.PsLoad{}
+	}
+	return l
+}
+
 // deriveLanes composes the rail's lane rows: one per lane, the union of the
 // listing's lanes and the run rows' lanes (a run whose pipeline was since
 // unregistered still shows), sorted by name.
@@ -426,10 +441,9 @@ func (m *psModel) treeRows() []psTreeRow {
 		if !laneHit && len(kept) == 0 && len(keptT) == 0 {
 			continue
 		}
+		// Written tables are not tree rows: the rail's lane summary names them
+		// (with their deltas), so the tree stays lanes and their pipelines.
 		out = append(out, psTreeRow{lane: l.name})
-		for _, name := range keptT {
-			out = append(out, psTreeRow{lane: l.name, table: name})
-		}
 		for _, p := range kept {
 			out = append(out, psTreeRow{lane: l.name, pipeline: p.name})
 		}
@@ -477,6 +491,19 @@ func (m *psModel) filteredEvents() []psEvent {
 	return out
 }
 
+// navRows are the rail's cursor stops: pipeline rows only. A lane row is a
+// heading the cursor lands beside, never on — its own facts live in the rail's
+// summary block.
+func (m *psModel) navRows() []psTreeRow {
+	var out []psTreeRow
+	for _, r := range m.treeRows() {
+		if r.pipeline != "" {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // treeHidden counts the catalog rows the active filter is hiding.
 func (m *psModel) treeHidden() int {
 	if len(m.catFilter) == 0 {
@@ -503,12 +530,15 @@ func (m *psModel) absorb(s Snapshot) {
 	if m.search != nil {
 		m.search.rematch(m.snap)
 	}
-	// The inline idle catalog lives exactly as long as the empty workspace.
+	// The inline idle catalog lives as long as the empty workspace — plus any
+	// work it still owns. Applying the first pack of a batch ends the empty
+	// workspace, and dropping the surface there would strand the rest of the
+	// batch (its queue and in-flight seq live on it).
 	if psIsEmptyWorkspace(m) {
 		if m.idleCat == nil {
 			m.openIdleCatalog()
 		}
-	} else if m.idleCat != nil {
+	} else if m.idleCat != nil && !m.idleCat.working() {
 		m.idleCat = nil
 	}
 	// Pipeline marks live only as long as their pipeline stays in the snapshot.
@@ -556,8 +586,12 @@ func (m *psModel) absorbRings() {
 		if tick < m.lastTick {
 			// The collector's counter went backwards: a restarted (or different)
 			// daemon answers now -- the reconnect case. Reset the gate so its
-			// samples land instead of being skipped until the counter catches up.
+			// samples land instead of being skipped until the counter catches up,
+			// and mark the seam: the rings keep what they observed before the
+			// restart, so without an absent slot the two sides would splice into
+			// one continuous run of samples that never happened.
 			m.lastTick = 0
+			m.pushRingsAbsent()
 		}
 		if tick <= m.lastTick {
 			return
@@ -576,13 +610,19 @@ func (m *psModel) absorbRings() {
 	m.pushRings()
 }
 
-// reseedRings replaces every ring with the daemon's recorded history: the fine
+// reseedRings backfills the rings from the daemon's recorded history: the fine
 // series trimmed to the client cap, the coarse series whole. The wire keys
 // ("engine", "lane:<name>", "pipeline:<name>") map onto the ring keys ("",
 // "l:<name>", "p:<name>"); an unrecognized key is skipped, never guessed.
+//
+// A re-seed only ever DEEPENS a ring. The daemon mints a lane's (or pipeline's)
+// series the moment it first catches a run there, so a just-woken entity's
+// recorded series is a handful of slots old while the client has been watching
+// it idle for minutes -- replacing wholesale would throw that away and restart
+// the strip on every wake. For the same reason a key the payload does not carry
+// at all keeps what the client observed instead of vanishing: the daemon having
+// no series is not evidence that nothing happened.
 func (m *psModel) reseedRings(h *api.PsHistory) {
-	m.rings = map[string]*psRing{}
-	m.coarse = map[string]*psRing{}
 	for _, s := range h.Series {
 		key, ok := ringKeyFor(s.Key)
 		if !ok {
@@ -593,8 +633,13 @@ func (m *psModel) reseedRings(h *api.PsHistory) {
 			fine.cpu = fine.cpu[len(fine.cpu)-psRingCap:]
 			fine.mem = fine.mem[len(fine.mem)-psRingCap:]
 		}
-		m.rings[key] = fine
-		m.coarse[key] = &psRing{cpu: append([]float64(nil), s.CoarseCPU...), mem: append([]int64(nil), s.CoarseRSS...)}
+		if held := m.rings[key]; held == nil || len(fine.cpu) >= len(held.cpu) {
+			m.rings[key] = fine
+		}
+		coarse := &psRing{cpu: append([]float64(nil), s.CoarseCPU...), mem: append([]int64(nil), s.CoarseRSS...)}
+		if held := m.coarse[key]; held == nil || len(coarse.cpu) >= len(held.cpu) {
+			m.coarse[key] = coarse
+		}
 	}
 }
 
@@ -620,8 +665,9 @@ func (m *psModel) pushRingsAbsent() {
 }
 
 // pushRings pushes one tick of load history for the engine, every lane, and
-// every pipeline seen in the snapshot. Entities without a sample this tick
-// push psNoSample so their strips show absence, not zero.
+// every pipeline seen in the snapshot. An entity without a sample this tick
+// pushes a real zero on a probed host -- nothing was running, so nothing burned
+// -- and psNoSample on an unprobed one, where the load is unknowable.
 func (m *psModel) pushRings() {
 	ring := func(key string) *psRing {
 		r := m.rings[key]
@@ -630,6 +676,10 @@ func (m *psModel) pushRings() {
 			m.rings[key] = r
 		}
 		return r
+	}
+	idle := float64(psNoSample)
+	if m.probed() {
+		idle = 0
 	}
 	if l := m.snap.Ps.Engine.Load; l != nil {
 		ring("").push(l.CPUPercent, l.RSSBytes)
@@ -641,7 +691,7 @@ func (m *psModel) pushRings() {
 		if lane.load != nil {
 			r.push(lane.load.CPUPercent, lane.load.RSSBytes)
 		} else {
-			r.push(psNoSample, 0)
+			r.push(idle, 0)
 		}
 	}
 	perPipe := map[string]*api.PsLoad{}
@@ -660,32 +710,67 @@ func (m *psModel) pushRings() {
 		if l := perPipe[name]; l != nil {
 			r.push(l.CPUPercent, l.RSSBytes)
 		} else {
-			r.push(psNoSample, 0)
+			r.push(idle, 0)
 		}
 	}
 }
 
-// clampTree snaps the catalog cursor to a visible row: the selected pipeline
-// when it survives the snapshot and the filter, else its lane header, else
-// the first visible row.
+// clampTree snaps the catalog cursor to a live pipeline row: the selected one
+// when it survives the snapshot and the filter, else its lane's first, else the
+// first pipeline anywhere, else the first lane with no pipeline to sit on. A
+// TABLE view outlives the snap only while its table is still the lane's.
 func (m *psModel) clampTree() {
 	rows := m.treeRows()
 	if len(rows) == 0 {
 		m.selLane, m.selPipeline, m.selTable = "", "", ""
 		return
 	}
-	for _, r := range rows {
-		if r.lane == m.selLane && r.pipeline == m.selPipeline && r.table == m.selTable {
-			return
+	nav := m.navRows()
+	switch {
+	case m.hasNavRow(nav, m.selLane, m.selPipeline):
+	case m.laneFirstPipeline(nav, m.selLane) != "":
+		m.selPipeline = m.laneFirstPipeline(nav, m.selLane)
+	case len(nav) > 0:
+		m.selLane, m.selPipeline = nav[0].lane, nav[0].pipeline
+	default:
+		m.selLane, m.selPipeline = rows[0].lane, ""
+	}
+	if m.selTable != "" && !hasString(m.laneTables()[m.selLane], m.selTable) {
+		m.selTable = "" // its lane changed under it; the TABLE view closes
+	}
+}
+
+// hasString reports whether the slice carries s.
+func hasString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
 		}
 	}
-	for _, r := range rows {
-		if r.lane == m.selLane && r.pipeline == "" && r.table == "" {
-			m.selPipeline, m.selTable = "", ""
-			return
+	return false
+}
+
+// hasNavRow reports whether the lane/pipeline pair is still a cursor stop.
+func (m *psModel) hasNavRow(nav []psTreeRow, lane, pipeline string) bool {
+	if pipeline == "" {
+		return false
+	}
+	for _, r := range nav {
+		if r.lane == lane && r.pipeline == pipeline {
+			return true
 		}
 	}
-	m.selLane, m.selPipeline, m.selTable = rows[0].lane, rows[0].pipeline, rows[0].table
+	return false
+}
+
+// laneFirstPipeline is the lane's first cursor stop ("" when it has none).
+func (m *psModel) laneFirstPipeline(nav []psTreeRow, lane string) string {
+	for _, r := range nav {
+		if r.lane == lane {
+			return r.pipeline
+		}
+	}
+	return ""
 }
 
 // clampTable snaps the table cursor to a live row for the current context.
@@ -961,7 +1046,10 @@ func (m *psModel) toggleMarkPipeline() {
 	case psPaneLanes:
 		name = m.selPipeline
 	case psPaneStats:
-		if m.selPipeline == "" {
+		// Scoped to one pipeline, that is the row; otherwise the pipelines
+		// table's cursor.
+		name = m.selPipeline
+		if name == "" {
 			name = m.tblPipeline
 		}
 	}
@@ -1028,6 +1116,8 @@ func (m *psModel) updateRune(r rune) {
 		}
 	case 'h':
 		m.histView = !m.histView
+	case 't':
+		m.cycleLaneTable()
 	case 'p', 'P':
 		// Freeze the live display so the terminal can select and copy text
 		// without the next poll wiping the highlight.
@@ -1080,15 +1170,16 @@ func (m *psModel) move(delta int) {
 	}
 }
 
-// moveTree walks the rail cursor over the visible tree rows.
+// moveTree walks the rail cursor over the pipeline rows, skipping the lane
+// headings between them.
 func (m *psModel) moveTree(delta int) {
-	rows := m.treeRows()
+	rows := m.navRows()
 	if len(rows) == 0 {
 		return
 	}
 	at := 0
 	for i, r := range rows {
-		if r.lane == m.selLane && r.pipeline == m.selPipeline && r.table == m.selTable {
+		if r.lane == m.selLane && r.pipeline == m.selPipeline {
 			at = i
 			break
 		}
@@ -1101,6 +1192,40 @@ func (m *psModel) moveTree(delta int) {
 		at = len(rows) - 1
 	}
 	m.selectTree(rows[at])
+}
+
+// cycleLaneTable steps the TABLE view through the selected lane's written
+// tables and back off again. The rail's tables live in its summary block, not
+// in the tree, so this key is their keyboard door.
+func (m *psModel) cycleLaneTable() {
+	tables := m.laneTables()[m.selLane]
+	if len(tables) == 0 {
+		return
+	}
+	at := -1
+	for i, t := range tables {
+		if t == m.selTable {
+			at = i
+		}
+	}
+	if at+1 >= len(tables) {
+		m.selTable = ""
+		return
+	}
+	m.selTable = tables[at+1]
+	m.scroll = 0
+}
+
+// selectLane moves the rail cursor into a lane: its first pipeline, or the
+// lane alone when it has none.
+func (m *psModel) selectLane(lane string) {
+	m.selectTree(psTreeRow{lane: lane, pipeline: m.laneFirstPipeline(m.navRows(), lane)})
+}
+
+// selectTable opens a lane's written table in the statistics pane.
+func (m *psModel) selectTable(lane, name string) {
+	m.selLane, m.selTable = lane, name
+	m.scroll = 0
 }
 
 // selectTree lands the rail cursor on a row, resetting the per-selection
@@ -1158,18 +1283,16 @@ func (m *psModel) enter() {
 	}
 }
 
-// back retreats the focused pane's selection (left arrow): a pipeline row
-// climbs to its lane row, a pipeline-scoped statistics pane returns to the
-// catalog.
+// back retreats the focused pane's selection (left arrow): an open TABLE view
+// closes back to its pipeline, and the statistics pane hands focus to the rail.
+// Lane rows are not cursor stops, so there is no row to climb to.
 func (m *psModel) back() {
 	switch m.pane {
 	case psPaneLanes:
-		if m.selPipeline != "" || m.selTable != "" {
-			m.selectTree(psTreeRow{lane: m.selLane})
-		}
+		m.selTable = ""
 	case psPaneStats:
-		if m.selPipeline != "" || m.selTable != "" {
-			m.selectTree(psTreeRow{lane: m.selLane})
+		if m.selTable != "" {
+			m.selTable = ""
 			return
 		}
 		m.pane = psPaneLanes

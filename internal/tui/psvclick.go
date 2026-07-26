@@ -68,14 +68,15 @@ func (m *psModel) clickOn(r psClick) {
 	case psClickPane:
 		m.pane = r.pane
 	case psClickLane:
+		// A lane heading is not a cursor stop; clicking it enters the lane.
 		m.pane = psPaneLanes
-		m.selectTree(psTreeRow{lane: r.lane})
+		m.selectLane(r.lane)
 	case psClickRailPipeline:
 		m.pane = psPaneLanes
 		m.selectTree(psTreeRow{lane: r.lane, pipeline: r.name})
 	case psClickRailTable:
 		m.pane = psPaneLanes
-		m.selectTree(psTreeRow{lane: r.lane, table: r.name})
+		m.selectTable(r.lane, r.name)
 	case psClickTableRow:
 		m.pane = psPaneStats
 		if m.selPipeline != "" {

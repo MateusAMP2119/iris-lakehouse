@@ -1,9 +1,6 @@
 package tui
 
-import (
-	"fmt"
-	"strings"
-)
+import "fmt"
 
 // The idle view's brand banner: the same pre-rendered oh-my-logo art the
 // installer prints (install.sh banner_wide/banner_stacked), tinted row by row
@@ -40,43 +37,32 @@ var bannerStacked = []string{
 // bannerText is the installer's plain fallback when neither art form fits.
 const bannerText = "IRIS LAKEHOUSE"
 
-// bannerIrisChunky and bannerLakeChunky are the ps frame's reworked
-// wordmark: the installer art's ANSI-shadow grammar (█ strokes, ╗║ right
-// rails, ╚═╝ base) redrawn on a 4-row letterform with triple-width strokes —
-// more width, less height. The frame joins the words justified edge to edge.
-var bannerIrisChunky = []string{
-	"█████████╗ ██████╗    █████████╗ █████████╗",
-	"   ███╗    ███╗  ███╗    ███╗    ███╗",
-	"   ███║    ██████╗       ███║          ███╗",
-	"█████████╗ ███╗  ███╗ █████████╗ █████████║",
-	"╚════════╝ ╚══╝  ╚══╝ ╚════════╝ ╚════════╝",
+// psWordmark is the ps frame's brand mark: the plain wordmark bracketed and
+// spaced the way the frame's panes name themselves. The statusline carries it
+// in place of multi-row art; the idle card still prints the art itself.
+func psWordmark() string {
+	return "[" + bannerText + "]"
 }
 
-var bannerLakeChunky = []string{
-	"███╗          ███╗    ███╗  ███╗ █████████╗ ███╗  ███╗ █████████╗ ███╗  ███╗ █████████╗ █████████╗",
-	"███║       ███╗  ███╗ ██████╗    ██████╗    █████████║ ███╗  ███║ ███║  ███║ ███╗       ██████╗   ",
-	"███║       █████████║ ██████║    ███╗       ███╗  ███║ ███║  ███║ ███║  ███║       ███╗ ███╗      ",
-	"█████████╗ ███╗  ███║ ███╗  ███╗ █████████╗ ███║  ███║ █████████║ █████████║ █████████║ █████████╗",
-	"╚════════╝ ╚══╝  ╚══╝ ╚══╝  ╚══╝ ╚════════╝ ╚══╝  ╚══╝ ╚════════╝ ╚════════╝ ╚════════╝ ╚════════╝",
+// psWordmarkMinWidth is the frame width below which the statusline drops the
+// full mark for the bare brand word: narrower frames owe their cells to the
+// live CPU/MEM readout instead.
+const psWordmarkMinWidth = 105
+
+// gradText paints s at (x, y) rune by rune through the purple ramp, bold.
+// Returns the x after it.
+func (b *screenBuf) gradText(x, y int, s string) int {
+	r := []rune(s)
+	for i, c := range r {
+		b.text(x+i, y, ansiBold+bannerGradAt(i, len(r)), string(c))
+	}
+	return x + len(r)
 }
 
-// psBannerChunkyMinGap is the smallest word gap the justified banner accepts.
-const psBannerChunkyMinGap = 3
-
-// psBannerRows joins the chunky words justified across w cells with one cell
-// of breathing room each side, or nil when they cannot fit.
-func psBannerRows(w int) []string {
-	iw, lw := len([]rune(bannerIrisChunky[0])), len([]rune(bannerLakeChunky[2]))
-	gap := w - 2 - iw - lw
-	if gap < psBannerChunkyMinGap {
-		return nil
-	}
-	out := make([]string, len(bannerIrisChunky))
-	for i := range out {
-		ir := bannerIrisChunky[i] + strings.Repeat(" ", iw-len([]rune(bannerIrisChunky[i])))
-		out[i] = " " + ir + strings.Repeat(" ", gap) + bannerLakeChunky[i]
-	}
-	return out
+// renderWordmark paints the letterspaced mark at (x, y) in the purple ramp run
+// left to right, bold. Returns the x after it.
+func (b *screenBuf) renderWordmark(x, y int) int {
+	return b.gradText(x, y, psWordmark())
 }
 
 // bannerGradient is the installer's G1..G6 purple ramp, one stop per art row;
@@ -90,6 +76,18 @@ var bannerGradient = [6][3]int{
 func bannerRowSGR(i int) string {
 	g := bannerGradient[i%len(bannerGradient)]
 	return rgb(g[0], g[1], g[2])
+}
+
+// bannerGradAt blends the purple ramp's endpoints at position i of w — the row
+// gradient turned on its side, for one-line uses like the wordmark.
+func bannerGradAt(i, w int) string {
+	a, z := bannerGradient[0], bannerGradient[len(bannerGradient)-1]
+	t := 0.0
+	if w > 1 {
+		t = float64(i) / float64(w-1)
+	}
+	lerp := func(p, q int) int { return p + int(t*float64(q-p)+0.5) }
+	return rgb(lerp(a[0], z[0]), lerp(a[1], z[1]), lerp(a[2], z[2]))
 }
 
 // The install progress bar's gradient endpoints (bubbles' default gradient),

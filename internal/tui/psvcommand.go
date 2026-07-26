@@ -65,7 +65,7 @@ var psCommandRoster = []psCmdSpec{
 		category: psCmdWatch, keys: "f",
 	},
 	{
-		name: "history", usage: ":history", summary: "Toggle hours-deep load strips",
+		name: "history", usage: ":history", summary: "Toggle day-deep load strips",
 		detail:   "Swaps every heat strip between the live fine ring and the coarse per-bucket history the daemon keeps. Same as the h key.",
 		category: psCmdWatch, keys: "h",
 	},
@@ -373,9 +373,9 @@ func (m *psModel) runCommand(line string) {
 		m.histView = !m.histView
 		m.command = nil
 		if m.histView {
-			m.note = "load strips: hours-deep history"
+			m.note = "load strips: day-deep history · the lane summary always shows it"
 		} else {
-			m.note = "load strips: live"
+			m.note = "load strips: live · the lane summary always shows the day"
 		}
 	case "cancel":
 		run, ok := findRun(m.snap, m.logsTarget())

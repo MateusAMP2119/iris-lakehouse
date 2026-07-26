@@ -16,6 +16,7 @@ import (
 var (
 	ansiReset   = "\033[0m"
 	ansiDim     = "\033[2m"
+	ansiBold    = "\033[1m"
 	ansiInverse = "\033[7m"
 	ansiRed     = "\033[1;31m"
 	ansiYellow  = "\033[1;33m"
@@ -26,13 +27,26 @@ var (
 	// ansiOrange is the heat ramp's third tone. Basic palette has no orange;
 	// 256-color index 208 is the fallback, truecolor uses a soft amber.
 	ansiOrange = "\033[38;5;208m"
-	// ansiBorder paints pane/card chrome one step darker than dim text so
-	// borders recede behind content; bright black is the 16-color gray.
-	ansiBorder = "\033[90m"
-	// ansiAccent is the warm emphasis tone (focused pane chrome); the basic
-	// fallback keeps today's bold-cyan focus look.
+	// ansiBorder paints every unfocused pane and the statusline card: a muted
+	// violet, brand tinted but well under the focused pane's accent, so an
+	// unselected frame recedes and focus reads by contrast alone. Plain (not
+	// bold) magenta is the 16-color stand-in.
+	ansiBorder = "\033[35m"
+	// ansiAccent is the warm emphasis tone (the idle card's quote); the basic
+	// fallback keeps the bold-cyan look.
 	ansiAccent = "\033[1;36m"
 )
+
+// ansiHRule is the statusline's box drawn as text attributes: overline above
+// the glyphs, underline below them, so a bordered row costs one row instead of
+// three. Both rules take the cell's own foreground. Underline is universal;
+// overline (SGR 53) is honoured by iTerm2, kitty, WezTerm, Ghostty and modern
+// VTE — a terminal without it simply shows the underline.
+const ansiHRule = "\033[4;53m"
+
+// ansiURule is the rule's universal half: an underline alone, for edges every
+// terminal must draw (a pane's bottom, a divider under a row).
+const ansiURule = "\033[4m"
 
 // grokNight is the truecolor (RGB) face of the live view: magenta brand,
 // cyan actions, soft status hues. Tuned for dark terminal backgrounds.
@@ -47,7 +61,7 @@ var grokNight = struct {
 	blue:    rgb(96, 165, 250),  // secondary accent
 	orange:  rgb(251, 146, 60),  // mid heat
 	dim:     rgb(120, 116, 110), // muted chrome, warm stone (no faint bit)
-	border:  rgb(75, 85, 99),    // pane chrome, darker than dim
+	border:  rgb(88, 84, 148),   // muted violet — unfocused pane chrome
 	accent:  rgb(222, 179, 134), // warm tan — focused chrome
 }
 
@@ -98,7 +112,7 @@ func applyPalette(truecolor bool) {
 	ansiBlue = "\033[1;34m"
 	ansiMagenta = "\033[1;35m"
 	ansiOrange = "\033[38;5;208m"
-	ansiBorder = "\033[90m"
+	ansiBorder = "\033[35m"
 	ansiAccent = "\033[1;36m"
 }
 

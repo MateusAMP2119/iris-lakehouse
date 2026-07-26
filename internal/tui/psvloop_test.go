@@ -125,8 +125,8 @@ func TestRunPsLoop(t *testing.T) {
 		t.Run("the loop points the poller at the selection's run and follows it", func(t *testing.T) {
 			s := newScriptedView()
 			m := newPsModel(psvFixture(), "")
-			s.keys <- key('j') // over the written-table row
-			s.keys <- key('j') // extract row: its only run is 12
+			s.keys <- key('j') // hello_iris: no runs at all
+			s.keys <- key('j') // load_orders: its newest run is the running 14
 			s.keys <- key('q')
 			if err := runPsLoop(context.Background(), s.v, m); err != nil {
 				t.Fatalf("loop exit = %v, want nil", err)
@@ -141,8 +141,10 @@ func TestRunPsLoop(t *testing.T) {
 				}
 				break
 			}
-			if len(got) != 2 || got[0] != "14" || got[1] != "12" {
-				t.Errorf("focus pushes = %v, want the initial 14 then the reselected 12", got)
+			// The rail opens on extract (run 12); hello_iris has no run at all, so
+			// its push is the empty target; load_orders lands on the running 14.
+			if len(got) != 3 || got[0] != "12" || got[1] != "" || got[2] != "14" {
+				t.Errorf("focus pushes = %v, want 12, empty, then 14", got)
 			}
 		})
 
@@ -344,6 +346,45 @@ func TestPollPs(t *testing.T) {
 		case <-done:
 		case <-time.After(5 * time.Second):
 			t.Fatal("the poller outlived its context")
+		}
+	})
+
+	// The view opens on a seed carrying /ps and the listing only, so every
+	// poll-derived surface stays empty until a poll lands. The poller must take
+	// one before it enters the ticker, whatever the interval.
+	t.Run("poll-ps-open", func(t *testing.T) {
+		sock := shortSocket(t)
+		role := api.NewRoleState()
+		role.SetLeader()
+
+		ln, err := net.Listen("unix", sock)
+		if err != nil {
+			t.Fatalf("listen unix %s: %v", sock, err)
+		}
+		mux := api.NewMux(
+			api.WithRole(role),
+			api.WithPs(psFunc(func(context.Context, bool, bool) (api.PsPayload, error) { return psFixture(), nil })),
+			api.WithPipelines(&pipelinesListFunc{items: []api.PipelineListItem{{Name: "extract", Lane: "ingest"}}}),
+		)
+		srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+		go func() { _ = srv.Serve(ln) }()
+		t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		polls := make(chan psPollMsg, 1)
+		go pollPs(ctx, unixClient(sock), time.Hour, make(chan string), make(chan string), polls, make(chan string, 1))
+
+		select {
+		case pm := <-polls:
+			if pm.err != nil {
+				t.Fatalf("the opening poll failed: %v", pm.err)
+			}
+			if len(pm.snap.Pipelines) != 1 {
+				t.Errorf("opening snapshot listing = %+v, want the seeded row", pm.snap.Pipelines)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the poller waited for its first tick instead of polling at open")
 		}
 	})
 }

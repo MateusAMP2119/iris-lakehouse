@@ -25,7 +25,7 @@ import (
 //
 // Retention is tiered: a fine ring holds one slot per tick (minutes of recent
 // detail), and a coarse ring holds one slot per aggregation bucket carrying
-// the bucket's MAXIMUM fine sample (hours of history where a short spike stays
+// the bucket's MAXIMUM fine sample (a day of history where a short spike stays
 // visible instead of averaging away). Every live series is pushed in lockstep
 // each tick, so series of different ages align from their ends. Sampling is
 // best-effort by the probe's own contract: a failed probe records an absent
@@ -42,9 +42,10 @@ const (
 	// loadCoarseBucketTicks is the aggregation bucket in ticks: 30 ticks at 2s
 	// seal one 60-second bucket.
 	loadCoarseBucketTicks = 30
-	// loadCoarseRingCap bounds the coarse ring: at 60s buckets this holds 12
-	// hours of history.
-	loadCoarseRingCap = 720
+	// loadCoarseRingCap bounds the coarse ring: at 60s buckets this holds a full
+	// day of history. It is the readout's ceiling, not its window -- a strip
+	// spans whatever has accumulated, growing up to this depth and then rolling.
+	loadCoarseRingCap = 1440
 	// loadPersistRetention bounds the persisted history: buckets older than
 	// this are pruned. Wider than the ring so the table stays SQL-queryable
 	// past what the readout renders.
@@ -130,21 +131,24 @@ func (s *loadSeries) seal() {
 	s.bucketCPU, s.bucketRSS = api.PsHistoryNoSample, 0
 }
 
-// dead reports whether the series holds no sample anywhere: fine ring, coarse
-// ring, and partial bucket all absent. A dead series is an entity idle past
-// the whole retention window; keeping it would grow the map forever.
+// dead reports whether the series holds nothing worth keeping: no positive
+// sample anywhere across the fine ring, the coarse ring, and the partial
+// bucket. Absent and zero both count as nothing -- an idle entity records real
+// zeros, so absence alone would never retire a series again. A dead series is
+// an entity idle past the whole retention window; keeping it would grow the map
+// forever.
 func (s *loadSeries) dead() bool {
-	for _, c := range s.cpu {
-		if c != api.PsHistoryNoSample {
+	for i, c := range s.cpu {
+		if c > 0 || s.rss[i] > 0 {
 			return false
 		}
 	}
-	for _, c := range s.coarseCPU {
-		if c != api.PsHistoryNoSample {
+	for i, c := range s.coarseCPU {
+		if c > 0 || s.coarseRSS[i] > 0 {
 			return false
 		}
 	}
-	return s.bucketCPU == api.PsHistoryNoSample
+	return s.bucketCPU <= 0 && s.bucketRSS == 0
 }
 
 // loadHistory is the collector: the probe and run-snapshot seams it samples
@@ -281,6 +285,7 @@ func (h *loadHistory) sample(ctx context.Context) {
 	groups := map[int]*api.PsLoad{}
 	entity := map[string]*api.PsLoad{}
 	samples, err := h.probe.Sample(ctx)
+	probed := err == nil
 	if err != nil {
 		h.logger.Debug("load collector host probe failed", "err", err)
 	} else {
@@ -324,7 +329,7 @@ func (h *loadHistory) sample(ctx context.Context) {
 		}
 	}
 
-	sealed, prune := h.record(engine, groups, entity)
+	sealed, prune := h.record(probed, engine, groups, entity)
 
 	// Persistence rides after the lock: one best-effort write per seal, and
 	// the retention prune on its own sparser cadence. A failed write loses at
@@ -344,10 +349,12 @@ func (h *loadHistory) sample(ctx context.Context) {
 
 // record takes one tick's attributed sample under the lock: the tick advances,
 // every live series takes exactly one slot (lockstep, so all series end at
-// this tick and align from their ends), and a full bucket seals. It returns
-// the sealed buckets for persistence (nil between seals) and whether this seal
-// is a prune tick.
-func (h *loadHistory) record(engine *api.PsLoad, groups map[int]*api.PsLoad, entity map[string]*api.PsLoad) (sealed []pg.LoadBucket, prune bool) {
+// this tick and align from their ends), and a full bucket seals. probed says
+// the host answered, which is what separates an idle lane (a real zero: nothing
+// was running, so nothing burned) from an unknowable one (an absent slot). It
+// returns the sealed buckets for persistence (nil between seals) and whether
+// this seal is a prune tick.
+func (h *loadHistory) record(probed bool, engine *api.PsLoad, groups map[int]*api.PsLoad, entity map[string]*api.PsLoad) (sealed []pg.LoadBucket, prune bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.tick++
@@ -362,12 +369,20 @@ func (h *loadHistory) record(engine *api.PsLoad, groups map[int]*api.PsLoad, ent
 	for key := range entity {
 		ensure(key)
 	}
+	idle := (*api.PsLoad)(nil)
+	if probed {
+		idle = &api.PsLoad{}
+	}
 	for key, s := range h.series {
 		if key == "engine" {
 			s.push(engine)
 			continue
 		}
-		s.push(entity[key])
+		if l := entity[key]; l != nil {
+			s.push(l)
+		} else {
+			s.push(idle)
+		}
 	}
 	h.bucketTicks++
 	if h.bucketTicks >= loadCoarseBucketTicks {

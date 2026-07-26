@@ -29,19 +29,21 @@ const (
 	psLogsMinWidth   = 90
 	psDetailMinWidth = 110
 	psDetailMinRows  = 24
-	// The bordered header card needs vertical room; short terminals keep the
-	// one-line header.
-	psHeaderCardMinH = 16
-	psHeaderCardH    = 3
+	// psHeaderH is the statusline's row budget at every frame height: one row,
+	// its top and bottom edges drawn as SGR rules on that same row.
+	psHeaderH = 1
+	// psHeaderGap is the blank row parting the statusline from the panes, so
+	// its underline and the rail's overline do not read as one thick rule.
+	psHeaderGap = 1
+	// psPaneGap is the blank gutter between the rail and the right column, on
+	// top of the two border columns already parting them: two columns, so the
+	// rail's hairline chrome reads as its own card rather than as the neighbour
+	// pane's left edge.
+	psPaneGap = 2
+	// psFrameMarginX is the blank column the frame keeps against each terminal
+	// edge so its chrome never touches the sides.
+	psFrameMarginX = 1
 )
-
-// psHeaderRows is the header's row budget at the given frame height.
-func psHeaderRows(h int) int {
-	if h >= psHeaderCardMinH {
-		return psHeaderCardH
-	}
-	return 1
-}
 
 // psCell is one screen cell: its rune and the SGR code painting it ("" plain).
 type psCell struct {
@@ -81,12 +83,14 @@ func (b *screenBuf) text(x, y int, sgr, s string) {
 	}
 }
 
-// paintSelAccent marks a selected row Grok-style: a left magenta bar (▌).
-// Colorless mode keeps a plain ">" so geometry tests stay SGR-free.
-// ansiSelBg is the cursor row's background tint: a quiet indigo wash that
-// keeps every cell's own foreground readable — no inverse video, no white
-// bar (#238 tweak).
-var ansiSelBg = bgRGB(44, 49, 78)
+// The rail's selection reads in two tiers, both background washes that keep
+// every cell's own foreground on top — no inverse video, no white bar.
+// ansiLaneBg is the quiet one every row of the cursor's lane wears; ansiSelBg
+// is the brighter one the cursor row alone takes.
+var (
+	ansiLaneBg = bgRGB(30, 33, 54)
+	ansiSelBg  = bgRGB(58, 63, 104)
+)
 
 // paintSelAccent marks the cursor row: the whole row takes the selection
 // background, keeping each cell's own color on top. The colorless painter
@@ -99,18 +103,50 @@ func paintSelAccent(b *screenBuf, x, y, w int, colorless bool) {
 	b.tintRow(x, y, w)
 }
 
-// tintRow layers the selection background under w cells of row y from x.
-func (b *screenBuf) tintRow(x, y, w int) {
+// paintLaneWash tints a row of the cursor's lane. Colorless has no channel for
+// a block this soft, so it paints nothing; the ">" stays the cursor's alone.
+func paintLaneWash(b *screenBuf, x, y, w int, colorless bool) {
+	if colorless {
+		return
+	}
+	b.tintLane(x, y, w)
+}
+
+// rule paints a w-cell horizontal divider at (x, y) in border chrome.
+func (b *screenBuf) rule(x, y, w int) {
+	if w <= 0 {
+		return
+	}
+	b.text(x, y, ansiBorder, strings.Repeat("─", w))
+}
+
+// layerSGR prefixes w cells of row y from x with an SGR, keeping each cell's
+// own paint underneath it.
+func (b *screenBuf) layerSGR(x, y, w int, prefix string) {
 	if y < 0 || y >= b.h {
 		return
 	}
 	for xx := x; xx < x+w && xx < b.w; xx++ {
 		c := &b.cells[y*b.w+xx]
-		if !strings.HasPrefix(c.sgr, ansiSelBg) {
-			c.sgr = ansiSelBg + c.sgr
+		if !strings.HasPrefix(c.sgr, prefix) {
+			c.sgr = prefix + c.sgr
 		}
 	}
 }
+
+// tintRow layers the selection background under w cells of row y from x.
+func (b *screenBuf) tintRow(x, y, w int) { b.layerSGR(x, y, w, ansiSelBg) }
+
+// tintLane layers the lane wash under w cells of row y from x.
+func (b *screenBuf) tintLane(x, y, w int) { b.layerSGR(x, y, w, ansiLaneBg) }
+
+// ruleRow layers the overline/underline pair over w cells of row y: a bordered
+// row's top and bottom edges as text attributes rather than two rows of glyphs.
+func (b *screenBuf) ruleRow(x, y, w int) { b.layerSGR(x, y, w, ansiHRule) }
+
+// underlineRow layers the underline alone over w cells of row y: one edge, the
+// half every terminal draws.
+func (b *screenBuf) underlineRow(x, y, w int) { b.layerSGR(x, y, w, ansiURule) }
 
 // dimAll repaints the whole frame dim -- the search overlay's backdrop.
 func (b *screenBuf) dimAll() {
@@ -134,8 +170,8 @@ func (b *screenBuf) box(x, y, w, h int, sgr, titleSGR, title string) {
 		}
 	}
 	horiz := strings.Repeat("─", w-2)
-	b.text(x, y, sgr, "╭"+horiz+"╮")
-	b.text(x, y+h-1, sgr, "╰"+horiz+"╯")
+	b.text(x, y, sgr, "┌"+horiz+"┐")
+	b.text(x, y+h-1, sgr, "└"+horiz+"┘")
 	for yy := y + 1; yy < y+h-1; yy++ {
 		b.text(x, yy, sgr, "│")
 		b.text(x+w-1, yy, sgr, "│")
@@ -145,6 +181,20 @@ func (b *screenBuf) box(x, y, w, h int, sgr, titleSGR, title string) {
 			title = string([]rune(title)[:room])
 		}
 		b.text(x+2, y, titleSGR, " "+title+" ")
+	}
+}
+
+// hairBox is the statusline's chrome as a rectangle: side pipes as glyphs, no
+// corners, every row's interior filled with border chrome so the horizontal
+// edges the caller layers on later (see ruleRow, underlineRow) stay brand
+// coloured across the gaps between content.
+func (b *screenBuf) hairBox(x, y, w, h int, sgr string) {
+	if w < 2 || h < 1 {
+		return
+	}
+	row := "│" + strings.Repeat(" ", w-2) + "│"
+	for yy := y; yy < y+h; yy++ {
+		b.text(x, yy, sgr, row)
 	}
 }
 
@@ -300,7 +350,7 @@ func fitSamples(samples []float64, w int) []float64 {
 }
 
 // stripRing resolves the ring a strip draws for the current view: the fine
-// ring live, the coarse (hours-deep) ring under the 'h' history toggle.
+// ring live, the coarse (day-deep) ring under the 'h' history toggle.
 func (m *psModel) stripRing(key string) *psRing {
 	if m.histView {
 		return m.coarse[key]
@@ -308,22 +358,47 @@ func (m *psModel) stripRing(key string) *psRing {
 	return m.rings[key]
 }
 
-// stripCPU is a strip's CPU samples for the current view, compressed to the
-// strip's width so the coarse history spans the strip instead of scrolling
-// off it.
-func (m *psModel) stripCPU(key string, w int) []float64 {
-	return fitSamples(m.stripRing(key).cpuSamples(), w)
+// ringCPU shapes one ring's CPU history for a strip of width w, compressed so
+// the whole ring spans the strip instead of scrolling off it. Nil-safe.
+func ringCPU(r *psRing, w int) []float64 {
+	return fitSamples(r.cpuSamples(), w)
 }
 
-// stripMem is a strip's memory samples for the current view, scaled to
-// percent-of-peak and compressed to the strip's width.
-func (m *psModel) stripMem(key string, w int) []float64 {
-	r := m.stripRing(key)
+// ringMem shapes one ring's memory history for a strip of width w, scaled to
+// percent-of-peak and compressed the same way. Nil-safe.
+func ringMem(r *psRing, w int) []float64 {
 	if r == nil {
 		return nil
 	}
 	return fitSamples(memStripSamples(r), w)
 }
+
+// stripCPU is a strip's CPU samples for the current view.
+func (m *psModel) stripCPU(key string, w int) []float64 { return ringCPU(m.stripRing(key), w) }
+
+// stripMem is a strip's memory samples for the current view.
+func (m *psModel) stripMem(key string, w int) []float64 { return ringMem(m.stripRing(key), w) }
+
+// dayRing is the ring the rail's lane summary draws for a strip of width w,
+// whatever the 'h' toggle says. The summary's span is everything recorded, up
+// to the coarse ring's day-deep ceiling -- so it takes the coarse ring once
+// that carries enough buckets to fill the strip, and the fine ring before then.
+// Both say "everything recorded"; the fine one just says it at higher
+// resolution while the day is still young, which is what keeps a minute-old
+// engine showing a full minute instead of two lonely cells.
+func (m *psModel) dayRing(key string, w int) *psRing {
+	if c := m.coarse[key]; c != nil && len(c.cpu) >= w {
+		return c
+	}
+	if f := m.rings[key]; f != nil && len(f.cpu) > 0 {
+		return f
+	}
+	return m.coarse[key]
+}
+
+func (m *psModel) dayCPU(key string, w int) []float64 { return ringCPU(m.dayRing(key, w), w) }
+
+func (m *psModel) dayMem(key string, w int) []float64 { return ringMem(m.dayRing(key, w), w) }
 
 // memStripSamples rescales a ring's memory history to percent-of-peak, so the
 // heat ramp reads relative pressure within the visible window.
@@ -442,13 +517,14 @@ func selIndex(sel string, keys []string) int {
 // marks its title.
 func paneChrome(focused, colorless bool, title string) (borderSGR, titleSGR, t string) {
 	if focused {
-		if title != "" {
-			title = "[" + title + "]"
-		}
+		// Colour is the focus signal; a colourless frame has to say it in text.
 		if colorless {
+			if title != "" && !strings.HasPrefix(title, "[") {
+				title = "[" + title + "]"
+			}
 			return ansiBorder, "", title
 		}
-		return ansiAccent, ansiAccent, title
+		return ansiMagenta, ansiMagenta, title
 	}
 	return ansiBorder, ansiDim, title
 }
@@ -477,42 +553,52 @@ func renderPsFrame(m *psModel, w, h int, colorless bool) *screenBuf {
 	}
 	b := newScreenBuf(w, h)
 
+	// The frame breathes against the terminal edge; a terminal with no columns
+	// to spare keeps every one of them.
+	mx := psFrameMarginX
+	if w < psMinWidth+2*mx {
+		mx = 0
+	}
+	fw := w - 2*mx
+
 	// Footer is transient only (confirm, advisory, freeze, overlays) — no
 	// always-on shortcuts strip or socket target.
 	footerH := 0
 	if psFooterNeeded(m) {
 		footerH = 1
-		renderPsFooter(b, m)
+		renderPsFooter(b, m, mx, fw)
 	}
 
 	// Quiet engine: no full-width top chrome. Status splits into two chips
 	// above the welcome card inside the body; overlays still compose on top.
 	switch {
 	case psIsEmptyWorkspace(m):
-		renderEmptyWorkspace(b, m, 0, 0, w, h-footerH, colorless)
+		renderEmptyWorkspace(b, m, mx, 0, fw, h-footerH, colorless)
 	case m.logsOpen:
 		// The full-screen log view: the frame's only raw-text surface.
-		renderLogsFull(b, m, 0, 0, w, h-footerH, colorless)
+		renderLogsFull(b, m, mx, 0, fw, h-footerH, colorless)
 	default:
-		bannerH := renderPsBanner(b, w, h, colorless)
-		renderPsHeader(b, m, bannerH)
-		top := bannerH + psHeaderRows(h-bannerH)
+		renderPsHeader(b, m, mx, 0, fw)
+		top := psHeaderH + psHeaderGap
 		paneH := h - top - footerH // rows between header and optional footer
 
 		railW := 0
-		if w >= psRailMinWidth {
-			railW = w / 4
+		if fw >= psRailMinWidth {
+			railW = fw / 4
 			if railW > 38 {
 				railW = 38
 			}
 			if railW < 26 {
 				railW = 26
 			}
-			renderCatalogPane(b, m, 0, top, railW, paneH, colorless)
+			renderCatalogPane(b, m, mx, top, railW, paneH, colorless)
 		}
 
-		x := railW
-		rw := w - x
+		x := mx + railW
+		if railW > 0 {
+			x += psPaneGap
+		}
+		rw := mx + fw - x
 		eventsH := 0
 		if paneH >= psEventsMinPaneH {
 			eventsH = psFilterBoxH + psEventsBoxH
@@ -925,114 +1011,104 @@ func renderCompactEmpty(b *screenBuf, ox, oy, innerW, innerH int) {
 	}
 }
 
-// renderPsHeader paints the header: a bordered identity card when the frame
-// affords it, else the legacy one-line readout.
-func renderPsHeader(b *screenBuf, m *psModel, y int) {
-	if psHeaderRows(b.h-y) == psHeaderCardH {
-		renderPsHeaderCard(b, m, y)
-		return
-	}
-	renderPsHeaderLine(b, m, y)
-}
-
-// renderPsHeaderCard paints rows 0..2: a full-width bordered card with one
-// content row — identity left, live CPU/MEM and run counts right-aligned.
-// The empty workspace does not use this chrome (see renderWelcomeCard).
-func renderPsHeaderCard(b *screenBuf, m *psModel, y int) {
+// renderPsHeader paints the statusline: one row boxed as tight as a cell grid
+// allows — side pipes as glyphs, top and bottom edges as SGR rules on the row
+// itself (see ansiHRule) — carrying the letterspaced wordmark and identity
+// left, live CPU/MEM and the compact run tail right-aligned. The chrome wears
+// the brand violet the focused pane wears: it is the frame's identity, never a
+// pane you move off. The empty workspace does not use it (see
+// renderWelcomeCard).
+func renderPsHeader(b *screenBuf, m *psModel, x0, y, w int) {
 	e := m.snap.Ps.Engine
-	b.box(0, y, b.w, psHeaderCardH, ansiBorder, "", "")
+	// Blank interior cells wear border chrome so the rules stay violet across
+	// the gap between identity and load readout.
+	b.text(x0, y, ansiBorder, "│"+strings.Repeat(" ", max(w-2, 0))+"│")
+	defer b.ruleRow(x0, y, w) // the edges, whatever the row ends up carrying
 
-	x := 2
-	put := func(sgr, s string) {
-		b.text(x, y+1, sgr, s)
-		x += len([]rune(s))
-	}
-
-	put(ansiMagenta, "IRIS")
-	if e.Version != "" {
-		put(ansiDim, "  ")
-		put(ansiDim, e.Version)
-	}
-	put(ansiDim, "  ·  ")
-	put(psRoleSGR(e.Role), strings.ToUpper(orDefault(e.Role, "engine")))
-	if e.Uptime != "" {
-		put(ansiDim, "  ·  up ")
-		put("", e.Uptime)
-	}
-	put(ansiDim, fmt.Sprintf("  ·  pid %d", e.PID))
-	idEnd := x
-
-	dead := deadPipelines(m.snap)
-	counts := fmt.Sprintf(" · %d running · %d queued", e.RunningRuns, e.QueuedRuns)
-	if dead > 0 {
-		counts += fmt.Sprintf(" · %d dead", dead)
-	}
-	nx, ok := renderHeaderLoad(b, m, y+1, idEnd, b.w-3, len([]rune(counts)))
-	if !ok {
-		return // identity only; the panes still carry the numbers
-	}
-	x = nx
-	rc, qc := ansiCyan, ansiYellow
-	if e.RunningRuns == 0 {
-		rc = ansiDim
-	}
-	if e.QueuedRuns == 0 {
-		qc = ansiDim
-	}
-	put(ansiDim, " · ")
-	put(rc, fmt.Sprintf("%d running", e.RunningRuns))
-	put(ansiDim, " · ")
-	put(qc, fmt.Sprintf("%d queued", e.QueuedRuns))
-	if dead > 0 {
-		put(ansiDim, " · ")
-		put(ansiRed, fmt.Sprintf("%d dead", dead))
-	}
-}
-
-// renderPsHeaderLine paints the one-line header: identity left, live CPU/MEM
-// and run counts right. The empty workspace does not use this chrome.
-func renderPsHeaderLine(b *screenBuf, m *psModel, y int) {
-	e := m.snap.Ps.Engine
-	x := 1
+	x := x0 + 2
 	put := func(sgr, s string) {
 		b.text(x, y, sgr, s)
 		x += len([]rune(s))
 	}
 
-	put(ansiDim, "ENGINE ")
-	put(ansiCyan, e.Version)
-	put(ansiDim, " · ")
-	put(psRoleSGR(e.Role), strings.ToUpper(e.Role))
-	put("", fmt.Sprintf(" · pid %d · up %s", e.PID, e.Uptime))
+	if w >= psWordmarkMinWidth {
+		x = b.renderWordmark(x, y)
+	} else {
+		put(ansiMagenta, "[IRIS]")
+	}
+	if e.Version != "" {
+		put(ansiDim, "   ")
+		put(ansiDim, e.Version)
+	}
+	put(ansiDim, "   ")
+	put(psRoleSGR(e.Role), strings.ToUpper(orDefault(e.Role, "engine")))
+	if e.Uptime != "" {
+		put(ansiDim, "  up ")
+		put("", e.Uptime)
+	}
+	put(ansiDim, fmt.Sprintf("  pid %d", e.PID))
 	idEnd := x
 
-	// The right side: CPU heat strip, MEM, run counts, sized to fit and shed
-	// leftmost-first when the terminal narrows.
-	dead := deadPipelines(m.snap)
-	counts := fmt.Sprintf(" · %d running · %d queued", e.RunningRuns, e.QueuedRuns)
-	if dead > 0 {
-		counts += fmt.Sprintf(" · %d dead", dead)
-	}
-	nx, ok := renderHeaderLoad(b, m, y, idEnd, b.w-1, len([]rune(counts)))
+	tail := psHeaderTail(e.RunningRuns, e.QueuedRuns, deadPipelines(m.snap))
+	nx, ok := renderHeaderLoad(b, m, y, idEnd, x0+w-2, spansWidth(tail))
 	if !ok {
-		return // identity row only; the panes still carry the numbers
+		return // identity only; the panes still carry the numbers
 	}
 	x = nx
+	for _, s := range tail {
+		put(s.sgr, s.text)
+	}
+}
+
+// psSpan is one styled run of statusline text.
+type psSpan struct {
+	sgr, text string
+}
+
+// spansWidth is the cell width a span run occupies.
+func spansWidth(spans []psSpan) int {
+	n := 0
+	for _, s := range spans {
+		n += len([]rune(s.text))
+	}
+	return n
+}
+
+// psHeaderTail is the statusline's compact run tail: running and queued as
+// r/q digits, dead as an inverted chip once anything is dead-lettered.
+func psHeaderTail(running, queued int64, dead int) []psSpan {
 	rc, qc := ansiCyan, ansiYellow
-	if e.RunningRuns == 0 {
+	if running == 0 {
 		rc = ansiDim
 	}
-	if e.QueuedRuns == 0 {
+	if queued == 0 {
 		qc = ansiDim
 	}
-	put(ansiDim, " · ")
-	put(rc, fmt.Sprintf("%d running", e.RunningRuns))
-	put(ansiDim, " · ")
-	put(qc, fmt.Sprintf("%d queued", e.QueuedRuns))
-	if dead > 0 {
-		put(ansiDim, " · ")
-		put(ansiRed, fmt.Sprintf("%d dead", dead))
+	spans := []psSpan{
+		{ansiDim, "  "}, {rc, fmt.Sprintf("%dr", running)},
+		{ansiDim, "  "}, {qc, fmt.Sprintf("%dq", queued)},
+		{ansiDim, "  "},
 	}
+	if dead > 0 {
+		return append(spans, psSpan{ansiInverse + ansiRed, fmt.Sprintf(" %d DEAD ", dead)})
+	}
+	return append(spans, psSpan{ansiDim, "0✖"})
+}
+
+// psHdrCPUValW and psHdrMemValW are the header's reserved readout columns:
+// "100.0%" and "1023.9MiB" are the widest ordinary readings, and a reading
+// wider than its column simply takes the room it needs.
+const (
+	psHdrCPUValW = 6
+	psHdrMemValW = 9
+)
+
+// padLeft right-aligns s in a w-wide field, leaving it whole when it overflows.
+func padLeft(s string, w int) string {
+	if n := len([]rune(s)); n < w {
+		return strings.Repeat(" ", w-n) + s
+	}
+	return s
 }
 
 // renderHeaderLoad right-aligns the CPU heat strip and CPU/MEM readout on
@@ -1042,8 +1118,11 @@ func renderPsHeaderLine(b *screenBuf, m *psModel, y int) {
 // was drawn.
 func renderHeaderLoad(b *screenBuf, m *psModel, y, idEnd, right, extraW int) (int, bool) {
 	e := m.snap.Ps.Engine
-	cpu := " " + cpuText(e.Load)
-	mem := " · MEM " + memText(e.Load)
+	// Fixed readout columns: the block is right-anchored, so a value that grows
+	// a character would otherwise slide the whole strip sideways (and, once the
+	// width is tight, re-fit it) every time the number changed.
+	cpu := " " + padLeft(cpuText(e.Load), psHdrCPUValW)
+	mem := "  MEM " + padLeft(memText(e.Load), psHdrMemValW)
 	stripW := 30
 	fixed := len("CPU ") + len([]rune(cpu+mem)) + extraW
 	if avail := right - idEnd - 3; fixed+stripW > avail {
@@ -1104,19 +1183,19 @@ func psFooterNeeded(m *psModel) bool {
 
 // renderPsFooter paints the last row for transient state only: command palette
 // hints/errors, freeze/confirm/search/catalog keys, or note/warn text.
-func renderPsFooter(b *screenBuf, m *psModel) {
+func renderPsFooter(b *screenBuf, m *psModel, x0, w int) {
 	y := b.h - 1
-	maxHints := b.w - 2
+	maxHints := w - 2
 	if maxHints < 8 {
-		maxHints = b.w - 1
+		maxHints = w - 1
 	}
 
 	if m.command != nil {
 		if m.command.err != "" {
-			b.text(1, y, ansiYellow, clipCells(m.command.err, maxHints))
+			b.text(x0+1, y, ansiYellow, clipCells(m.command.err, maxHints))
 			return
 		}
-		paintFooterHints(b, 1, y, maxHints, []footerHint{
+		paintFooterHints(b, x0+1, y, maxHints, []footerHint{
 			{"↑↓", "select"}, {"tab", "complete"}, {"⏎", "run"}, {"esc", "close"},
 		})
 		return
@@ -1127,11 +1206,11 @@ func renderPsFooter(b *screenBuf, m *psModel) {
 		advisory = m.warn
 	}
 	if advisory != "" {
-		b.text(1, y, ansiYellow, clipCells(advisory, maxHints))
+		b.text(x0+1, y, ansiYellow, clipCells(advisory, maxHints))
 		return
 	}
 
-	paintFooterHints(b, 1, y, maxHints, psFooterHints(m))
+	paintFooterHints(b, x0+1, y, maxHints, psFooterHints(m))
 }
 
 // paintFooterHints draws "key desc · key desc …" with accent keys, clipping
@@ -1233,8 +1312,8 @@ func pipelinesColumns(m *psModel, rows []psPipelineRow, wide bool, marked map[st
 		psColStyled("LATEST", n, func(i int) (string, string) { return rows[i].latest, psStateSGR(rows[i].latest) }),
 		psCol("Q", n, func(i int) string { return fmt.Sprintf("%d", rows[i].queued) }),
 		psCol("R", n, func(i int) string { return fmt.Sprintf("%d", rows[i].running) }),
-		psCol("CPU", n, func(i int) string { return cpuText(rows[i].load) }),
-		psCol("MEM", n, func(i int) string { return memText(rows[i].load) }),
+		psCol("CPU", n, func(i int) string { return cpuText(m.scopeLoad(rows[i].load)) }),
+		psCol("MEM", n, func(i int) string { return memText(m.scopeLoad(rows[i].load)) }),
 	)
 	if wide {
 		times := pipeTimes(m.snap)

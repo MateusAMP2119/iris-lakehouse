@@ -80,10 +80,11 @@ func TestPsClick(t *testing.T) {
 		if m.pane != psPaneEvents {
 			t.Fatalf("logs pane click should focus logs, pane=%d", m.pane)
 		}
+		// The rail opens on a pipeline, so the statistics pane lists its runs.
 		m.click(tableRow.x, tableRow.y)
-		if m.pane != psPaneStats || m.tblPipeline != tableRow.name {
-			t.Fatalf("table row click should focus table and select %q, got pane=%d sel=%q",
-				tableRow.name, m.pane, m.tblPipeline)
+		if m.pane != psPaneStats || m.tblRun != tableRow.name {
+			t.Fatalf("table row click should focus the pane and select %q, got pane=%d sel=%q",
+				tableRow.name, m.pane, m.tblRun)
 		}
 	})
 
@@ -123,32 +124,29 @@ func TestPsClick(t *testing.T) {
 		}
 	})
 
-	t.Run("pipeline mark circles click in the rail and the table", func(t *testing.T) {
+	t.Run("pipeline marks come from the rail circle and the scoped pane", func(t *testing.T) {
 		m := newPsModel(psvFixture(), "")
 		renderPsFrame(m, 150, 40, false)
-		var rail, table *psClick
+		var rail *psClick
 		for i := range m.clicks {
-			r := m.clicks[i]
-			if r.kind != psClickMarkPipeline {
-				continue
-			}
-			if rail == nil {
+			if m.clicks[i].kind == psClickMarkPipeline {
 				rail = &m.clicks[i]
-			}
-			if r.name != rail.name && table == nil && r.x != rail.x {
-				table = &m.clicks[i]
+				break
 			}
 		}
-		if rail == nil || table == nil {
-			t.Fatalf("want mark circles in both rail and table, clicks=%+v", m.clicks)
+		if rail == nil {
+			t.Fatalf("want a rail mark circle, clicks=%+v", m.clicks)
 		}
 		m.click(rail.x, rail.y)
 		if !m.markedPipes[rail.name] {
 			t.Fatalf("marked = %v, want %q filled from the rail circle", m.markedPipes, rail.name)
 		}
-		m.click(table.x, table.y)
-		if !m.markedPipes[table.name] {
-			t.Fatalf("marked = %v, want %q filled from the table circle", m.markedPipes, table.name)
+		// Space in the statistics pane marks the pipeline it is scoped to.
+		m.update(key('j'))
+		m.update(psKey{kind: psKeyTab})
+		m.update(key(' '))
+		if !m.markedPipes[m.selPipeline] {
+			t.Fatalf("marked = %v, want the scoped %q marked", m.markedPipes, m.selPipeline)
 		}
 	})
 
