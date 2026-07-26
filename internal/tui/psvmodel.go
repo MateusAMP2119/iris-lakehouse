@@ -494,7 +494,6 @@ func (m *psModel) treeHidden() int {
 // log tail that belongs to a run other than the current target, and re-clamps
 // the cursors so vanished rows never leave them dangling.
 func (m *psModel) absorb(s Snapshot) {
-	m.shimmer++
 	if s.LogsRun != "" && s.LogsRun != m.logsTargetIn(s) {
 		s.Logs, s.LogsRun = nil, ""
 	}

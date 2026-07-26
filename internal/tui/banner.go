@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"math"
 	"strings"
 )
 
@@ -95,36 +94,42 @@ func psBanner(w int) ([]string, [][2]int) {
 	return out, spans
 }
 
-// The banner's animation is the lolcat concept (github.com/busyloop/lolcat,
-// the proven terminal-text effect): a sine wave over (x + y·inclination +
-// phase) picks each cell's color, so diagonal gradient stripes drift across
-// the wordmark as the phase advances — here constrained to the brand palette
-// instead of the rainbow.
+// The banner's color is one static diagonal gradient across the whole
+// wordmark — the oh-my-logo / installer treatment laid horizontally: indigo
+// through purple into the progress bar's pink, left to right with a slight
+// row lean. One linear ramp over ~150 cells changes about a percent per
+// cell, so it reads as a single smooth sweep. No animation: a 1s poll
+// cadence can never read as motion, and per-cell waves read as noise.
 
-// bannerWavePalette is the wave's cyclic color track: the installer's indigo
-// ramp ends, through the progress bar's pink accent, and back.
-var bannerWavePalette = [][3]int{
+// bannerSweepStops is the gradient's track, left to right.
+var bannerSweepStops = [][3]int{
+	{90, 86, 224},   // barGradFrom violet
 	{102, 126, 234}, // G1 indigo
 	{118, 75, 162},  // G6 purple
 	{238, 111, 248}, // barGradTo pink
-	{90, 86, 224},   // barGradFrom violet
 }
 
-// Lolcat's defaults, scaled to a banner instead of a scrollback: stripe
-// frequency per cell and the near-horizontal inclination.
-const (
-	bannerWaveFreq = 0.045
-	bannerWaveIncl = 2.0
-	bannerWaveStep = 0.55 // phase advance per poll, in wave radians
-)
-
-// bannerWaveSGR picks the wave color for cell (x, row) at the given phase.
-func bannerWaveSGR(x, row int, phase float64) string {
-	pos := bannerWaveFreq*(float64(x)+bannerWaveIncl*float64(row))*2*math.Pi + phase
-	t := (math.Sin(pos) + 1) / 2 * float64(len(bannerWavePalette))
-	i := int(t) % len(bannerWavePalette)
-	f := t - math.Floor(t)
-	a, b := bannerWavePalette[i], bannerWavePalette[(i+1)%len(bannerWavePalette)]
+// bannerSweepSGR picks the gradient color for cell (x, row) of a w-wide
+// banner: linear position along the stops with two cells of row lean.
+func bannerSweepSGR(x, row, w int) string {
+	if w <= 1 {
+		w = 2
+	}
+	t := (float64(x) + 2*float64(row)) / float64(w-1)
+	if t < 0 {
+		t = 0
+	}
+	if t > 1 {
+		t = 1
+	}
+	segs := len(bannerSweepStops) - 1
+	pos := t * float64(segs)
+	i := int(pos)
+	if i >= segs {
+		i = segs - 1
+	}
+	f := pos - float64(i)
+	a, b := bannerSweepStops[i], bannerSweepStops[i+1]
 	lerp := func(x, y int) int { return x + int(float64(y-x)*f) }
 	return rgb(lerp(a[0], b[0]), lerp(a[1], b[1]), lerp(a[2], b[2]))
 }

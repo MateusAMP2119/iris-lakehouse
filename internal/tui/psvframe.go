@@ -806,9 +806,9 @@ func renderLogsFull(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 
 // renderPsBanner paints the justified brand banner — one blank row above,
 // one cell of side padding — and reports how many rows it spent (zero when
-// the frame cannot afford or fit it). Color is the lolcat wave (banner.go):
-// diagonal brand-palette stripes whose phase drifts one step per poll.
-func renderPsBanner(b *screenBuf, m *psModel, w, h int, colorless bool) int {
+// the frame cannot afford or fit it). Color is one static diagonal brand
+// gradient (banner.go): smooth, no animation.
+func renderPsBanner(b *screenBuf, w, h int, colorless bool) int {
 	if h < psBannerMinHeight {
 		return 0
 	}
@@ -816,7 +816,6 @@ func renderPsBanner(b *screenBuf, m *psModel, w, h int, colorless bool) int {
 	if art == nil {
 		return 0
 	}
-	phase := float64(m.shimmer) * bannerWaveStep
 	for i, row := range art {
 		if colorless {
 			b.text(0, i+1, "", row)
@@ -826,7 +825,7 @@ func renderPsBanner(b *screenBuf, m *psModel, w, h int, colorless bool) int {
 			if r == ' ' {
 				continue
 			}
-			b.text(x, i+1, bannerWaveSGR(x, i, phase), string(r))
+			b.text(x, i+1, bannerSweepSGR(x, i, w), string(r))
 		}
 	}
 	return len(art) + 1
