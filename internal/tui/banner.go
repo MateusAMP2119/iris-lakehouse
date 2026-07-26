@@ -94,12 +94,37 @@ func psBanner(w int) ([]string, [][2]int) {
 	return out, spans
 }
 
-// bannerShimmerSGR is one banner row's highlight tint: its gradient stop
-// blended most of the way to white — the light-source sweep.
-func bannerShimmerSGR(i int) string {
+// bannerGlowSGR is one banner row's tint under the light sweep: the row's
+// gradient stop blended toward a soft lavender-white by intensity (0..1) —
+// full intensity stays short of pure white so the glow keeps the brand hue.
+func bannerGlowSGR(i int, intensity float64) string {
+	if intensity <= 0 {
+		return bannerRowSGR(i)
+	}
+	if intensity > 1 {
+		intensity = 1
+	}
 	g := bannerGradient[i%len(bannerGradient)]
-	blend := func(c int) int { return c + (255-c)*3/4 }
-	return rgb(blend(g[0]), blend(g[1]), blend(g[2]))
+	const tr, tg, tb = 226, 231, 255 // the glow target: light periwinkle
+	f := intensity * 0.9
+	blend := func(c, t int) int { return c + int(float64(t-c)*f) }
+	return rgb(blend(g[0], tr), blend(g[1], tg), blend(g[2], tb))
+}
+
+// bannerGlowRadius is the sweep's half-width in cells: the glow covers about
+// a letter and a half each side of its center, quadratic falloff.
+const bannerGlowRadius = 10.0
+
+// bannerGlow is the sweep's intensity at distance d cells from its center.
+func bannerGlow(d float64) float64 {
+	if d < 0 {
+		d = -d
+	}
+	if d >= bannerGlowRadius {
+		return 0
+	}
+	t := 1 - d/bannerGlowRadius
+	return t * t
 }
 
 // bannerGradient is the installer's G1..G6 purple ramp, one stop per art row;

@@ -817,22 +817,35 @@ func renderPsBanner(b *screenBuf, m *psModel, w, h int, colorless bool) int {
 	if art == nil {
 		return 0
 	}
-	lit := -1
+	center := -1.0
 	if !colorless {
 		if idx := m.shimmer % (len(spans) + psShimmerRest); idx < len(spans) {
-			lit = idx
+			span := spans[idx]
+			center = float64(span[0]+span[1]) / 2
 		}
 	}
 	for i, row := range art {
-		sgr := bannerRowSGR(i)
+		base := bannerRowSGR(i)
 		if colorless {
-			sgr = ""
+			base = ""
 		}
-		b.text(0, i+1, sgr, row)
-		if lit >= 0 {
-			span := spans[lit]
-			cells := []rune(row)[span[0]:span[1]]
-			b.text(span[0], i+1, bannerShimmerSGR(i), string(cells))
+		b.text(0, i+1, base, row)
+		if center < 0 {
+			continue
+		}
+		// The sweep: a quadratic glow envelope around the lit letter's
+		// center, brightening each block cell by its distance — neighbors
+		// catch spill, the center stays just short of white.
+		runes := []rune(row)
+		for x, r := range runes {
+			if r == ' ' {
+				continue
+			}
+			g := bannerGlow(float64(x) - center)
+			if g <= 0.03 {
+				continue
+			}
+			b.text(x, i+1, bannerGlowSGR(i, g), string(r))
 		}
 	}
 	return len(art) + 1
