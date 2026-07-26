@@ -10,19 +10,19 @@
 ╭───────────────────────────────────╮│ CPU                                                                                             ▓  51.0% now  │
 │▌ingest                      1r·1q ││ MEM                                                                            █  24.0MiB now · 24.0MiB peak  │
 │ 51.0% 24.0MiB                   ▓ ││                                                                                                               │
-│ ● extract                      1q ││      PIPELINE     LATEST   Q  R  CPU    MEM      ELAPSED  LAST   AVG                                          │
-│ ○ hello_iris                      ││ ▌ ○  extract      queued   1  0  -      -        -        -      -                                            │
-│ ● load_orders                 run ││   ○  hello_iris   -        0  0  -      -        -        -      -                                            │
-│                                   ││   ○  load_orders  running  0  1  51.0%  24.0MiB  2m14s    1m34s  2m18s                                        │
+│ demo.orders                 +1187 ││      PIPELINE     LATEST   Q  R  CPU    MEM      ELAPSED  LAST   AVG                                          │
+│ ● extract                      1q ││ ▌ ○  extract      queued   1  0  -      -        -        -      -                                            │
+│ ○ hello_iris                      ││   ○  hello_iris   -        0  0  -      -        -        -      -                                            │
+│ ● load_orders                 run ││   ○  load_orders  running  0  1  51.0%  24.0MiB  2m14s    1m34s  2m18s                                        │
+│                                   ││                                                                                                               │
 │ reporting                   0r·0q ││                                                                                                               │
 │ - -                               ││                                                                                                               │
 │ ○ monthly                         ││                                                                                                               │
 │                                   ││                                                                                                               │
 │ solo                        0r·0q ││                                                                                                               │
 │ - -                               ││                                                                                                               │
+│ demo.audit                    +12 ││                                                                                                               │
 │ ○ solo                            ││                                                                                                               │
-│                                   ││                                                                                                               │
-│                                   ││                                                                                                               │
 │                                   │╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 │                                   │╭─ EVENTS · engine wide ────────────────────────────────────────────────────────────────────────────────────────╮
 │                                   ││ / type to filter — pipeline, table, severity                                                                  │

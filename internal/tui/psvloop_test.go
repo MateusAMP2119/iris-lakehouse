@@ -125,6 +125,7 @@ func TestRunPsLoop(t *testing.T) {
 		t.Run("the loop points the poller at the selection's run and follows it", func(t *testing.T) {
 			s := newScriptedView()
 			m := newPsModel(psvFixture(), "")
+			s.keys <- key('j') // over the written-table row
 			s.keys <- key('j') // extract row: its only run is 12
 			s.keys <- key('q')
 			if err := runPsLoop(context.Background(), s.v, m); err != nil {

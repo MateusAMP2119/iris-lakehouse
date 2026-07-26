@@ -484,6 +484,7 @@ func pollPs(ctx context.Context, c *Client, every time.Duration,
 		runPipes    map[string]string // run id -> pipeline, from the last payload
 		runSwitched bool              // focus moved to the same pipeline's next run
 		ticks       int
+		journal     *psJournal // accumulated write activity (#238 phase 3)
 	)
 	poll := func(history bool) bool {
 		ps, err := c.fetchPs(ctx, true, history)
@@ -535,7 +536,16 @@ func pollPs(ctx context.Context, c *Client, every time.Duration,
 				break
 			}
 		}
-		snap := Snapshot{Ps: ps, Pipelines: lastPipes}
+		// The activity aggregate is soft like the listing: a failing (or
+		// missing) route leaves the last accumulated state riding along.
+		since := int64(0)
+		if journal != nil {
+			since = journal.Watermark
+		}
+		if act, aerr := c.fetchJournalActivity(ctx, since); aerr == nil {
+			journal = foldJournal(journal, act)
+		}
+		snap := Snapshot{Ps: ps, Pipelines: lastPipes, Journal: journal}
 		if focus != "" {
 			snap.Logs, snap.LogsRun = humanizeCapture(lastLogs), focus
 		}

@@ -2,13 +2,13 @@
 │ IRIS  dev  ·  LEADER  ·  up 2h13m  ·  pid 42    CPU  3.2% · MEM 126.0MiB · 1 running · 1 queued  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ [CATALOG] ────────────╮╭─ LANE · ingest ────────────────────────────────────────────────────────╮
-│ / ord█        6 hidden ││ 1 running · 1 queued · 3 pipelines    lane durations arrive with #200  │
+│ / ord█        5 hidden ││ 1 running · 1 queued · 3 pipelines    lane durations arrive with #200  │
 ╰────────────────────────╯│                                                                        │
 ╭────────────────────────╮│ CPU                                                      ▓  51.0% now  │
 │▌ingest           1r·1q ││ MEM                                     █  24.0MiB now · 24.0MiB peak  │
 │ 51.0% 24.0MiB        ▓ ││                                                                        │
-│ ● load_orders      run ││      PIPELINE     LATEST   Q  R  CPU    MEM                            │
-│                        ││ ▌ ○  extract      queued   1  0  -      -                              │
+│ demo.orders      +1187 ││      PIPELINE     LATEST   Q  R  CPU    MEM                            │
+│ ● load_orders      run ││ ▌ ○  extract      queued   1  0  -      -                              │
 │                        ││   ○  hello_iris   -        0  0  -      -                              │
 │                        ││   ○  load_orders  running  0  1  51.0%  24.0MiB                        │
 │                        ││                                                                        │

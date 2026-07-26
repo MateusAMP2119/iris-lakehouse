@@ -7,19 +7,19 @@
 ╭────│   search · Fuzzy-find lanes, pi… │ │ Opens the catalog overlay over the dashboard:     │ow  │
 │▌ing│   all · Toggle full run history… │ │ pack list on the left, README and tree on the     │ak  │
 │ 51.│   follow · Toggle log-tail foll… │ │ right. Install and apply without leaving iris ps. │    │
-│ ● e│   history · Toggle hours-deep l… │ │                                                   │    │
-│ ○ h│   cancel · Cancel the watched r… │ │ Usage  :catalog                                   │    │
-│ ● l│   help · Keyboard reference      │i│ Keys   :catalog                                   │    │
-│    │   q · Quit iris ps               │e│ Group  navigate                                   │    │
-│ rep│                                  │ │                                                   │    │
-│ - -│                                  │─│                                                   │────╯
-│ ○ m│                                  │i│                                                   │────╮
-│    │                                  │t│                                                   │    │
-│ sol│                                  │─│                                                   │────╯
-│ - -│                                  │─│                                                   │────╮
-│ ○ s│                                  │ │                                                   │ver │
+│ dem│   history · Toggle hours-deep l… │ │                                                   │    │
+│ ● e│   cancel · Cancel the watched r… │ │ Usage  :catalog                                   │    │
+│ ○ h│   help · Keyboard reference      │i│ Keys   :catalog                                   │    │
+│ ● l│   q · Quit iris ps               │e│ Group  navigate                                   │    │
 │    │                                  │ │                                                   │    │
-│    │                                  │ │                                                   │    │
+│ rep│                                  │─│                                                   │────╯
+│ - -│                                  │i│                                                   │────╮
+│ ○ m│                                  │t│                                                   │    │
+│    │                                  │─│                                                   │────╯
+│ sol│                                  │─│                                                   │────╮
+│ - -│                                  │ │                                                   │ver │
+│ dem│                                  │ │                                                   │    │
+│ ○ s│                                  │ │                                                   │    │
 │    │                                  │ │                                                   │    │
 │    ╰──────────────────────────────────╯ ╰───────────────────────────────────────────────────╯    │
 │    ╭────────────────────────────────────────────────────────────────────────────────────────╮    │

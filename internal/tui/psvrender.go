@@ -1468,7 +1468,7 @@ func renderSearchPreview(b *screenBuf, m *psModel, h psHit, x, y, w, ph int) {
 	case psHitLane:
 		renderTable(sub, 0, ph, pipelinesColumns(m, derivePipelines(m.snap, h.lane), w >= 90, nil), -1, false)
 	case psHitPipeline:
-		renderTable(sub, 0, ph, runsColumns(deriveRuns(m.snap, h.pipeline, true)), -1, false)
+		renderTable(sub, 0, ph, runsColumns(m, deriveRuns(m.snap, h.pipeline, true)), -1, false)
 	case psHitRun:
 		if h.runID == m.snap.LogsRun && len(m.snap.Logs) > 0 {
 			logs := m.snap.Logs

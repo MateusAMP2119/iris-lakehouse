@@ -78,6 +78,9 @@ type Snapshot struct {
 	Pipelines []api.PipelineListItem
 	Logs      []string
 	LogsRun   string
+	// Journal is the poller-accumulated write-activity state (#238 phase 3);
+	// nil until the first successful activity poll (renders as absence).
+	Journal *psJournal
 	// staleAge marks a snapshot revived from the last-known-state cache (the
 	// engine was unreachable at open): how old the cached state is. Zero on a
 	// live snapshot. The view opens it under the unreachable banner.
@@ -94,6 +97,7 @@ type psModel struct {
 	// lane row; otherwise on that pipeline's row.
 	selLane     string
 	selPipeline string
+	selTable    string
 
 	// Per-pane filter queries (#238 C1d): '/' on the focused pane opens its
 	// filter input; the query narrows that pane's rows until cleared. The
@@ -244,11 +248,13 @@ type psPipelineRow struct {
 	load            *api.PsLoad
 }
 
-// psTreeRow is one visible row of the lanes rail: a lane row (pipeline == "")
-// or a member pipeline row inside an unfolded lane.
+// psTreeRow is one visible row of the catalog: a lane row (pipeline and
+// table empty), a written-table row (table set, "schema.table"), or a member
+// pipeline row.
 type psTreeRow struct {
 	lane     string
 	pipeline string
+	table    string
 }
 
 // laneOf resolves the lane a listing row belongs to: its composer lane, or --
@@ -397,22 +403,56 @@ func findRun(s Snapshot, id string) (api.PsRun, bool) {
 // its lane header for context plus the matching pipelines.
 func (m *psModel) treeRows() []psTreeRow {
 	q := strings.ToLower(strings.TrimSpace(string(m.catFilter)))
+	tablesByLane := m.laneTables()
 	var out []psTreeRow
 	for _, l := range deriveLanes(m.snap) {
 		pipes := derivePipelines(m.snap, l.name)
 		laneHit := q == "" || strings.Contains(strings.ToLower(l.name), q)
+		var keptT []string
+		for _, name := range tablesByLane[l.name] {
+			if laneHit || strings.Contains(strings.ToLower(name), q) {
+				keptT = append(keptT, name)
+			}
+		}
 		var kept []psPipelineRow
 		for _, p := range pipes {
 			if laneHit || strings.Contains(strings.ToLower(p.name), q) {
 				kept = append(kept, p)
 			}
 		}
-		if !laneHit && len(kept) == 0 {
+		if !laneHit && len(kept) == 0 && len(keptT) == 0 {
 			continue
 		}
 		out = append(out, psTreeRow{lane: l.name})
+		for _, name := range keptT {
+			out = append(out, psTreeRow{lane: l.name, table: name})
+		}
 		for _, p := range kept {
 			out = append(out, psTreeRow{lane: l.name, pipeline: p.name})
+		}
+	}
+	return out
+}
+
+// laneTables groups the journal's written tables under the lane of their
+// latest writing pipeline (#238 C1d: tables are lane scoped in the rail; the
+// statistics pane answers which pipeline wrote what). A table whose writer is
+// unknown or unregistered shows under no lane.
+func (m *psModel) laneTables() map[string][]string {
+	j := m.snap.Journal
+	if j == nil {
+		return nil
+	}
+	laneOfPipe := map[string]string{}
+	for _, l := range deriveLanes(m.snap) {
+		for _, p := range derivePipelines(m.snap, l.name) {
+			laneOfPipe[p.name] = l.name
+		}
+	}
+	out := map[string][]string{}
+	for _, name := range j.tableNames() {
+		if lane, ok := laneOfPipe[j.tableWriter(name)]; ok {
+			out[lane] = append(out[lane], name)
 		}
 	}
 	return out
@@ -612,21 +652,21 @@ func (m *psModel) pushRings() {
 func (m *psModel) clampTree() {
 	rows := m.treeRows()
 	if len(rows) == 0 {
-		m.selLane, m.selPipeline = "", ""
+		m.selLane, m.selPipeline, m.selTable = "", "", ""
 		return
 	}
 	for _, r := range rows {
-		if r.lane == m.selLane && r.pipeline == m.selPipeline {
+		if r.lane == m.selLane && r.pipeline == m.selPipeline && r.table == m.selTable {
 			return
 		}
 	}
 	for _, r := range rows {
-		if r.lane == m.selLane && r.pipeline == "" {
-			m.selPipeline = ""
+		if r.lane == m.selLane && r.pipeline == "" && r.table == "" {
+			m.selPipeline, m.selTable = "", ""
 			return
 		}
 	}
-	m.selLane, m.selPipeline = rows[0].lane, rows[0].pipeline
+	m.selLane, m.selPipeline, m.selTable = rows[0].lane, rows[0].pipeline, rows[0].table
 }
 
 // clampTable snaps the table cursor to a live row for the current context.
@@ -1029,7 +1069,7 @@ func (m *psModel) moveTree(delta int) {
 	}
 	at := 0
 	for i, r := range rows {
-		if r.lane == m.selLane && r.pipeline == m.selPipeline {
+		if r.lane == m.selLane && r.pipeline == m.selPipeline && r.table == m.selTable {
 			at = i
 			break
 		}
@@ -1047,10 +1087,10 @@ func (m *psModel) moveTree(delta int) {
 // selectTree lands the rail cursor on a row, resetting the per-selection
 // state that follows it: table cursors, the pinned run, the runs toggle.
 func (m *psModel) selectTree(row psTreeRow) {
-	if row.lane == m.selLane && row.pipeline == m.selPipeline {
+	if row.lane == m.selLane && row.pipeline == m.selPipeline && row.table == m.selTable {
 		return
 	}
-	m.selLane, m.selPipeline = row.lane, row.pipeline
+	m.selLane, m.selPipeline, m.selTable = row.lane, row.pipeline, row.table
 	m.pinnedRun = ""
 	m.showAll = false
 	m.scroll = 0
@@ -1076,7 +1116,7 @@ func (m *psModel) clampScroll(lines int) {
 func (m *psModel) enter() {
 	switch m.pane {
 	case psPaneLanes:
-		if m.selPipeline == "" {
+		if m.selPipeline == "" && m.selTable == "" {
 			return
 		}
 		m.pane = psPaneStats
@@ -1105,11 +1145,11 @@ func (m *psModel) enter() {
 func (m *psModel) back() {
 	switch m.pane {
 	case psPaneLanes:
-		if m.selPipeline != "" {
+		if m.selPipeline != "" || m.selTable != "" {
 			m.selectTree(psTreeRow{lane: m.selLane})
 		}
 	case psPaneStats:
-		if m.selPipeline != "" {
+		if m.selPipeline != "" || m.selTable != "" {
 			m.selectTree(psTreeRow{lane: m.selLane})
 			return
 		}

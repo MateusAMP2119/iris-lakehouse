@@ -9,6 +9,8 @@ package tui
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
 )
@@ -63,10 +65,11 @@ func deadPipelines(s Snapshot) int {
 
 // catalogEntry is one display row of the catalog rail.
 type catalogEntry struct {
-	kind     int // 0 lane, 1 metrics, 2 pipeline, 3 blank
+	kind     int // 0 lane, 1 metrics, 2 pipeline, 3 blank, 4 table
 	lane     psLaneRow
 	dead     int // lane rows: member pipelines whose latest run dead-lettered
 	pipeline psPipelineRow
+	table    string // kind 4: "schema.table"
 }
 
 // catalogDot picks a pipeline row's state dot: run/queue activity, the
@@ -137,21 +140,27 @@ func renderCatalogPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool)
 	var entries []catalogEntry
 	cursor := 0
 	for _, r := range rows {
-		if r.pipeline == "" {
+		switch {
+		case r.pipeline == "" && r.table == "":
 			if len(entries) > 0 {
 				entries = append(entries, catalogEntry{kind: 3})
 			}
-			if r.lane == m.selLane && m.selPipeline == "" {
+			if r.lane == m.selLane && m.selPipeline == "" && m.selTable == "" {
 				cursor = len(entries)
 			}
 			entries = append(entries, catalogEntry{kind: 0, lane: laneByName[r.lane], dead: deadByLane[r.lane]})
 			entries = append(entries, catalogEntry{kind: 1, lane: laneByName[r.lane]})
-			continue
+		case r.table != "":
+			if r.lane == m.selLane && r.table == m.selTable {
+				cursor = len(entries)
+			}
+			entries = append(entries, catalogEntry{kind: 4, lane: laneByName[r.lane], table: r.table})
+		default:
+			if r.lane == m.selLane && r.pipeline == m.selPipeline && m.selTable == "" {
+				cursor = len(entries)
+			}
+			entries = append(entries, catalogEntry{kind: 2, lane: laneByName[r.lane], pipeline: pipeByName[r.lane+"/"+r.pipeline]})
 		}
-		if r.lane == m.selLane && r.pipeline == m.selPipeline {
-			cursor = len(entries)
-		}
-		entries = append(entries, catalogEntry{kind: 2, lane: laneByName[r.lane], pipeline: pipeByName[r.lane+"/"+r.pipeline]})
 	}
 
 	sinceRun := map[string]uint64{}
@@ -187,6 +196,13 @@ func renderCatalogPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool)
 			sx := x + 2 + len([]rune(cpu)) + 1 + len([]rune(mem)) + 1
 			sw := x + w - 2 - sx
 			b.renderHeatStrip(sx, ry, sw, m.stripCPU("l:"+e.lane.name, sw))
+		case 4:
+			m.addClick(psClick{x: x + 1, y: ry, w: w - 2, kind: psClickRailTable, lane: e.lane.name, name: e.table})
+			b.text(x+2, ry, "", clipCells(e.table, w-12))
+			if d := latestRunDelta(m.snap, e.table); d != 0 {
+				badge := fmt.Sprintf("%+d", d)
+				b.text(x+w-2-len([]rune(badge)), ry, ansiCyan, badge)
+			}
 		case 2:
 			m.addClick(psClick{x: x + 1, y: ry, w: w - 2, kind: psClickRailPipeline, lane: e.lane.name, name: e.pipeline.name})
 			dot, dotSGR := catalogDot(e.pipeline)
@@ -211,7 +227,7 @@ func renderCatalogPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool)
 				b.text(x+w-2-len([]rune(badge)), ry, badgeSGR, badge)
 			}
 		}
-		if i == cursor && (e.kind == 0 || e.kind == 2) {
+		if i == cursor && (e.kind == 0 || e.kind == 2 || e.kind == 4) {
 			paintSelAccent(b, x+1, ry, colorless)
 		}
 	}
@@ -241,11 +257,231 @@ func statsStripRow(b *screenBuf, x, y, w int, label string, samples []float64, v
 // statistics, or the selected lane's. Rows the engine cannot fill yet name
 // the issue that fills them — placeholders are facts here, not apologies.
 func renderStatsPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
-	if m.selPipeline != "" {
+	switch {
+	case m.selTable != "":
+		renderTableStats(b, m, x, y, w, h, colorless)
+	case m.selPipeline != "":
 		renderPipelineStats(b, m, x, y, w, h, colorless)
+	default:
+		renderLaneStats(b, m, x, y, w, h, colorless)
+	}
+}
+
+// latestRunDelta is the newest writing run's rows into one table — the
+// catalog badge's Δ. Zero when the journal holds nothing for it.
+func latestRunDelta(s Snapshot, table string) int64 {
+	j := s.Journal
+	if j == nil {
+		return 0
+	}
+	var best psRunWrites
+	for _, per := range j.ByRun {
+		w, ok := per[table]
+		if ok && w.MaxID > best.MaxID {
+			best = w
+		}
+	}
+	if best.Op == "delete" {
+		return -best.Rows
+	}
+	return best.Rows
+}
+
+// renderTableStats is the statistics pane's table shape (#238 C1d): writer,
+// watermark, write rate, the ops split, and the runs that wrote it — the
+// provenance walk's on-frame doorway.
+func renderTableStats(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
+	name := m.selTable
+	j := m.snap.Journal
+	borderSGR, titleSGR, title := paneChrome(m.pane == psPaneStats, colorless, "TABLE · "+name)
+	b.box(x, y, w, h, borderSGR, titleSGR, title)
+	m.addClick(psClick{x: x, y: y, w: w, h: h, kind: psClickPane, pane: psPaneStats})
+	if h < 6 {
 		return
 	}
-	renderLaneStats(b, m, x, y, w, h, colorless)
+	bottomHint(b, x, y+h-1, w, "⏎ run → full-screen logs · :data provenance for the walk")
+	if j == nil {
+		b.text(x+3, y+2, ansiDim, clipCells("journal activity unavailable", w-6))
+		return
+	}
+
+	rows, watermark, undoOpen, undoPromoted := j.tableTotals(name)
+	idLine := fmt.Sprintf("%s · %d rows captured · writer %s · lane %s", name, rows, orDash(j.tableWriter(name)), m.selLane)
+	wm := fmt.Sprintf("watermark %d", watermark)
+	leftW := w - 4
+	if len([]rune(idLine))+len([]rune(wm))+8 <= w {
+		b.text(x+w-3-len([]rune(wm)), y+1, ansiDim, wm)
+		leftW = w - 7 - len([]rune(wm))
+	}
+	b.text(x+2, y+1, "", clipCells(idLine, leftW))
+
+	// WRITE RATE: the per-poll delta history, percent-of-peak like MEM strips.
+	rate := j.Rate[name]
+	peak := 0.0
+	var latest float64
+	for _, v := range rate {
+		if v > peak {
+			peak = v
+		}
+	}
+	if len(rate) > 0 {
+		latest = rate[len(rate)-1]
+	}
+	scaled := make([]float64, len(rate))
+	for i, v := range rate {
+		if peak > 0 {
+			scaled[i] = v / peak * 100
+		}
+	}
+	rateVal := fmt.Sprintf("%d rows this poll · %d peak", int64(latest), int64(peak))
+	statsStripRow(b, x, y+3, w, "RATE", scaled, rateVal)
+
+	ops := opsSplit(j, name)
+	b.text(x+2, y+4, ansiDim, "OPS")
+	undo := fmt.Sprintf("undo open %d / promoted %d", undoOpen, undoPromoted)
+	b.text(x+8, y+4, "", clipCells(ops, w-14-len([]rune(undo))))
+	b.text(x+w-3-len([]rune(undo)), y+4, ansiDim, undo)
+
+	// The runs that wrote it, newest first: id, delta, op, span, state, range.
+	tblY := y + 6
+	tblH := y + h - 1 - tblY
+	if tblH < 2 {
+		return
+	}
+	type wrote struct {
+		id string
+		w  psRunWrites
+	}
+	var writers []wrote
+	for id, per := range j.ByRun {
+		if ww, ok := per[name]; ok {
+			writers = append(writers, wrote{id: id, w: ww})
+		}
+	}
+	sort.Slice(writers, func(a, b int) bool { return writers[a].w.MaxID > writers[b].w.MaxID })
+	n := len(writers)
+	cols := []psColumn{
+		psCol("RUN", n, func(i int) string { return writers[i].id }),
+		psCol("WROTE", n, func(i int) string { return fmt.Sprintf("%+d", signedRows(writers[i].w)) }),
+		psCol("OP", n, func(i int) string { return shortOp(writers[i].w.Op) }),
+		psColStyled("STATE", n, func(i int) (string, string) {
+			if run, ok := findRun(m.snap, writers[i].id); ok {
+				if run.State == "dead_lettered" {
+					return "✖ dead", ansiRed
+				}
+				return run.State, psStateSGR(run.State)
+			}
+			return "-", ansiDim
+		}),
+		psCol("ELAPSED", n, func(i int) string {
+			if run, ok := findRun(m.snap, writers[i].id); ok {
+				return orDash(runSpan(run))
+			}
+			return "-"
+		}),
+		psCol("JOURNAL RANGE", n, func(i int) string {
+			return fmt.Sprintf("%d → %d", writers[i].w.MinID, writers[i].w.MaxID)
+		}),
+	}
+	sel := -1
+	for i, ww := range writers {
+		if ww.id == m.tblRun {
+			sel = i
+		}
+	}
+	sub := newScreenBuf(w-4, tblH)
+	renderTable(sub, 0, sub.h, cols, sel, colorless)
+	b.blit(sub, x+2, tblY)
+	visible := tblH - 1
+	top := 0
+	if sel >= visible {
+		top = sel - visible + 1
+	}
+	for r := top; r < n && r-top < visible; r++ {
+		m.addClick(psClick{x: x + 1, y: tblY + 1 + (r - top), w: w - 2, kind: psClickTableRow, name: writers[r].id})
+	}
+}
+
+// pipelineTableRow is one table row of the pipeline statistics pane.
+type pipelineTableRow struct {
+	name      string
+	op        string
+	rows      int64
+	delta     int64
+	watermark int64
+}
+
+// pipelineTables lists the tables a pipeline's runs wrote, from the journal
+// aggregate, descending watermark (the busiest current table first).
+func pipelineTables(s Snapshot, pipeline string) []pipelineTableRow {
+	j := s.Journal
+	if j == nil {
+		return nil
+	}
+	newest := ""
+	for _, r := range s.Ps.Runs {
+		if r.Pipeline == pipeline {
+			newest = r.ID
+			break
+		}
+	}
+	var out []pipelineTableRow
+	for _, k := range j.tableKeys() {
+		t := j.Tables[k]
+		name := t.Schema + "." + t.Table
+		if t.Writer != pipeline {
+			continue
+		}
+		var delta int64
+		if newest != "" {
+			if w, ok := j.ByRun[newest][name]; ok {
+				delta = w.Rows
+				if w.Op == "delete" {
+					delta = -delta
+				}
+			}
+		}
+		out = append(out, pipelineTableRow{name: name, op: t.Op, rows: t.Rows, delta: delta, watermark: t.MaxID})
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].watermark > out[b].watermark })
+	return out
+}
+
+// signedRows renders deletes negative so the WROTE column reads as row flow.
+func signedRows(w psRunWrites) int64 {
+	if w.Op == "delete" {
+		return -w.Rows
+	}
+	return w.Rows
+}
+
+// shortOp abbreviates a journal op for a column cell.
+func shortOp(op string) string {
+	switch op {
+	case "insert":
+		return "ins"
+	case "update":
+		return "upd"
+	case "delete":
+		return "del"
+	}
+	return op
+}
+
+// opsSplit renders one table's per-op captured-write counts.
+func opsSplit(j *psJournal, name string) string {
+	parts := []string{}
+	for _, op := range []string{"insert", "update", "delete"} {
+		var rows int64
+		for _, k := range j.tableKeys() {
+			t := j.Tables[k]
+			if t.Schema+"."+t.Table == name && t.Op == op {
+				rows += t.Rows
+			}
+		}
+		parts = append(parts, fmt.Sprintf("%s %d", op, rows))
+	}
+	return strings.Join(parts, " · ")
 }
 
 // renderPipelineStats is the statistics pane's pipeline shape: run identity,
@@ -336,11 +572,31 @@ func renderPipelineStats(b *screenBuf, m *psModel, x, y, w, h int, colorless boo
 		b.text(x+8, y+5, ansiDim, clipCells("no timed run recorded yet", w-10))
 	}
 
-	b.text(x+2, y+7, ansiDim, "TABLE")
-	b.text(x+8, y+7, ansiDim, clipCells("table writes arrive with the journal aggregate (#238)", w-10))
+	// TABLE: the tables this pipeline writes, from the journal aggregate.
+	tableRows := pipelineTables(m.snap, name)
+	if len(tableRows) == 0 {
+		b.text(x+2, y+7, ansiDim, "TABLE")
+		b.text(x+8, y+7, ansiDim, clipCells("no captured writes yet", w-10))
+	} else {
+		b.text(x+2, y+7, ansiDim, clipCells("TABLE                   OP        ROWS     Δ RUN   WATERMARK", w-4))
+		for i, tr := range tableRows {
+			if i >= 3 {
+				break
+			}
+			line := fmt.Sprintf("%-22s  %-3s  %10d  %8s   %d", clipCells(tr.name, 22), shortOp(tr.op), tr.rows, fmt.Sprintf("%+d", tr.delta), tr.watermark)
+			b.text(x+2, y+8+i, "", clipCells(line, w-4))
+		}
+	}
+	tableN := len(tableRows)
+	if tableN > 3 {
+		tableN = 3
+	}
+	if tableN == 0 {
+		tableN = 1 // the placeholder line
+	}
 
 	// Run history: the discovery path to run ids (⏎ opens the full screen).
-	tblY := y + 9
+	tblY := y + 8 + tableN
 	nowY := y + h - 2
 	tblH := nowY - tblY - 1
 	if tblH >= 2 {
@@ -353,7 +609,7 @@ func renderPipelineStats(b *screenBuf, m *psModel, x, y, w, h int, colorless boo
 			b.text(x+3, tblY, ansiDim, clipCells(hint, w-6))
 		} else {
 			sub := newScreenBuf(w-4, tblH)
-			renderTable(sub, 0, sub.h, runsColumns(visRuns), selIndex(m.tblRun, m.runKeys()), colorless)
+			renderTable(sub, 0, sub.h, runsColumns(m, visRuns), selIndex(m.tblRun, m.runKeys()), colorless)
 			b.blit(sub, x+2, tblY)
 			visible := tblH - 1
 			sel := selIndex(m.tblRun, m.runKeys())
@@ -543,12 +799,19 @@ func renderPsBanner(b *screenBuf, w, h int, colorless bool) int {
 }
 
 // runsColumns builds the statistics pane's run history columns. ELAPSED is
-// the engine's rendered span (#238 phase 2): a running run's age, a terminal
-// run's duration. WROTE waits on the journal aggregate (phase 3).
-func runsColumns(runs []api.PsRun) []psColumn {
+// the engine's rendered span (#238 phase 2); WROTE and the journal range are
+// the run's captured writes from the journal aggregate (phase 3).
+func runsColumns(m *psModel, runs []api.PsRun) []psColumn {
+	j := m.snap.Journal
 	n := len(runs)
 	return []psColumn{
 		psCol("RUN", n, func(i int) string { return runs[i].ID }),
+		psCol("WROTE", n, func(i int) string {
+			if rows := j.runWrote(runs[i].ID); rows > 0 {
+				return fmt.Sprintf("%+d", rows)
+			}
+			return "-"
+		}),
 		psColStyled("STATE", n, func(i int) (string, string) {
 			s := runs[i].State
 			if s == "dead_lettered" {

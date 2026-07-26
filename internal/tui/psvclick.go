@@ -22,6 +22,7 @@ const (
 	psClickCatalogApply // the "apply N marked" affordance (inline list and overlay)
 	psClickPsCatFilter  // the catalog pane's filter input box (#238 C1d)
 	psClickPsEvtFilter  // the events pane's filter input box (#238 C1d)
+	psClickRailTable    // a written-table row in the catalog (#238 phase 3)
 )
 
 // psClick is one clickable rectangle (h defaults to a single row).
@@ -72,6 +73,9 @@ func (m *psModel) clickOn(r psClick) {
 	case psClickRailPipeline:
 		m.pane = psPaneLanes
 		m.selectTree(psTreeRow{lane: r.lane, pipeline: r.name})
+	case psClickRailTable:
+		m.pane = psPaneLanes
+		m.selectTree(psTreeRow{lane: r.lane, table: r.name})
 	case psClickTableRow:
 		m.pane = psPaneStats
 		if m.selPipeline != "" {

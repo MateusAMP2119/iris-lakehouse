@@ -107,6 +107,7 @@ func NewMux(opts ...MuxOption) http.Handler {
 		catalog:        noCatalog{},
 		catalogList:    noCatalogList{},
 		catalogSources: noCatalogSources{},
+		jactivity:      noJournalActivity{},
 	}
 	for _, o := range opts {
 		o(m)
@@ -170,6 +171,9 @@ type mux struct {
 	// internal-fault envelope, per the unwired-seam doctrine.
 	datasrc  DataSource
 	readexec ReadExecutor
+	// jactivity is the GET /journal/activity seam (journalactivity.go): the
+	// #238 phase 3 write-activity aggregate. Defaults unwired.
+	jactivity JournalActivityHandler
 }
 
 // ServeHTTP gates mutations to the leader, scope-checks the request's authority
@@ -226,6 +230,8 @@ func (m *mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.servePipelineShow(w, r)
 	case "/ps":
 		m.servePs(w, r)
+	case "/journal/activity":
+		m.serveJournalActivity(w, r)
 	case "/inspect":
 		m.serveInspect(w, r)
 	default:

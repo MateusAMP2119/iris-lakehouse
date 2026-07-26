@@ -29,6 +29,14 @@ func psvFixture() Snapshot {
 			{Pipeline: "solo", Runs: 1, Last: "40ms", Avg: "40ms", P50: "40ms", Max: "40ms", Levels: []int{8}},
 		},
 	},
+		Journal: foldJournal(nil, api.JournalActivity{Watermark: 8110, Groups: []api.JournalActivityGroup{
+			{RunID: 9, Pipeline: "load_orders", Schema: "demo", Table: "orders", Op: "insert",
+				Rows: 1204, MinID: 6800, MaxID: 7920, UndoOpen: 0, UndoPromoted: 1204},
+			{RunID: 14, Pipeline: "load_orders", Schema: "demo", Table: "orders", Op: "insert",
+				Rows: 1187, MinID: 7921, MaxID: 8110, UndoOpen: 1187, UndoPromoted: 0},
+			{RunID: 2, Pipeline: "solo", Schema: "demo", Table: "audit", Op: "update",
+				Rows: 12, MinID: 6500, MaxID: 6512, UndoOpen: 0, UndoPromoted: 12},
+		}}),
 		Pipelines: []api.PipelineListItem{
 			{Name: "extract", Active: true, Lane: "ingest"},
 			{Name: "hello_iris", Active: false, Lane: "ingest"},
@@ -125,20 +133,24 @@ func TestPsModelUpdate(t *testing.T) {
 			}
 		})
 
-		t.Run("tree walk crosses pipeline rows, nothing folds", func(t *testing.T) {
+		t.Run("tree walk crosses table and pipeline rows, nothing folds", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
-			m.update(key('j')) // into ingest's members: extract first (sorted)
-			if m.selLane != "ingest" || m.selPipeline != "extract" {
-				t.Fatalf("after j: lane %q pipeline %q", m.selLane, m.selPipeline)
+			m.update(key('j')) // ingest's written table sits above its pipelines
+			if m.selLane != "ingest" || m.selTable != "demo.orders" {
+				t.Fatalf("after j: lane %q table %q", m.selLane, m.selTable)
+			}
+			m.update(key('j')) // then the members: extract first (sorted)
+			if m.selPipeline != "extract" || m.selTable != "" {
+				t.Fatalf("after jj: pipeline %q table %q", m.selPipeline, m.selTable)
 			}
 			m.update(key('j'))
 			m.update(key('j'))
 			if m.selPipeline != "load_orders" {
-				t.Fatalf("after jjj: pipeline %q, want load_orders", m.selPipeline)
+				t.Fatalf("after jjjj: pipeline %q, want load_orders", m.selPipeline)
 			}
 			m.update(key('j')) // past the lane's members: the next lane row
 			if m.selLane != "reporting" || m.selPipeline != "" {
-				t.Fatalf("after jjjj: lane %q pipeline %q, want reporting lane row", m.selLane, m.selPipeline)
+				t.Fatalf("after jjjjj: lane %q pipeline %q, want reporting lane row", m.selLane, m.selPipeline)
 			}
 			m.update(key('k')) // back onto ingest's last member — no fold state
 			if m.selPipeline != "load_orders" {
@@ -200,7 +212,8 @@ func TestPsModelUpdate(t *testing.T) {
 
 		t.Run("logs target follows the selection and survives pin loss", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
-			m.update(key('j')) // extract row: no running run, newest is queued 12
+			m.update(key('j')) // over the written-table row...
+			m.update(key('j')) // ...to extract: no running run, newest is queued 12
 			if m.focus() != "12" {
 				t.Fatalf("extract target = %q, want its only run 12", m.focus())
 			}
@@ -218,8 +231,8 @@ func TestPsModelUpdate(t *testing.T) {
 
 		t.Run("selection survives a re-poll reorder and clamps when gone", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
-			for range 4 {
-				m.update(key('j')) // over ingest's three members onto reporting
+			for range 5 {
+				m.update(key('j')) // over ingest's table and three members onto reporting
 			}
 			if m.selLane != "reporting" {
 				t.Fatalf("selLane = %q", m.selLane)
@@ -525,7 +538,8 @@ func TestPsBulkCancel(t *testing.T) {
 
 		t.Run("space marks the rail's pipeline row", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
-			m.update(psKey{kind: psKeyDown}) // first pipeline row of the unfolded lane
+			m.update(psKey{kind: psKeyDown}) // the written-table row
+			m.update(psKey{kind: psKeyDown}) // the first pipeline row
 			if m.selPipeline == "" {
 				t.Fatal("fixture cursor did not land on a pipeline row")
 			}

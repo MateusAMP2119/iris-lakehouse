@@ -68,6 +68,12 @@ func TestPsFrameGoldens(t *testing.T) {
 			golden.Assert(t, []byte(framePlain(m, 150, 40)), "testdata/psv_runs_150x40.txt")
 		})
 
+		t.Run("table view 150x40", func(t *testing.T) {
+			m := newPsModel(psvFixture(), target)
+			m.update(key('j')) // the written-table row demo.orders
+			golden.Assert(t, []byte(framePlain(m, 150, 40)), "testdata/psv_table_150x40.txt")
+		})
+
 		t.Run("catalog filter typed 150x40", func(t *testing.T) {
 			m := newPsModel(psvFixture(), target)
 			m.update(key('/'))

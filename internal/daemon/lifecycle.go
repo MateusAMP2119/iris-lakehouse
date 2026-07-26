@@ -236,6 +236,9 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// pg.WalkProvenance. Archived-partition stamps resolve via the object store.
 	objects := store.NewObjectStore(s.ObjectsPath)
 	prov := NewProvenancePlane(client.Reader(), data, objects, client.CheckpointChainReader(), logger)
+	// The journal-activity plane (#238 phase 3): the same data client answers
+	// the write-activity aggregate behind GET /journal/activity.
+	jactivity := NewJournalActivityPlane(data, client.Reader(), logger)
 
 	// The wipe and promote planes serve POST /workload/wipe and POST
 	// /pipeline/promote once this daemon leads: the journal-driven revert over
@@ -332,6 +335,7 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 		api.WithRunLogs(NewRunLogsPlane(runLogs)), api.WithCatalog(catalogCtl),
 		api.WithCatalogList(NewCatalogReadPlane(client.RegistryReader(), catalogResolver, logger)),
 		api.WithCatalogSources(catalogSrc),
+		api.WithJournalActivity(jactivity),
 	), WithServerLogger(logger), WithVerifier(verifier))
 	if err := srv.Start(ctx); err != nil {
 		return err
