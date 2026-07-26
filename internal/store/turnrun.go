@@ -96,14 +96,22 @@ var createTurnRunSQL = `WITH new_run AS (
     INSERT INTO run_inputs (run_id, upstream_run_id)
     SELECT new_run.id, upstream
     FROM new_run, unnest($8::bigint[]) AS upstream
+), times AS (
+    INSERT INTO run_times (run_id, started_at)
+    SELECT id, now()::text FROM new_run
 )` + fmt.Sprintf(pluginLegsSQL, "$9", "$10", "$11", "$12", "$13", "$14", "$15", "$16", "$17", "$18", "$19", "$20")
 
 // completeTurnRunSQL closes a producing turn's run: the guarded running ->
 // succeeded transition stamping exit code zero, the turn's snapshot pin
 // (LSN, journal floor and ceiling), and the log reference in one statement.
-const completeTurnRunSQL = `UPDATE runs
-SET state = $1, exit_code = 0, snapshot_lsn = $2, journal_floor = $3, journal_ceiling = $4, log_ref = NULLIF($5, '')
-WHERE id = $6 AND state = $7`
+const completeTurnRunSQL = `WITH updated AS (
+    UPDATE runs
+    SET state = $1, exit_code = 0, snapshot_lsn = $2, journal_floor = $3, journal_ceiling = $4, log_ref = NULLIF($5, '')
+    WHERE id = $6 AND state = $7 RETURNING id
+)
+INSERT INTO run_times (run_id, finished_at)
+SELECT id, now()::text FROM updated
+ON CONFLICT (run_id) DO UPDATE SET finished_at = excluded.finished_at`
 
 // stampRunLogRefSQL records a run's log reference after the fact: the failed-turn
 // mint cannot know its run-id-keyed log path before the id exists.

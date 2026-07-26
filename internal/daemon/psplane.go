@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"sort"
 	"context"
 	"fmt"
 	"io"
@@ -156,6 +157,15 @@ func (p *psPlane) Ps(ctx context.Context, all, history bool) (api.PsPayload, err
 			Lane:     run.Lane,
 			State:    string(run.State),
 		}
+		// Observed run times (#238 phase 2): rendered here, second- (or
+		// millisecond-) truncated, so the wire never carries a computable
+		// timestamp — the renderUptime stance, per run.
+		if run.State == store.RunRunning && run.ElapsedMillis != nil {
+			row.Elapsed = renderRunSpan(*run.ElapsedMillis)
+		}
+		if (run.State == store.RunSucceeded || run.State == store.RunDeadLettered) && run.DurationMillis != nil {
+			row.Duration = renderRunSpan(*run.DurationMillis)
+		}
 		// The reader coalesces a missing exit code to zero; only a terminal run
 		// carries a real one on the wire.
 		if run.ExitCode != nil && (run.State == store.RunSucceeded || run.State == store.RunDeadLettered) {
@@ -169,6 +179,7 @@ func (p *psPlane) Ps(ctx context.Context, all, history bool) (api.PsPayload, err
 		rows = append(rows, row)
 	}
 	payload := api.PsPayload{Engine: engine, Runs: rows, Residents: p.counters.snapshot(), SampleTick: tick}
+	payload.PipelineTimes = pipelineTimes(runs)
 	if p.sources != nil {
 		payload.Sources = p.sources.health()
 	}
@@ -224,4 +235,87 @@ func renderUptime(d time.Duration) string {
 		d = 0
 	}
 	return d.Truncate(time.Second).String()
+}
+
+// renderRunSpan renders an observed run span for display: second-truncated
+// once it reaches a second, milliseconds below (a 40ms run's duration is its
+// only honest cost signal — #238). Display only, like renderUptime.
+func renderRunSpan(ms int64) string {
+	if ms < 0 {
+		ms = 0
+	}
+	d := time.Duration(ms) * time.Millisecond
+	if d < time.Second {
+		return d.Truncate(time.Millisecond).String()
+	}
+	return d.Truncate(time.Second).String()
+}
+
+// pipelineTimes aggregates observed durations per pipeline (#238 phase 2):
+// last / avg / p50 / max as rendered strings plus the newest-last quantized
+// per-run levels the TIME strip draws. Aggregation happens engine-side so the
+// wire ships no numeric durations a client could feed back as scheduling
+// input; the levels are 1..8 against the pipeline's own maximum.
+func pipelineTimes(runs []store.Run) []api.PsPipelineTime {
+	type acc struct {
+		durs []int64 // ascending run order (reader order)
+	}
+	byPipe := map[string]*acc{}
+	var order []string
+	for _, run := range runs {
+		if run.DurationMillis == nil {
+			continue
+		}
+		a := byPipe[run.Pipeline]
+		if a == nil {
+			a = &acc{}
+			byPipe[run.Pipeline] = a
+			order = append(order, run.Pipeline)
+		}
+		a.durs = append(a.durs, *run.DurationMillis)
+	}
+	sort.Strings(order)
+	out := make([]api.PsPipelineTime, 0, len(order))
+	for _, name := range order {
+		durs := byPipe[name].durs
+		maxMs, sum := int64(0), int64(0)
+		for _, d := range durs {
+			sum += d
+			if d > maxMs {
+				maxMs = d
+			}
+		}
+		sorted := append([]int64(nil), durs...)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+		levels := make([]int, len(durs))
+		for i, d := range durs {
+			levels[i] = quantizeLevel(d, maxMs)
+		}
+		out = append(out, api.PsPipelineTime{
+			Pipeline: name,
+			Runs:     len(durs),
+			Last:     renderRunSpan(durs[len(durs)-1]),
+			Avg:      renderRunSpan(sum / int64(len(durs))),
+			P50:      renderRunSpan(sorted[len(sorted)/2]),
+			Max:      renderRunSpan(maxMs),
+			Levels:   levels,
+		})
+	}
+	return out
+}
+
+// quantizeLevel maps one duration onto the 1..8 strip ramp against the
+// pipeline's maximum (1 floor so every recorded run stays visible).
+func quantizeLevel(ms, maxMs int64) int {
+	if maxMs <= 0 {
+		return 1
+	}
+	l := int((ms*8 + maxMs - 1) / maxMs)
+	if l < 1 {
+		l = 1
+	}
+	if l > 8 {
+		l = 8
+	}
+	return l
 }

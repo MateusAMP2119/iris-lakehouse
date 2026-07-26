@@ -1192,10 +1192,11 @@ func psFooterHints(m *psModel) []footerHint {
 }
 
 // pipelinesColumns builds the pipelines table's columns behind the leading
-// mark-circle column. The timing columns render dashes until the engine
-// records run timestamps (issue #200), and a narrow pane sheds them whole
-// rather than clipping their headers.
-func pipelinesColumns(rows []psPipelineRow, wide bool, marked map[string]bool) []psColumn {
+// mark-circle column. The timing columns carry the engine's rendered spans
+// (#238 phase 2): ELAPSED from the pipeline's running run, LAST and AVG from
+// its aggregate block; a pipeline with no timed run renders dashes. A narrow
+// pane sheds them whole rather than clipping their headers.
+func pipelinesColumns(m *psModel, rows []psPipelineRow, wide bool, marked map[string]bool) []psColumn {
 	n := len(rows)
 	// Leading mark circles: ○ unpicked, ● picked; clicking one toggles it.
 	cols := []psColumn{
@@ -1215,10 +1216,11 @@ func pipelinesColumns(rows []psPipelineRow, wide bool, marked map[string]bool) [
 		psCol("MEM", n, func(i int) string { return memText(rows[i].load) }),
 	)
 	if wide {
+		times := pipeTimes(m.snap)
 		cols = append(cols,
-			psCol("ELAPSED", n, func(int) string { return "-" }),
-			psCol("LAST", n, func(int) string { return "-" }),
-			psCol("AVG", n, func(int) string { return "-" }),
+			psCol("ELAPSED", n, func(i int) string { return orDash(pipeElapsed(m.snap, rows[i].name)) }),
+			psCol("LAST", n, func(i int) string { return orDash(times[rows[i].name].Last) }),
+			psCol("AVG", n, func(i int) string { return orDash(times[rows[i].name].Avg) }),
 		)
 	}
 	return cols
@@ -1464,7 +1466,7 @@ func renderSearchPreview(b *screenBuf, m *psModel, h psHit, x, y, w, ph int) {
 	sub := newScreenBuf(w, ph)
 	switch h.kind {
 	case psHitLane:
-		renderTable(sub, 0, ph, pipelinesColumns(derivePipelines(m.snap, h.lane), w >= 90, nil), -1, false)
+		renderTable(sub, 0, ph, pipelinesColumns(m, derivePipelines(m.snap, h.lane), w >= 90, nil), -1, false)
 	case psHitPipeline:
 		renderTable(sub, 0, ph, runsColumns(deriveRuns(m.snap, h.pipeline, true)), -1, false)
 	case psHitRun:

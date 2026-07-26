@@ -119,9 +119,15 @@ const (
 )
 
 // markRunSucceededSQL transitions a run from running to succeeded, recording exit code
-// zero. It is guarded on the running state, so it can only ever act on a run actually in
+// zero and stamping run_times.finished_at (#238 phase 2, DB clock). It is guarded on the
+// running state, so it can only ever act on a run actually in
 // flight -- never one already terminal -- and is one atomic Exec.
-const markRunSucceededSQL = `UPDATE runs SET state = $1, exit_code = 0 WHERE id = $2 AND state = $3`
+const markRunSucceededSQL = `WITH updated AS (
+    UPDATE runs SET state = $1, exit_code = 0 WHERE id = $2 AND state = $3 RETURNING id
+)
+INSERT INTO run_times (run_id, finished_at)
+SELECT id, now()::text FROM updated
+ON CONFLICT (run_id) DO UPDATE SET finished_at = excluded.finished_at`
 
 // pgxManualReader is the pgx-pool-backed ManualReader.
 type pgxManualReader struct {

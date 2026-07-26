@@ -103,8 +103,13 @@ func (p *pgxReadPool) query(ctx context.Context, sql string, args ...any) (poolR
 // answerable (runs carries no lane column; lane membership lives in lanes). It
 // is a plain SELECT: no locking clause, no advisory-lock interplay, just an MVCC
 // snapshot.
-const selectRunsSQL = `SELECT r.id, r.pipeline, r.state, coalesce(r.exit_code, 0), coalesce(r.handle, 0), coalesce(l.lane, '')
+const selectRunsSQL = `SELECT r.id, r.pipeline, r.state, coalesce(r.exit_code, 0), coalesce(r.handle, 0), coalesce(l.lane, ''),
+  CASE WHEN r.state = 'running' AND t.started_at IS NOT NULL
+    THEN floor(extract(epoch FROM now() - t.started_at::timestamptz) * 1000)::bigint END,
+  CASE WHEN t.started_at IS NOT NULL AND t.finished_at IS NOT NULL
+    THEN floor(extract(epoch FROM t.finished_at::timestamptz - t.started_at::timestamptz) * 1000)::bigint END
 FROM runs r LEFT JOIN lanes l ON l.pipeline = r.pipeline
+LEFT JOIN run_times t ON t.run_id = r.id
 WHERE ($1::text = '' OR r.pipeline = $1)
   AND ($2::text = '' OR r.state = $2)
   AND ($3::text = '' OR l.lane = $3)
@@ -137,7 +142,7 @@ func (r *pgxReader) Runs(ctx context.Context, filter RunFilter) ([]Run, error) {
 	for rows.Next() {
 		var run Run
 		var exit, handle int64
-		if err := rows.Scan(&run.ID, &run.Pipeline, &run.State, &exit, &handle, &run.Lane); err != nil {
+		if err := rows.Scan(&run.ID, &run.Pipeline, &run.State, &exit, &handle, &run.Lane, &run.ElapsedMillis, &run.DurationMillis); err != nil {
 			return nil, fmt.Errorf("store: scan run: %w", err)
 		}
 		run.Handle = int(handle)

@@ -10,10 +10,10 @@
 ╭───────────────────────────────────╮│ CPU                                                                                             ▓  51.0% now  │
 │▌ingest                      1r·1q ││ MEM                                                                            █  24.0MiB now · 24.0MiB peak  │
 │ 51.0% 24.0MiB                   ▓ ││                                                                                                               │
-│ ● load_orders                 run ││      PIPELINE     LATEST   Q  R  CPU    MEM      ELAPSED  LAST  AVG                                           │
-│                                   ││ ▌ ○  extract      queued   1  0  -      -        -        -     -                                             │
-│                                   ││   ○  hello_iris   -        0  0  -      -        -        -     -                                             │
-│                                   ││   ○  load_orders  running  0  1  51.0%  24.0MiB  -        -     -                                             │
+│ ● load_orders                 run ││      PIPELINE     LATEST   Q  R  CPU    MEM      ELAPSED  LAST   AVG                                          │
+│                                   ││ ▌ ○  extract      queued   1  0  -      -        -        -      -                                            │
+│                                   ││   ○  hello_iris   -        0  0  -      -        -        -      -                                            │
+│                                   ││   ○  load_orders  running  0  1  51.0%  24.0MiB  2m14s    1m34s  2m18s                                        │
 │                                   ││                                                                                                               │
 │                                   ││                                                                                                               │
 │                                   ││                                                                                                               │

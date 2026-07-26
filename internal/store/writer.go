@@ -105,17 +105,30 @@ func (w *Writer) InsertJournalCheckpoint(ctx context.Context, idFrom, idTo int64
 const (
 	deadLetterRunSQL = `WITH updated AS (
     UPDATE runs SET state = $1 WHERE id = $2 AND state = $3 RETURNING id
+), letter AS (
+    INSERT INTO dead_letters (run_id, reason, error)
+    SELECT id, $4, $5 FROM updated
 )
-INSERT INTO dead_letters (run_id, reason, error)
-SELECT id, $4, $5 FROM updated`
-	// deadLetterQueuedRunSQL is deadLetterRunSQL with the guard on queued: an operator stop parks a minted-but-unstarted run the same way.
+INSERT INTO run_times (run_id, finished_at)
+SELECT id, now()::text FROM updated
+ON CONFLICT (run_id) DO UPDATE SET finished_at = excluded.finished_at`
+	// deadLetterQueuedRunSQL is deadLetterRunSQL with the guard on queued: an
+	// operator stop parks a minted-but-unstarted run the same way. A queued run
+	// never started, so it stamps no run_times row (absence, not zero).
 	deadLetterQueuedRunSQL = `WITH updated AS (
     UPDATE runs SET state = $1 WHERE id = $2 AND state = $3 RETURNING id
 )
 INSERT INTO dead_letters (run_id, reason, error)
 SELECT id, $4, $5 FROM updated`
 	deleteQueuedRunSQL = "DELETE FROM runs WHERE id = $1 AND state = $2"
-	markRunRunningSQL  = "UPDATE runs SET state = $1, handle = $2, log_ref = NULLIF($3, '') WHERE id = $4 AND state = $5"
+	// markRunRunningSQL also stamps run_times.started_at (#238 phase 2): the
+	// queued->running transition is the observed start, DB clock, one atomic CTE.
+	markRunRunningSQL = `WITH updated AS (
+    UPDATE runs SET state = $1, handle = $2, log_ref = NULLIF($3, '') WHERE id = $4 AND state = $5 RETURNING id
+)
+INSERT INTO run_times (run_id, started_at)
+SELECT id, now()::text FROM updated
+ON CONFLICT (run_id) DO NOTHING`
 )
 
 // MarkRunRunning records a started run: in one guarded statement it transitions

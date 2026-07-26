@@ -5,18 +5,18 @@
 │ IRIS  dev  ·  LEADER  ·  up 2h13m  ·  pid 42                        CPU                              ░ 3.2% · MEM 126.0MiB · 1 running · 1 queued  │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ CATALOG ─────────────────────────╮╭─ [load_orders · lane ingest] ─────────────────────────────────────────────────────────────────────────────────╮
-│ / type to filter the catalog      ││ run 14 · running                                                                             3 runs recorded  │
+│ / type to filter the catalog      ││ run 14 · running 2m14s                                                                       3 runs recorded  │
 ╰───────────────────────────────────╯│                                                                                                               │
 ╭───────────────────────────────────╮│ CPU                                                                                             ▓  51.0% now  │
 │ ingest                      1r·1q ││ MEM                                                                            █  24.0MiB now · 24.0MiB peak  │
-│ 51.0% 24.0MiB                   ▓ ││ TIME  run durations arrive with engine timestamps (#200)                                                      │
+│ 51.0% 24.0MiB                   ▓ ││ TIME  █▅                                                                    2m14s now · 2m18s avg · 3m2s max  │
 │ ● extract                      1q ││                                                                                                               │
 │ ○ hello_iris                      ││ TABLE table writes arrive with the journal aggregate (#238)                                                   │
 │▌● load_orders                 run ││                                                                                                               │
-│                                   ││   RUN  STATE      EXIT  CPU    MEM                                                                            │
-│ reporting                   0r·0q ││ ▌ 14   running    -     51.0%  24.0MiB                                                                        │
-│ - -                               ││   9    succeeded  0     -      -                                                                              │
-│ ○ monthly                         ││   6    ✖ dead     3     -      -                                                                              │
+│                                   ││   RUN  STATE      ELAPSED  EXIT  CPU    MEM                                                                   │
+│ reporting                   0r·0q ││ ▌ 14   running    2m14s    -     51.0%  24.0MiB                                                               │
+│ - -                               ││   9    succeeded  3m2s     0     -      -                                                                     │
+│ ○ monthly                         ││   6    ✖ dead     1m34s    3     -      -                                                                     │
 │                                   ││                                                                                                               │
 │ solo                        0r·0q ││                                                                                                               │
 │ - -                               ││                                                                                                               │

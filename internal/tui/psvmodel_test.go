@@ -18,11 +18,15 @@ func psvFixture() Snapshot {
 			QueuedRuns: 1, RunningRuns: 1, Load: &api.PsLoad{CPUPercent: 3.2, RSSBytes: 126 << 20}},
 		Runs: []api.PsRun{
 			{ID: "14", Pipeline: "load_orders", Lane: "ingest", State: "running",
-				Load: &api.PsLoad{CPUPercent: 51, RSSBytes: 24 << 20}},
+				Load: &api.PsLoad{CPUPercent: 51, RSSBytes: 24 << 20}, Elapsed: "2m14s"},
 			{ID: "12", Pipeline: "extract", Lane: "ingest", State: "queued"},
-			{ID: "9", Pipeline: "load_orders", Lane: "ingest", State: "succeeded", ExitCode: &exit0},
-			{ID: "6", Pipeline: "load_orders", Lane: "ingest", State: "dead_lettered", ExitCode: &exit3},
-			{ID: "2", Pipeline: "solo", State: "succeeded", ExitCode: &exit0},
+			{ID: "9", Pipeline: "load_orders", Lane: "ingest", State: "succeeded", ExitCode: &exit0, Duration: "3m2s"},
+			{ID: "6", Pipeline: "load_orders", Lane: "ingest", State: "dead_lettered", ExitCode: &exit3, Duration: "1m34s"},
+			{ID: "2", Pipeline: "solo", State: "succeeded", ExitCode: &exit0, Duration: "40ms"},
+		},
+		PipelineTimes: []api.PsPipelineTime{
+			{Pipeline: "load_orders", Runs: 2, Last: "1m34s", Avg: "2m18s", P50: "1m34s", Max: "3m2s", Levels: []int{8, 5}},
+			{Pipeline: "solo", Runs: 1, Last: "40ms", Avg: "40ms", P50: "40ms", Max: "40ms", Levels: []int{8}},
 		},
 	},
 		Pipelines: []api.PipelineListItem{

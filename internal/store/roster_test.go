@@ -7,10 +7,10 @@ import (
 	"github.com/MateusAMP2119/iris-lakehouse/internal/store"
 )
 
-// TestEighteenTableRoster proves the bootstrap DDL creates exactly twenty-five engine
-// tables: the twenty-four meta control tables plus public.data_journal in the data
-// database (the latest three: pipeline_plugins, run_plugins, run_plugin_calls, the
-// #215 plugin ledgers). The test name keeps its original count though the roster grew.
+// TestEighteenTableRoster proves the bootstrap DDL creates exactly twenty-six engine
+// tables: the twenty-five meta control tables plus public.data_journal in the data
+// database (the latest: run_times, the #238 phase 2 observational run
+// timestamps). The test name keeps its original count though the roster grew.
 func TestEighteenTableRoster(t *testing.T) {
 	meta := store.MetaSchema()
 
@@ -31,8 +31,8 @@ func TestEighteenTableRoster(t *testing.T) {
 	}
 
 	total := len(meta.Tables) + 1
-	if total != 26 {
-		t.Errorf("engine table roster = %d, want exactly 26 (25 meta + data_journal)", total)
+	if total != 27 {
+		t.Errorf("engine table roster = %d, want exactly 27 (26 meta + data_journal)", total)
 	}
 
 	// data_journal is not a meta control table: it lives on the

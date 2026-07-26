@@ -81,6 +81,14 @@ type Run struct {
 	// Seq is a monotonic ordering identity assigned on creation: identity, never
 	// a clock.
 	Seq int64
+	// ElapsedMillis is a running run's observed age (DB clock, run_times), nil
+	// when unknowable. Measurement of the past for operator display only --
+	// never an input to any engine decision (#238 phase 2 clock stance).
+	ElapsedMillis *int64
+	// DurationMillis is a terminal run's observed span (finished - started,
+	// both DB clock), nil when either stamp is absent. Milliseconds so a 40ms
+	// run keeps an honest cost readout. Same display-only stance.
+	DurationMillis *int64
 }
 
 // RunSpec is the input to CreateRun: the pipeline and lane a new run executes.

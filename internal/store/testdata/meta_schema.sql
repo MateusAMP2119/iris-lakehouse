@@ -121,6 +121,14 @@ CREATE TABLE IF NOT EXISTS run_plugin_calls (
     CHECK (outcome IN ('ok', 'err'))
 );
 
+CREATE TABLE IF NOT EXISTS run_times (
+    run_id bigint,
+    started_at text,
+    finished_at text,
+    PRIMARY KEY (run_id),
+    FOREIGN KEY (run_id) REFERENCES runs (id)
+);
+
 CREATE TABLE IF NOT EXISTS dead_letters (
     run_id bigint,
     reason text NOT NULL,

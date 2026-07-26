@@ -262,7 +262,7 @@ func dependenciesSatisfied(t Table, emitted map[string]bool) bool {
 	return true
 }
 
-// MetaSchema returns the meta control-plane schema: the twenty-three tables, in roster
+// MetaSchema returns the meta control-plane schema: the twenty-four tables, in roster
 // order. Roster order is not a safe DDL emission order (runs precedes artifacts it references); DDL() emits in
 // FK-dependency order instead. Ordering keys are monotonic bigint identity
 // columns; recorded_at is an opaque non-ordering text audit string throughout.
@@ -458,6 +458,26 @@ func MetaSchema() Schema {
 				},
 				Checks: []Check{
 					{Column: "outcome", Values: []string{"ok", "err"}},
+				},
+			},
+			// run_times: observational run timestamps (#238 phase 2, the #200
+			// substance). started_at stamps the queued->running transition (or a
+			// producing turn's mint), finished_at the terminal transition; both are
+			// DB-clock now()::text audit strings in the recorded_at convention --
+			// rendered for operators, never an input to any engine decision. A
+			// separate table rather than runs columns keeps the meta DDL purely
+			// additive (CREATE IF NOT EXISTS, no ALTER) across upgrades. An absent
+			// row or NULL renders as absence.
+			{
+				Name: "run_times",
+				Columns: []Column{
+					{Name: "run_id", Type: "bigint"},
+					{Name: "started_at", Type: "text", Nullable: true},
+					{Name: "finished_at", Type: "text", Nullable: true},
+				},
+				PrimaryKey: []string{"run_id"},
+				ForeignKeys: []ForeignKey{
+					{Column: "run_id", RefTable: "runs", RefColumn: "id"},
 				},
 			},
 			// dead_letters: the outstanding worklist. run_id PK FK.

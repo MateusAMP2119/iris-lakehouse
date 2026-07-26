@@ -74,8 +74,19 @@ func TestUptimeSoleWallClock(t *testing.T) {
 	timeType := reflect.TypeOf(time.Time{})
 	durationType := reflect.TypeOf(time.Duration(0))
 	// Clock-suggesting wire-name fragments: any field so named is a second
-	// wall-clock readout unless it IS info's uptime.
+	// wall-clock readout unless it is uptime or a permitted observational
+	// rendering below.
 	clockFragments := []string{"time", "clock", "_at", "timestamp", "duration", "elapsed", "started", "when"}
+
+	// Observational run durations (#238 phase 2, the #200 substance) are the
+	// deliberate amendment to the sole-wall-clock stance: measurement of the
+	// past, rendered engine-side to display strings (plus quantized levels),
+	// never a computable timestamp and never scheduling input. Exactly these
+	// fields; anything else clock-shaped still fails.
+	observational := map[reflect.Type]map[string]bool{
+		reflect.TypeOf(api.PsRun{}):     {"elapsed": true, "duration": true},
+		reflect.TypeOf(api.PsPayload{}): {"pipeline_times": true},
+	}
 
 	for name, typ := range readoutPayloads() {
 		walkStructFields(typ, map[reflect.Type]bool{}, func(owner reflect.Type, f reflect.StructField) {
@@ -85,6 +96,12 @@ func TestUptimeSoleWallClock(t *testing.T) {
 			wire := jsonName(f)
 			if owner == reflect.TypeOf(api.PsEngine{}) && wire == "uptime" {
 				return // the one permitted wall-clock readout
+			}
+			if observational[owner][wire] {
+				if f.Type.Kind() != reflect.String && wire != "pipeline_times" {
+					t.Errorf("%s readout: observational field %s.%s must be a rendered display string, is %s", name, owner.Name(), f.Name, f.Type)
+				}
+				return
 			}
 			for _, frag := range clockFragments {
 				if strings.Contains(wire, frag) {

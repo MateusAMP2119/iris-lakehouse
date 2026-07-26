@@ -271,10 +271,16 @@ func renderPipelineStats(b *screenBuf, m *psModel, x, y, w, h int, colorless boo
 	if len(runs) > 0 {
 		r := runs[0]
 		idLine = "run " + r.ID + " · " + r.State
+		if r.State == "running" && r.Elapsed != "" {
+			idLine += " " + r.Elapsed
+		}
 		if r.State != "running" && r.State != "queued" {
 			idLine = "last " + idLine
 			if r.ExitCode != nil {
 				idLine += fmt.Sprintf(" · exit %d", *r.ExitCode)
+			}
+			if r.Duration != "" {
+				idLine += " · " + r.Duration
 			}
 		}
 	}
@@ -303,7 +309,32 @@ func renderPipelineStats(b *screenBuf, m *psModel, x, y, w, h int, colorless boo
 	statsStripRow(b, x, y+3, w, "CPU", m.stripCPU(key, w), cpuNow+" now")
 	statsStripRow(b, x, y+4, w, "MEM", m.stripMem(key, w), memVal)
 	b.text(x+2, y+5, ansiDim, "TIME")
-	b.text(x+8, y+5, ansiDim, clipCells("run durations arrive with engine timestamps (#200)", w-10))
+	pt, hasTimes := pipeTimes(m.snap)[name]
+	timeVal := ""
+	if el := pipeElapsed(m.snap, name); el != "" {
+		timeVal = el + " now"
+	}
+	if hasTimes {
+		for _, part := range []string{pt.Avg + " avg", pt.Max + " max"} {
+			if timeVal != "" {
+				timeVal += " · "
+			}
+			timeVal += part
+		}
+	}
+	switch {
+	case hasTimes:
+		stripX := x + 8
+		stripW := x + w - 3 - len([]rune(timeVal)) - 2 - stripX
+		if stripW >= 8 {
+			b.text(stripX, y+5, ansiCyan, timeStripGlyphs(pt.Levels, stripW))
+			b.text(x+w-3-len([]rune(timeVal)), y+5, "", timeVal)
+		}
+	case timeVal != "":
+		b.text(x+8, y+5, "", timeVal)
+	default:
+		b.text(x+8, y+5, ansiDim, clipCells("no timed run recorded yet", w-10))
+	}
 
 	b.text(x+2, y+7, ansiDim, "TABLE")
 	b.text(x+8, y+7, ansiDim, clipCells("table writes arrive with the journal aggregate (#238)", w-10))
@@ -406,7 +437,7 @@ func renderLaneStats(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 		return
 	}
 	sub := newScreenBuf(w-4, tblH)
-	renderTable(sub, 0, sub.h, pipelinesColumns(rows, w >= 90, m.markedPipes), selIndex(m.tblPipeline, m.pipelineKeys()), colorless)
+	renderTable(sub, 0, sub.h, pipelinesColumns(m, rows, w >= 90, m.markedPipes), selIndex(m.tblPipeline, m.pipelineKeys()), colorless)
 	b.blit(sub, x+2, tblY)
 	visible := tblH - 1
 	sel := selIndex(m.tblPipeline, m.pipelineKeys())
@@ -511,8 +542,9 @@ func renderPsBanner(b *screenBuf, w, h int, colorless bool) int {
 	return len(art)
 }
 
-// runsColumns builds the statistics pane's run history columns. WROTE and
-// ELAPSED wait on their engine data (#238 phases 2 and 3).
+// runsColumns builds the statistics pane's run history columns. ELAPSED is
+// the engine's rendered span (#238 phase 2): a running run's age, a terminal
+// run's duration. WROTE waits on the journal aggregate (phase 3).
 func runsColumns(runs []api.PsRun) []psColumn {
 	n := len(runs)
 	return []psColumn{
@@ -524,8 +556,66 @@ func runsColumns(runs []api.PsRun) []psColumn {
 			}
 			return s, psStateSGR(s)
 		}),
+		psCol("ELAPSED", n, func(i int) string { return orDash(runSpan(runs[i])) }),
 		psCol("EXIT", n, func(i int) string { return exitCodeCell(runs[i].ExitCode) }),
 		psCol("CPU", n, func(i int) string { return cpuText(runs[i].Load) }),
 		psCol("MEM", n, func(i int) string { return memText(runs[i].Load) }),
 	}
+}
+
+// runSpan is a run's one rendered span: elapsed while running, duration once
+// terminal, empty when the engine observed neither.
+func runSpan(r api.PsRun) string {
+	if r.State == "running" {
+		return r.Elapsed
+	}
+	return r.Duration
+}
+
+// orDash renders an absent engine string as the dash cell.
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// pipeTimes indexes the payload's per-pipeline duration aggregates by name.
+func pipeTimes(s Snapshot) map[string]api.PsPipelineTime {
+	out := make(map[string]api.PsPipelineTime, len(s.Ps.PipelineTimes))
+	for _, t := range s.Ps.PipelineTimes {
+		out[t.Pipeline] = t
+	}
+	return out
+}
+
+// pipeElapsed is the pipeline's newest running run's rendered age, "" when
+// nothing runs.
+func pipeElapsed(s Snapshot, pipeline string) string {
+	for _, r := range s.Ps.Runs {
+		if r.Pipeline == pipeline && r.State == "running" {
+			return r.Elapsed
+		}
+	}
+	return ""
+}
+
+// timeStripGlyphs maps the engine's quantized 1..8 duration levels onto bar
+// glyphs, newest at the right edge, fitted to width.
+func timeStripGlyphs(levels []int, w int) string {
+	if len(levels) > w {
+		levels = levels[len(levels)-w:]
+	}
+	ramp := []rune("▁▂▃▄▅▆▇█")
+	out := make([]rune, 0, len(levels))
+	for _, l := range levels {
+		if l < 1 {
+			l = 1
+		}
+		if l > 8 {
+			l = 8
+		}
+		out = append(out, ramp[l-1])
+	}
+	return string(out)
 }

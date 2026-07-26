@@ -45,6 +45,32 @@ type PsPayload struct {
 	// ?history=1. It is daemon memory, not persistence: it survives any number
 	// of client restarts and dies with the daemon.
 	History *PsHistory `json:"history,omitempty"`
+	// PipelineTimes are the per-pipeline observed-duration aggregates (#238
+	// phase 2): rendered strings and quantized strip levels only, so no
+	// numeric duration rides the wire. Absent until a pipeline records a
+	// timed terminal run.
+	PipelineTimes []PsPipelineTime `json:"pipeline_times,omitempty"`
+}
+
+// PsPipelineTime is one pipeline's observed-duration aggregate block: every
+// field is a rendered display string or a quantized level — measurement of
+// the past, never scheduling input.
+type PsPipelineTime struct {
+	// Pipeline is the aggregated pipeline.
+	Pipeline string `json:"pipeline"`
+	// Runs counts the timed terminal runs aggregated here.
+	Runs int `json:"runs"`
+	// Last is the newest timed run's rendered duration.
+	Last string `json:"last,omitempty"`
+	// Avg is the rendered mean duration.
+	Avg string `json:"avg,omitempty"`
+	// P50 is the rendered median duration.
+	P50 string `json:"p50,omitempty"`
+	// Max is the rendered maximum duration.
+	Max string `json:"max,omitempty"`
+	// Levels are the per-run durations quantized 1..8 against Max, oldest
+	// first — the TIME strip's bars.
+	Levels []int `json:"levels,omitempty"`
 }
 
 // PsHistory is the daemon-held load history under ?history=1: one series per
@@ -170,6 +196,14 @@ type PsRun struct {
 	// Log is the run's captured-output metadata, present only when the
 	// answering node holds the run's capture file.
 	Log *PsRunLog `json:"log,omitempty"`
+	// Elapsed is a running run's observed age, rendered engine-side
+	// ("2m14s") — display only, never a computable timestamp (#238 phase 2,
+	// the PsEngine.Uptime stance). Empty when unknowable.
+	Elapsed string `json:"elapsed,omitempty"`
+	// Duration is a terminal run's observed span, rendered engine-side; a
+	// sub-second run renders milliseconds ("40ms"). Empty when either stamp
+	// is absent.
+	Duration string `json:"duration,omitempty"`
 }
 
 // PsRunLog is one run's captured-output metadata on the ps readout: where the
