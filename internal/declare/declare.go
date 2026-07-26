@@ -20,7 +20,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/goccy/go-yaml"
 )
@@ -197,13 +196,10 @@ var pipelineFields = map[string]bool{
 const pipelineFieldList = "name, run, env, env_file, lane, logs, plugins, source, reads, writes, depends_on"
 
 // sourceFields is the whitelist for the source block inside a pipeline declaration.
-var sourceFields = map[string]bool{"http": true, "every": true}
+var sourceFields = map[string]bool{"http": true}
 
 // sourceFieldList is the human-readable rendering of sourceFields.
-const sourceFieldList = "http, every"
-
-// sourceEveryFloor bounds the deprecated every field's accepted values.
-const sourceEveryFloor = 10 * time.Second
+const sourceFieldList = "http"
 
 // logsFields is the whitelist for the logs block inside a pipeline declaration.
 var logsFields = map[string]bool{"split": true, "stamp": true}
@@ -300,13 +296,9 @@ func checkLogsShape(raw map[string]any) error {
 // Source is a pipeline's declared external input (the source block).
 type Source struct {
 	// HTTP is the http(s) URL the engine's watcher fetches, paced by the
-	// origin's own HTTP freshness declarations.
+	// origin's own HTTP freshness declarations. No declared interval exists:
+	// a duration in a declaration is a schedule, and the engine holds none.
 	HTTP string `yaml:"http"`
-	// Every is DEPRECATED and ignored: the engine paces source fetches from
-	// the origin's own HTTP freshness declarations (max-age, Expires,
-	// Retry-After), never from a declared interval. Accepted so existing
-	// declarations keep parsing.
-	Every string `yaml:"every"`
 }
 
 // checkSourceShape validates an optional source block: a mapping carrying one
@@ -333,19 +325,6 @@ func checkSourceShape(raw map[string]any) error {
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("declare: source http url %q must be http or https", rawURL)
-	}
-	if ev, present := block["every"]; present {
-		s, ok := ev.(string)
-		if !ok {
-			return fmt.Errorf("declare: source %q must be a duration string (\"2m\", \"1h\")", "every")
-		}
-		d, derr := time.ParseDuration(s)
-		if derr != nil {
-			return fmt.Errorf("declare: source every %q does not parse as a duration: %w", s, derr)
-		}
-		if d < sourceEveryFloor {
-			return fmt.Errorf("declare: source every %q is under the %s floor", s, sourceEveryFloor)
-		}
 	}
 	return nil
 }

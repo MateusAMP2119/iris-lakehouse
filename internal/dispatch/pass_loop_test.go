@@ -190,7 +190,7 @@ func TestLaneRunnerComposerOrder(t *testing.T) {
 		loop := dispatch.NewLoop(newFakeWalk(), gate, runner, nil)
 
 		lane := dispatch.Lane{Name: "etl", Pipelines: []string{"extract", "skipme", "transform", "load"}}
-		if err := loop.RunLanePass(context.Background(), lane); err != nil {
+		if _, err := loop.RunLanePass(context.Background(), lane); err != nil {
 			t.Fatalf("RunLanePass returned %v, want nil", err)
 		}
 
@@ -221,7 +221,7 @@ func TestDispatcherPostPassOnly(t *testing.T) {
 		loop := dispatch.NewLoop(newFakeWalk(), gate, runner, nil, dispatch.WithPostPass(post))
 
 		lane := dispatch.Lane{Name: "etl", Pipelines: []string{"a", "dep", "b"}}
-		if err := loop.RunLanePass(context.Background(), lane); err != nil {
+		if _, err := loop.RunLanePass(context.Background(), lane); err != nil {
 			t.Fatalf("RunLanePass returned %v, want nil", err)
 		}
 
@@ -659,7 +659,7 @@ func TestSealDispatcherStep(t *testing.T) {
 		loop := dispatch.NewLoop(newFakeWalk(), gate, runner, nil, dispatch.WithPostPass(post))
 
 		lane := dispatch.Lane{Name: "etl", Pipelines: []string{"only"}}
-		if err := loop.RunLanePass(context.Background(), lane); err != nil {
+		if _, err := loop.RunLanePass(context.Background(), lane); err != nil {
 			t.Fatalf("RunLanePass: %v", err)
 		}
 

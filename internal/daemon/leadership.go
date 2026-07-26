@@ -752,7 +752,7 @@ func (c *Candidate) lead(ctx context.Context) (demoted bool, err error) {
 			c.logger,
 		)
 		if c.sources != nil {
-			orch.sourcesRefresh = c.sources.refresh
+			orch.sourcesForget = c.sources.forget
 		}
 		c.control.install(orch)
 		defer c.control.clear()

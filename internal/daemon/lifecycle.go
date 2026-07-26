@@ -285,7 +285,7 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	go loads.run(ctx)
 	turnTally := newTurnCounters()
 	runLogs := NewRunLogWriter(s)
-	sources := newSourceWatcher(workspace, client.RegistryReader(), logger)
+	sources := newSourceWatcher(logger)
 	psp := NewPsPlane(role, client.Reader(), loads, turnTally, runLogs, sources, logger)
 
 	// The dead-letter plane serves GET /dead_letters/{run}/impact (the blast readout

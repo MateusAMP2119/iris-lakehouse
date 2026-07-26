@@ -486,11 +486,12 @@ func (m *manualExec) runNow(ctx context.Context, rec store.RunRecord) (dispatch.
 	}
 	defer rp.end()
 
-	var src *sourceFrame
-	if acc.source != nil {
-		src = m.sources.take(rec.Pipeline, sink)
+	var fetchSource func(context.Context) *sourceFrame
+	if acc.source != nil && m.sources != nil {
+		url, pipeline := acc.source.HTTP, rec.Pipeline
+		fetchSource = func(fctx context.Context) *sourceFrame { return m.sources.fetch(fctx, pipeline, url) }
 	}
-	res := driveTurn(ctx, ses, ses.nextTurn(), src, feed.Rows, acc.writes, rp, sink, sink)
+	res := driveTurn(ctx, ses, ses.nextTurn(), fetchSource, feed.Rows, acc.writes, rp, sink, sink)
 	if res.kind != turnShutdown && rp != nil {
 		prec := store.TurnRunRecord{Plugins: rp.pins, Calls: res.calls}
 		if lerr := m.submitter.Submit(ctx, func(w *store.Writer) error { return w.RecordRunPlugins(ctx, runID, prec) }); lerr != nil {
@@ -531,7 +532,6 @@ func (m *manualExec) runNow(ctx context.Context, rec store.RunRecord) (dispatch.
 		}
 	}
 
-	m.sources.delivered(src)
 	sink.SetOutcome("succeeded")
 	if serr := m.submitter.Submit(ctx, func(w *store.Writer) error { return w.MarkRunSucceeded(ctx, runID) }); serr != nil {
 		return dispatch.RunSucceeded, fmt.Errorf("record manual run %s succeeded: %w", runID, serr)

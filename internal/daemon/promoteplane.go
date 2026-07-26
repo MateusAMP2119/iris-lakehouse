@@ -86,7 +86,7 @@ func (o *promoteOrchestrator) promote(ctx context.Context, req api.PipelinePromo
 // is passed at lead time inside the candidate).
 type submitShim struct{}
 
-func (submitShim) Submit(context.Context, func(*store.Writer) error) error { return nil }
+func (submitShim) Submit(context.Context, func(*store.Writer) error, ...string) error { return nil }
 
 // liveJournalPromoter implements dispatch.JournalPromoter for the real daemon
 // wiring. It resolves run attribution from the meta reader (plain MVCC) and

@@ -99,6 +99,13 @@ type PassReport struct {
 	// Poisoned are the pipelines whose gate resolved poisoned this pass (deferred to
 	// post-pass failure propagation), in composer order.
 	Poisoned []PoisonedMember
+	// Quiet are the pipelines whose turn ran and ended quiet this pass (a
+	// successful turn that recorded nothing), in composer order. A quiet turn
+	// is a successful run, and success never parks: the loop re-passes the
+	// lane immediately -- the script paces itself inside its turn. Only a
+	// dead-letter parks (the gate's no-retry brake), and a closed gate waits
+	// on the watermark (gating, not parking).
+	Quiet []string
 }
 
 // PoisonedMember is one pipeline whose gate poisoned in a pass: its name and the gate
@@ -321,6 +328,8 @@ func (l *Loop) runLanePass(ctx context.Context, lane Lane) (PassReport, error) {
 			}
 			if outcome != RunQuiet {
 				report.Started = append(report.Started, pipeline)
+			} else {
+				report.Quiet = append(report.Quiet, pipeline)
 			}
 		default:
 			// Closed gate: nothing new to consume, or an unmet dependency. No run row
@@ -335,17 +344,18 @@ func (l *Loop) runLanePass(ctx context.Context, lane Lane) (PassReport, error) {
 // mid-pass). A pass cut short by ctx cancellation runs no post-pass work and returns the
 // cancellation, so the loop exits promptly on shutdown. Any in-flight runs the pass
 // started are left to finish (the engine never kills a run unilaterally -- clock
-// doctrine).
-func (l *Loop) RunLanePass(ctx context.Context, lane Lane) error {
+// doctrine). The completed report returns beside the error so the loop reads
+// the pass's quiet set (a quiet turn re-passes rather than parking).
+func (l *Loop) RunLanePass(ctx context.Context, lane Lane) (PassReport, error) {
 	report, err := l.runLanePass(ctx, lane)
 	if err != nil {
-		return err
+		return report, err
 	}
 	// POST-PASS: dispatcher-owned bookkeeping runs opportunistically now that every run
 	// of this pass has reached a terminal state -- never interleaved mid-pass.
 	if l.post != nil {
 		if err := l.post.AfterPass(ctx, report); err != nil {
-			return fmt.Errorf("dispatch: lane %q post-pass: %w", lane.Name, err)
+			return report, fmt.Errorf("dispatch: lane %q post-pass: %w", lane.Name, err)
 		}
 	}
 	// Best-effort straggler guard: check-then-act, not a term fence -- the pass
@@ -353,11 +363,16 @@ func (l *Loop) RunLanePass(ctx context.Context, lane Lane) error {
 	if l.onPass != nil && ctx.Err() == nil {
 		l.onPass(report)
 	}
-	return nil
+	return report, nil
 }
 
-// laneDone signals that a lane's perpetual-loop goroutine finished one pass.
-type laneDone struct{ lane string }
+// laneDone signals that a lane's perpetual-loop goroutine finished one pass;
+// quiet reports the pass ran at least one quiet turn, so the lane re-passes
+// immediately instead of parking (success never parks).
+type laneDone struct {
+	lane  string
+	quiet bool
+}
 
 // memberInFlight reports whether any of pipelines is already a member of a
 // running pass, whatever lane name that pass runs under.
@@ -386,12 +401,14 @@ func memberInFlight(running map[string][]string, pipelines []string) bool {
 // dispatching -- a hung or failed run is isolated, never globally fatal, and no
 // engine timer frees it (clock doctrine).
 //
-// With an Events watermark wired, a lane is eligible only when the sequence advanced
-// since its last pass STARTED (or it has never passed this term). A pass that starts
-// runs advances the watermark through its own run records, so it re-passes
-// immediately: roots re-run back to back indefinitely, the perpetual for-loop. A
-// pass that starts nothing writes nothing, so its lane parks and costs nothing -- no
-// walk read, no gate query, no run -- until a cause lands. Every engine-visible
+// With an Events watermark wired, a lane is eligible only when a cause it cares
+// about landed since its last pass STARTED (or it has never passed this term): its
+// members' and their upstreams' labeled causes, or any unlabeled (global) cause. A
+// pass that starts runs advances its own members' marks through its run records, so
+// it re-passes immediately: roots re-run back to back indefinitely, the perpetual
+// for-loop. A pass that starts nothing writes nothing, so its lane parks and costs
+// nothing -- no walk read, no gate query, no run -- and an unrelated pipeline's
+// cause leaves it parked, until a cause it consumes lands. Every engine-visible
 // cause bumps the watermark through the single dispatcher, so a parked lane wakes
 // exactly when one lands. Without a watermark every walk lane is always eligible
 // (the walk-only wiring tests).
@@ -417,11 +434,15 @@ func (l *Loop) Run(ctx context.Context) error {
 	// resident session as the still-running pass under the old name --
 	// interleaving the turn protocol and dead-lettering healthy turns.
 	running := map[string][]string{}
-	// lastSeq is each lane's watermark sequence at its last pass START (this term).
+	// lastSeq is each lane's care-set watermark mark at its last pass START (this term).
 	// Recording the sequence before the pass reads the walk means a bump landing
 	// mid-pass re-opens eligibility at the pass boundary: a change is never missed,
 	// at worst one extra (empty, cheap) pass runs.
 	lastSeq := map[string]uint64{}
+	// quietRerun marks lanes whose last pass ran a quiet turn: a quiet turn is a
+	// successful run and success never parks, so the lane re-passes once
+	// regardless of the watermark -- the script paces itself inside its turn.
+	quietRerun := map[string]bool{}
 	done := make(chan laneDone)
 
 	// wake is the watermark's coalescing channel, nil (never ready) when no
@@ -460,10 +481,18 @@ func (l *Loop) Run(ctx context.Context) error {
 				continue
 			}
 			if l.events != nil {
-				if seq, passed := lastSeq[lane.Name]; passed && seq == l.events.Seq() {
-					continue // parked: no cause since this lane's last pass started
+				// Eligibility reads only the marks this lane cares about (its
+				// members and their upstreams), so an unrelated pipeline's cause
+				// leaves it parked at zero cost; an unlabeled (global) cause
+				// moves every lane's mark. A lane whose last pass ran a quiet
+				// turn re-passes regardless: quiet is success, success never
+				// parks -- only a dead-letter does (the gate's no-retry brake).
+				cur := l.events.CareSeq(lane.Cares)
+				if seq, passed := lastSeq[lane.Name]; passed && seq == cur && !quietRerun[lane.Name] {
+					continue // parked: no cause this lane consumes since its last pass started
 				}
-				lastSeq[lane.Name] = l.events.Seq()
+				delete(quietRerun, lane.Name)
+				lastSeq[lane.Name] = cur
 			}
 			running[lane.Name] = append([]string(nil), lane.Pipelines...)
 			l.spawnLanePass(ctx, lane, done)
@@ -473,6 +502,7 @@ func (l *Loop) Run(ctx context.Context) error {
 		for name := range lastSeq {
 			if _, alive := running[name]; !walkNames[name] && !alive {
 				delete(lastSeq, name)
+				delete(quietRerun, name)
 			}
 		}
 
@@ -499,6 +529,9 @@ func (l *Loop) Run(ctx context.Context) error {
 		select {
 		case d := <-done:
 			delete(running, d.lane)
+			if d.quiet {
+				quietRerun[d.lane] = true
+			}
 		case <-wake:
 		case <-ctx.Done():
 			return ctx.Err()
@@ -513,11 +546,12 @@ func (l *Loop) Run(ctx context.Context) error {
 // never blocks forever after Run has stopped receiving.
 func (l *Loop) spawnLanePass(ctx context.Context, lane Lane, done chan<- laneDone) {
 	go func() {
-		if err := l.RunLanePass(ctx, lane); err != nil && ctx.Err() == nil {
+		report, err := l.RunLanePass(ctx, lane)
+		if err != nil && ctx.Err() == nil {
 			l.logger.Warn("iris lane pass error", "lane", lane.Name, "err", err)
 		}
 		select {
-		case done <- laneDone{lane: lane.Name}:
+		case done <- laneDone{lane: lane.Name, quiet: err == nil && len(report.Quiet) > 0}:
 		case <-ctx.Done():
 		}
 	}()

@@ -46,7 +46,9 @@ func RealGroupKiller() GroupKiller { return execGroupKiller{} }
 // real Dispatcher over a recording connection in its place.
 type Submitter interface {
 	// Submit runs fn against the single Writer on the dispatcher goroutine.
-	Submit(ctx context.Context, fn func(*store.Writer) error) error
+	// touched labels the watermark bump with the pipelines the write concerns;
+	// untagged submits are a global cause (every lane wakes).
+	Submit(ctx context.Context, fn func(*store.Writer) error, touched ...string) error
 }
 
 // compile-time proof the Dispatcher is the single-writer submission seam.

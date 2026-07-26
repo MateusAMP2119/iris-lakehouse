@@ -9,18 +9,20 @@ import (
 // This file is the turn protocol model (#206): the pure frame codec and per-turn
 // collection state machine for resident pipelines. A turn is one engine-fed
 // iteration over the JSON Lines protocol -- stdin carries the engine half
-// (go, an optional source frame, input rows, run), stdout the pipeline half (output rows, then exactly one
-// terminal done or error frame echoing the turn number), stderr stays free-form
-// log. The model here is pure: it renders engine frames, parses pipeline frames,
-// and enforces the protocol's frame discipline (rows inside the declared writes,
-// one terminal frame, correct turn echo) with no I/O; the daemon's resident
-// session owns the pipes and drives this model line by line.
+// (go, input rows, run, source frames answering fetches), stdout the pipeline
+// half (output rows, calls, fetches, then exactly one terminal done or error
+// frame echoing the turn number), stderr stays free-form log. The model here is
+// pure: it renders engine frames, parses pipeline frames, and enforces the
+// protocol's frame discipline (rows inside the declared writes, one terminal
+// frame, correct turn echo) with no I/O; the daemon's resident session owns the
+// pipes and drives this model line by line.
 
-// The turn protocol frame events. Engine to pipeline: go (turn header), source
-// (the declared source's fetched body), row (input row), run (input complete),
-// res (a call's reply). Pipeline to engine:
-// row (output row), call (a declared-plugin verb call, #215), done (turn
-// succeeded), error (turn failed, declared by the pipeline).
+// The turn protocol frame events. Engine to pipeline: go (turn header), row
+// (input row), run (input complete), source (a fetch's answer), res (a call's
+// reply). Pipeline to engine: row (output row), call (a declared-plugin verb
+// call, #215), fetch (fetch my declared source now -- the script owns when,
+// the engine owns the fetch), done (turn succeeded), error (turn failed,
+// declared by the pipeline).
 const (
 	// TurnEventGo opens a turn: {"event":"go","turn":N}.
 	TurnEventGo = "go"
@@ -29,9 +31,17 @@ const (
 	// TurnEventRun closes the engine's input feed: {"event":"run"}.
 	TurnEventRun = "run"
 	// TurnEventSource carries the declared source's fetched body, engine to
-	// pipeline, between go and the input rows:
-	// {"event":"source","url":"...","status":200,"body":"..."}.
+	// pipeline, answering a fetch frame:
+	// {"event":"source","url":"...","status":200,"changed":true,"body":"..."}.
+	// An unchanged answer (304, or a body identical to the last one fetched)
+	// carries changed false and an empty body.
 	TurnEventSource = "source"
+	// TurnEventFetch asks the engine to fetch the declared source NOW, pipeline
+	// to engine: {"event":"fetch"}. The script owns WHEN (its own pacing, its
+	// own case); the engine owns the fetch itself (network, validators, digest,
+	// provenance). The engine always answers with a source frame before reading
+	// on. Only a pipeline declaring a source block may send it.
+	TurnEventFetch = "fetch"
 	// TurnEventCall requests one declared-plugin verb mid-turn:
 	// {"event":"call","call":N,"verb":"alias.verb","args":{...}}.
 	TurnEventCall = "call"
@@ -73,15 +83,17 @@ func EncodeRunFrame() string {
 	return `{"event":"run"}`
 }
 
-// EncodeSourceFrame renders the declared source's body frame. The body rides
-// as a JSON string, so any fetched bytes stay one protocol line.
-func EncodeSourceFrame(url string, status int, body []byte) (string, error) {
+// EncodeSourceFrame renders the declared source's answer frame. The body rides
+// as a JSON string, so any fetched bytes stay one protocol line; an unchanged
+// answer carries changed false and an empty body, sparing the pipe the bytes.
+func EncodeSourceFrame(url string, status int, changed bool, body []byte) (string, error) {
 	b, err := json.Marshal(struct {
-		Event  string `json:"event"`
-		URL    string `json:"url"`
-		Status int    `json:"status"`
-		Body   string `json:"body"`
-	}{Event: TurnEventSource, URL: url, Status: status, Body: string(body)})
+		Event   string `json:"event"`
+		URL     string `json:"url"`
+		Status  int    `json:"status"`
+		Changed bool   `json:"changed"`
+		Body    string `json:"body"`
+	}{Event: TurnEventSource, URL: url, Status: status, Changed: changed, Body: string(body)})
 	if err != nil {
 		return "", fmt.Errorf("dispatch: encode source frame for %s: %w", url, err)
 	}
@@ -220,19 +232,35 @@ type TurnEnd struct {
 
 // TurnCollector consumes one turn's stdout lines and enforces the pipeline
 // half of the protocol: rows inside the declared writes, calls inside the
-// declared plugins (one outstanding), one terminal frame echoing the turn.
+// declared plugins (one outstanding), fetch only for a source-declaring
+// pipeline (one outstanding), one terminal frame echoing the turn.
 type TurnCollector struct {
-	turn    int64
-	writes  WriteSet
-	calls   CallSet
-	rows    []TurnRow
-	pending *int64
-	ended   bool
+	turn         int64
+	writes       WriteSet
+	calls        CallSet
+	rows         []TurnRow
+	pending      *int64
+	fetchable    bool
+	pendingFetch bool
+	ended        bool
 }
 
 // NewTurnCollector builds the collector for one turn (nil calls declares nothing).
 func NewTurnCollector(turn int64, writes WriteSet, calls CallSet) *TurnCollector {
 	return &TurnCollector{turn: turn, writes: writes, calls: calls}
+}
+
+// AllowFetch admits fetch frames: the pipeline declares a source block, so the
+// engine will answer a fetch with a source frame. Without it a fetch frame is a
+// protocol violation.
+func (c *TurnCollector) AllowFetch() {
+	c.fetchable = true
+}
+
+// FetchDelivered re-admits fetch frames after the outstanding fetch's source
+// frame went out (one fetch at a time, mirroring calls).
+func (c *TurnCollector) FetchDelivered() {
+	c.pendingFetch = false
 }
 
 // Rows returns the output rows collected so far, in arrival order.
@@ -247,42 +275,53 @@ func (c *TurnCollector) ReplyDelivered() {
 }
 
 // Feed consumes one stdout line: an admissible call frame returns the call to
-// service (then ReplyDelivered), the terminal returns true, and a *FrameError
-// is a protocol violation that dead-letters the turn with the line quoted.
-func (c *TurnCollector) Feed(line string) (TurnEnd, *TurnCall, bool, error) {
+// service (then ReplyDelivered), an admissible fetch frame returns fetch true
+// (the engine answers with a source frame, then FetchDelivered), the terminal
+// returns true, and a *FrameError is a protocol violation that dead-letters
+// the turn with the line quoted.
+func (c *TurnCollector) Feed(line string) (TurnEnd, *TurnCall, bool, bool, error) {
 	if c.ended {
-		return TurnEnd{}, nil, false, &FrameError{Line: line, Cause: "frame after the terminal frame"}
+		return TurnEnd{}, nil, false, false, &FrameError{Line: line, Cause: "frame after the terminal frame"}
 	}
 	var f turnFrame
 	if err := json.Unmarshal([]byte(line), &f); err != nil {
-		return TurnEnd{}, nil, false, &FrameError{Line: line, Cause: "unparseable frame"}
+		return TurnEnd{}, nil, false, false, &FrameError{Line: line, Cause: "unparseable frame"}
 	}
 	switch f.Event {
 	case TurnEventRow:
 		if f.Table == "" {
-			return TurnEnd{}, nil, false, &FrameError{Line: line, Cause: "row frame has no table"}
+			return TurnEnd{}, nil, false, false, &FrameError{Line: line, Cause: "row frame has no table"}
 		}
 		if cause := c.writes.checkRow(f.Table, f.Row); cause != "" {
-			return TurnEnd{}, nil, false, &FrameError{Line: line, Cause: cause}
+			return TurnEnd{}, nil, false, false, &FrameError{Line: line, Cause: cause}
 		}
 		c.rows = append(c.rows, TurnRow{Table: f.Table, Row: f.Row})
-		return TurnEnd{}, nil, false, nil
+		return TurnEnd{}, nil, false, false, nil
 	case TurnEventCall:
 		if f.Call == nil {
-			return TurnEnd{}, nil, false, &FrameError{Line: line, Cause: "call frame has no call id"}
+			return TurnEnd{}, nil, false, false, &FrameError{Line: line, Cause: "call frame has no call id"}
 		}
 		if c.pending != nil {
-			return TurnEnd{}, nil, false, &FrameError{Line: line, Cause: fmt.Sprintf("call %d before call %d's reply", *f.Call, *c.pending)}
+			return TurnEnd{}, nil, false, false, &FrameError{Line: line, Cause: fmt.Sprintf("call %d before call %d's reply", *f.Call, *c.pending)}
 		}
 		alias, verb, cause := c.calls.checkVerb(f.Verb)
 		if cause != "" {
-			return TurnEnd{}, nil, false, &FrameError{Line: line, Cause: cause}
+			return TurnEnd{}, nil, false, false, &FrameError{Line: line, Cause: cause}
 		}
 		c.pending = f.Call
-		return TurnEnd{}, &TurnCall{Call: *f.Call, Alias: alias, Verb: verb, Args: f.Args}, false, nil
+		return TurnEnd{}, &TurnCall{Call: *f.Call, Alias: alias, Verb: verb, Args: f.Args}, false, false, nil
+	case TurnEventFetch:
+		if !c.fetchable {
+			return TurnEnd{}, nil, false, false, &FrameError{Line: line, Cause: "fetch frame from a pipeline with no declared source"}
+		}
+		if c.pendingFetch {
+			return TurnEnd{}, nil, false, false, &FrameError{Line: line, Cause: "fetch before the previous fetch's source frame"}
+		}
+		c.pendingFetch = true
+		return TurnEnd{}, nil, true, false, nil
 	case TurnEventDone, TurnEventError:
 		if f.Turn == nil || *f.Turn != c.turn {
-			return TurnEnd{}, nil, false, &FrameError{Line: line, Cause: fmt.Sprintf("terminal frame does not echo turn %d", c.turn)}
+			return TurnEnd{}, nil, false, false, &FrameError{Line: line, Cause: fmt.Sprintf("terminal frame does not echo turn %d", c.turn)}
 		}
 		c.ended = true
 		if f.Event == TurnEventError {
@@ -290,10 +329,10 @@ func (c *TurnCollector) Feed(line string) (TurnEnd, *TurnCall, bool, error) {
 			if reason == "" {
 				reason = "pipeline declared an error"
 			}
-			return TurnEnd{Errored: true, Reason: reason, Detail: f.Detail}, nil, true, nil
+			return TurnEnd{Errored: true, Reason: reason, Detail: f.Detail}, nil, false, true, nil
 		}
-		return TurnEnd{}, nil, true, nil
+		return TurnEnd{}, nil, false, true, nil
 	default:
-		return TurnEnd{}, nil, false, &FrameError{Line: line, Cause: fmt.Sprintf("unknown frame event %q", f.Event)}
+		return TurnEnd{}, nil, false, false, &FrameError{Line: line, Cause: fmt.Sprintf("unknown frame event %q", f.Event)}
 	}
 }
