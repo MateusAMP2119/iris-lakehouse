@@ -89,6 +89,15 @@ type loadSeries struct {
 	coarseRSS []int64
 	bucketCPU float64
 	bucketRSS int64
+	// rows is the captured-row history: journal rows counted in each tick's id
+	// delta. Its coarse slots carry the bucket's SUM, not its maximum -- rows
+	// are additive, and a maximum would understate an hour by the bucket's
+	// tick count. Absence is api.PsHistoryNoSample; a successful read counting
+	// nothing is a real zero.
+	rows        []int64
+	coarseRows  []int64
+	bucketRows  int64
+	rowsSampled bool
 }
 
 // newLoadSeries builds an empty series with an all-absent partial bucket.
@@ -96,18 +105,39 @@ func newLoadSeries() *loadSeries {
 	return &loadSeries{bucketCPU: api.PsHistoryNoSample}
 }
 
+// tickSample is one tick's whole attributed reading: the host probe's
+// verdict and process attribution, plus the journal's row delta. It is a
+// struct so the collector can grow series families without record() growing
+// another parameter.
+type tickSample struct {
+	probed bool                   // the host answered
+	rowsOK bool                   // the journal answered
+	engine *api.PsLoad            // the engine tree's summed load
+	groups map[int]*api.PsLoad    // per-process-group load
+	entity map[string]*api.PsLoad // per lane and pipeline load
+	rows   map[string]int64       // per-series captured rows this tick
+}
+
 // push appends one tick's slot (nil for no sample) to the fine ring and folds
 // it into the partial bucket's maxima.
-func (s *loadSeries) push(l *api.PsLoad) {
+func (s *loadSeries) push(l *api.PsLoad, rows int64, rowsOK bool) {
 	cpu, rss := float64(api.PsHistoryNoSample), int64(0)
 	if l != nil {
 		cpu, rss = l.CPUPercent, l.RSSBytes
 	}
 	s.cpu = append(s.cpu, cpu)
 	s.rss = append(s.rss, rss)
+	slot := int64(api.PsHistoryNoSample)
+	if rowsOK {
+		slot = rows
+	}
+	s.rows = append(s.rows, slot)
 	if len(s.cpu) > loadFineRingCap {
 		s.cpu = s.cpu[len(s.cpu)-loadFineRingCap:]
 		s.rss = s.rss[len(s.rss)-loadFineRingCap:]
+	}
+	if len(s.rows) > loadFineRingCap {
+		s.rows = s.rows[len(s.rows)-loadFineRingCap:]
 	}
 	if l != nil {
 		if s.bucketCPU == api.PsHistoryNoSample || cpu > s.bucketCPU {
@@ -117,6 +147,12 @@ func (s *loadSeries) push(l *api.PsLoad) {
 			s.bucketRSS = rss
 		}
 	}
+	// Rows accumulate: the bucket is the sum of its ticks, so one seal is the
+	// rows captured over the bucket's whole span.
+	if rowsOK {
+		s.bucketRows += rows
+		s.rowsSampled = true
+	}
 }
 
 // seal closes the partial bucket into the coarse ring and starts a fresh one.
@@ -124,11 +160,20 @@ func (s *loadSeries) push(l *api.PsLoad) {
 func (s *loadSeries) seal() {
 	s.coarseCPU = append(s.coarseCPU, s.bucketCPU)
 	s.coarseRSS = append(s.coarseRSS, s.bucketRSS)
+	rows := int64(api.PsHistoryNoSample)
+	if s.rowsSampled {
+		rows = s.bucketRows
+	}
+	s.coarseRows = append(s.coarseRows, rows)
 	if len(s.coarseCPU) > loadCoarseRingCap {
 		s.coarseCPU = s.coarseCPU[len(s.coarseCPU)-loadCoarseRingCap:]
 		s.coarseRSS = s.coarseRSS[len(s.coarseRSS)-loadCoarseRingCap:]
 	}
+	if len(s.coarseRows) > loadCoarseRingCap {
+		s.coarseRows = s.coarseRows[len(s.coarseRows)-loadCoarseRingCap:]
+	}
 	s.bucketCPU, s.bucketRSS = api.PsHistoryNoSample, 0
+	s.bucketRows, s.rowsSampled = 0, false
 }
 
 // dead reports whether the series holds nothing worth keeping: no positive
@@ -148,7 +193,20 @@ func (s *loadSeries) dead() bool {
 			return false
 		}
 	}
-	return s.bucketCPU <= 0 && s.bucketRSS == 0
+	// Rows are scanned on their own rather than beside the load slots: push
+	// and seal keep the rings in lockstep, but dead() must not assume it of a
+	// series assembled any other way.
+	for _, r := range s.rows {
+		if r > 0 {
+			return false
+		}
+	}
+	for _, r := range s.coarseRows {
+		if r > 0 {
+			return false
+		}
+	}
+	return s.bucketCPU <= 0 && s.bucketRSS == 0 && s.bucketRows <= 0
 }
 
 // loadHistory is the collector: the probe and run-snapshot seams it samples
@@ -158,6 +216,7 @@ func (s *loadSeries) dead() bool {
 // directly.
 type loadHistory struct {
 	probe     loadProber
+	rows      *rowsSampler
 	runs      RunSnapshotReader
 	managedPG func() int
 	persist   loadPersister
@@ -179,7 +238,7 @@ type loadHistory struct {
 // memory-only), probing through the production ps(1) probe. The node identity
 // is the sampling host's name -- ps(1) load is a per-host truth, so the
 // persisted rows carry it. A nil logger discards output.
-func newLoadHistory(runs RunSnapshotReader, managedPG func() int, persist loadPersister, logger *slog.Logger) *loadHistory {
+func newLoadHistory(runs RunSnapshotReader, managedPG func() int, persist loadPersister, rows *rowsSampler, logger *slog.Logger) *loadHistory {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -192,6 +251,7 @@ func newLoadHistory(runs RunSnapshotReader, managedPG func() int, persist loadPe
 	}
 	return &loadHistory{
 		probe:     psProbe{},
+		rows:      rows,
 		runs:      runs,
 		managedPG: managedPG,
 		persist:   persist,
@@ -250,6 +310,7 @@ func (h *loadHistory) seed(ctx context.Context) {
 			for ; n > 0 && int64(len(s.coarseCPU)) < loadCoarseRingCap; n-- {
 				s.coarseCPU = append(s.coarseCPU, api.PsHistoryNoSample)
 				s.coarseRSS = append(s.coarseRSS, 0)
+				s.coarseRows = append(s.coarseRows, api.PsHistoryNoSample)
 			}
 		}
 		for _, b := range buckets {
@@ -260,8 +321,13 @@ func (h *loadHistory) seed(ctx context.Context) {
 			if b.Sampled {
 				cpu, rss = b.CPUMax, b.RSSMax
 			}
+			rows := int64(api.PsHistoryNoSample)
+			if b.RowsSampled {
+				rows = b.RowsSum
+			}
 			s.coarseCPU = append(s.coarseCPU, cpu)
 			s.coarseRSS = append(s.coarseRSS, rss)
+			s.coarseRows = append(s.coarseRows, rows)
 			prev = b.Bucket
 		}
 		if prev != 0 {
@@ -270,6 +336,7 @@ func (h *loadHistory) seed(ctx context.Context) {
 		if len(s.coarseCPU) > loadCoarseRingCap {
 			s.coarseCPU = s.coarseCPU[len(s.coarseCPU)-loadCoarseRingCap:]
 			s.coarseRSS = s.coarseRSS[len(s.coarseRSS)-loadCoarseRingCap:]
+			s.coarseRows = s.coarseRows[len(s.coarseRows)-loadCoarseRingCap:]
 		}
 		h.series[key] = s
 	}
@@ -282,6 +349,7 @@ func (h *loadHistory) seed(ctx context.Context) {
 // failed run snapshot records the engine but no lane or pipeline attribution.
 func (h *loadHistory) sample(ctx context.Context) {
 	var engine *api.PsLoad
+	var snapshot []store.Run
 	groups := map[int]*api.PsLoad{}
 	entity := map[string]*api.PsLoad{}
 	samples, err := h.probe.Sample(ctx)
@@ -302,6 +370,7 @@ func (h *loadHistory) sample(ctx context.Context) {
 		if runs, rerr := h.runs.Runs(ctx, store.RunFilter{}); rerr != nil {
 			h.logger.Debug("load collector run snapshot failed", "err", rerr)
 		} else {
+			snapshot = runs
 			accumulate := func(key string, l *api.PsLoad) {
 				e := entity[key]
 				if e == nil {
@@ -329,7 +398,14 @@ func (h *loadHistory) sample(ctx context.Context) {
 		}
 	}
 
-	sealed, prune := h.record(probed, engine, groups, entity)
+	// The journal read reuses the run snapshot the probe block already took --
+	// one meta read per tick, not two.
+	rows, rowsOK := h.rows.sample(ctx, snapshot)
+
+	sealed, prune := h.record(tickSample{
+		probed: probed, rowsOK: rowsOK,
+		engine: engine, groups: groups, entity: entity, rows: rows,
+	})
 
 	// Persistence rides after the lock: one best-effort write per seal, and
 	// the retention prune on its own sparser cadence. A failed write loses at
@@ -354,34 +430,40 @@ func (h *loadHistory) sample(ctx context.Context) {
 // was running, so nothing burned) from an unknowable one (an absent slot). It
 // returns the sealed buckets for persistence (nil between seals) and whether
 // this seal is a prune tick.
-func (h *loadHistory) record(probed bool, engine *api.PsLoad, groups map[int]*api.PsLoad, entity map[string]*api.PsLoad) (sealed []pg.LoadBucket, prune bool) {
+func (h *loadHistory) record(ts tickSample) (sealed []pg.LoadBucket, prune bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.tick++
-	h.engineLoad = engine
-	h.groupLoad = groups
+	h.engineLoad = ts.engine
+	h.groupLoad = ts.groups
 	ensure := func(key string) {
 		if h.series[key] == nil {
 			h.series[key] = newLoadSeries()
 		}
 	}
 	ensure("engine")
-	for key := range entity {
+	for key := range ts.entity {
+		ensure(key)
+	}
+	// A pipeline whose runs are too short to catch the ps probe still writes
+	// rows, so the journal's keys mint series of their own.
+	for key := range ts.rows {
 		ensure(key)
 	}
 	idle := (*api.PsLoad)(nil)
-	if probed {
+	if ts.probed {
 		idle = &api.PsLoad{}
 	}
 	for key, s := range h.series {
+		rows := ts.rows[key] // a key the delta did not name captured no rows
 		if key == "engine" {
-			s.push(engine)
+			s.push(ts.engine, rows, ts.rowsOK)
 			continue
 		}
-		if l := entity[key]; l != nil {
-			s.push(l)
+		if l := ts.entity[key]; l != nil {
+			s.push(l, rows, ts.rowsOK)
 		} else {
-			s.push(idle)
+			s.push(idle, rows, ts.rowsOK)
 		}
 	}
 	h.bucketTicks++
@@ -391,11 +473,13 @@ func (h *loadHistory) record(probed bool, engine *api.PsLoad, groups map[int]*ap
 		for key, s := range h.series {
 			// The partial's maxima are collected before seal() resets them.
 			sealed = append(sealed, pg.LoadBucket{
-				Series:  key,
-				Bucket:  at,
-				CPUMax:  max(s.bucketCPU, 0),
-				RSSMax:  s.bucketRSS,
-				Sampled: s.bucketCPU != api.PsHistoryNoSample,
+				Series:      key,
+				Bucket:      at,
+				CPUMax:      max(s.bucketCPU, 0),
+				RSSMax:      s.bucketRSS,
+				Sampled:     s.bucketCPU != api.PsHistoryNoSample,
+				RowsSum:     s.bucketRows,
+				RowsSampled: s.rowsSampled,
 			})
 			s.seal()
 			if key != "engine" && s.dead() {
@@ -441,15 +525,22 @@ func (h *loadHistory) snapshot() *api.PsHistory {
 	}
 	for key, s := range h.series {
 		series := api.PsSeries{
-			Key:       key,
-			CPU:       append([]float64(nil), s.cpu...),
-			RSS:       append([]int64(nil), s.rss...),
-			CoarseCPU: append([]float64(nil), s.coarseCPU...),
-			CoarseRSS: append([]int64(nil), s.coarseRSS...),
+			Key:        key,
+			CPU:        append([]float64(nil), s.cpu...),
+			RSS:        append([]int64(nil), s.rss...),
+			Rows:       append([]int64(nil), s.rows...),
+			CoarseCPU:  append([]float64(nil), s.coarseCPU...),
+			CoarseRSS:  append([]int64(nil), s.coarseRSS...),
+			CoarseRows: append([]int64(nil), s.coarseRows...),
 		}
 		if h.bucketTicks > 0 {
 			series.CoarseCPU = append(series.CoarseCPU, s.bucketCPU)
 			series.CoarseRSS = append(series.CoarseRSS, s.bucketRSS)
+			partial := int64(api.PsHistoryNoSample)
+			if s.rowsSampled {
+				partial = s.bucketRows
+			}
+			series.CoarseRows = append(series.CoarseRows, partial)
 		}
 		doc.Series = append(doc.Series, series)
 	}

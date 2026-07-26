@@ -284,7 +284,13 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	} else {
 		loadStore = data
 	}
-	loads := newLoadHistory(client.Reader(), ManagedPostmasterPID(s), loadStore, logger)
+	// The rows sampler shares the collector's tick and its run snapshot: one
+	// journal id-delta per tick, attributed to the writing run's pipeline.
+	var rowsRead journalRowsReader
+	if data != nil {
+		rowsRead = data
+	}
+	loads := newLoadHistory(client.Reader(), ManagedPostmasterPID(s), loadStore, newRowsSampler(rowsRead, logger), logger)
 	go loads.run(ctx)
 	turnTally := newTurnCounters()
 	runLogs := NewRunLogWriter(s)

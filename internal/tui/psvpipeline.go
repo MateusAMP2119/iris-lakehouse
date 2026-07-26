@@ -317,11 +317,54 @@ func renderSpecColumn(b *screenBuf, m *psModel, sc specScope, x, y, w, h int) {
 	}
 }
 
-// renderRowsBar paints the wide column's head: the write-rate heading with
-// its readings right-aligned, and the rate bar. The source is the poller's
-// per-poll row deltas -- the only rows-over-time the engine offers today, so
-// the heading says POLL and LIVE rather than dressing it as an hourly grid.
-func renderRowsBar(b *screenBuf, m *psModel, table string, x, y, w int) int {
+// renderRowsBar paints the wide column's head: the captured-rows heading with
+// its readings right-aligned, and the bar itself.
+//
+// Two sources, each authoritative at its own zoom. The bar and the peak come
+// from the daemon's coarse row buckets (a minute each, a day deep), re-seeded
+// once a minute. `now` comes from the journal activity poll the view already
+// runs every second, so the live reading never lags the bar's cadence.
+//
+// The window total is labelled by the ring's ACTUAL filled depth, never
+// "today": the daemon has no midnight -- its clock is the sampling host's
+// zone, not the operator's -- and the ring rolls at its cap, not at 00:00.
+func renderRowsBar(b *screenBuf, m *psModel, key, table string, x, y, w int) int {
+	ring := m.rowRings[key]
+	if ring == nil || len(ring.buckets) == 0 {
+		return renderRowsBarLive(b, m, table, x, y, w)
+	}
+	// The newest bucket is still filling, so it may not set the peak: a
+	// half-sealed bucket compared against whole ones understates nothing but
+	// would make the peak jitter downward as the window rolls.
+	var peak, total int64
+	for i, v := range ring.buckets {
+		if v == psNoSample {
+			continue
+		}
+		total += v
+		if i < len(ring.buckets)-1 && v > peak {
+			peak = v
+		}
+	}
+	head := "ROWS / " + rowsBucketLabel(ring.bucketSeconds) + " · " + rowsWindowLabel(ring)
+	right := fmt.Sprintf("%d now · %d peak · %d in %s",
+		int64(m.snap.Journal.latestRate(table)), peak, total, rowsWindowLabel(ring))
+	b.text(x, y, ansiDim, clipCells(head, w))
+	if len([]rune(head))+len([]rune(right))+2 <= w {
+		b.text(x+w-len([]rune(right)), y, ansiDim, right)
+	}
+	if peak <= 0 {
+		b.text(x, y+1, ansiDim, clipCells("no captured writes in the window", w))
+		return 2
+	}
+	b.renderHeatStrip(x, y+1, w, fitSamples(rowsPercentOfPeak(ring.buckets, peak), w))
+	return 2
+}
+
+// renderRowsBarLive is the head before any recorded history has arrived: the
+// per-poll deltas the journal fold already holds, named for what they are so
+// the pane never dresses seconds of samples as a day of them.
+func renderRowsBarLive(b *screenBuf, m *psModel, table string, x, y, w int) int {
 	head := "ROWS / POLL · LIVE"
 	rate := m.snap.Journal.rateOf(table)
 	var latest, peak, total float64
@@ -335,8 +378,6 @@ func renderRowsBar(b *screenBuf, m *psModel, table string, x, y, w int) int {
 		latest = rate[len(rate)-1]
 	}
 	if len(rate) == 0 || peak == 0 {
-		// Nothing observed: the heading says so once, with no readings to
-		// dress the absence as three zeroes.
 		b.text(x, y, ansiDim, clipCells(head, w))
 		b.text(x, y+1, ansiDim, clipCells("no captured writes observed yet", w))
 		return 2
@@ -352,6 +393,49 @@ func renderRowsBar(b *screenBuf, m *psModel, table string, x, y, w int) int {
 	}
 	b.renderHeatStrip(x, y+1, w, fitSamples(scaled, w))
 	return 2
+}
+
+// rowsPercentOfPeak scales the buckets against the window peak for the strip,
+// keeping absence absent. A bucket that counted no rows scales to a real zero
+// -- the strip's lowest tone, not a gap.
+func rowsPercentOfPeak(buckets []int64, peak int64) []float64 {
+	out := make([]float64, len(buckets))
+	for i, v := range buckets {
+		if v == psNoSample {
+			out[i] = psNoSample
+			continue
+		}
+		out[i] = float64(v) / float64(peak) * 100
+	}
+	return out
+}
+
+// rowsBucketLabel names one bucket's span for the heading.
+func rowsBucketLabel(seconds int) string {
+	switch {
+	case seconds <= 0:
+		return "BUCKET"
+	case seconds%3600 == 0:
+		return "HOUR"
+	case seconds%60 == 0:
+		return fmt.Sprintf("%dMIN", seconds/60)
+	}
+	return fmt.Sprintf("%dS", seconds)
+}
+
+// rowsWindowLabel names how much time the ring actually covers -- its filled
+// depth, not its capacity. A daemon up three hours says 3h, never 24H.
+func rowsWindowLabel(r *psRowRing) string {
+	secs := len(r.buckets) * r.bucketSeconds
+	switch {
+	case secs <= 0:
+		return "window"
+	case secs >= 3600:
+		return fmt.Sprintf("%dh", secs/3600)
+	case secs >= 60:
+		return fmt.Sprintf("%dm", secs/60)
+	}
+	return fmt.Sprintf("%ds", secs)
 }
 
 // detailRun is one row of the detail pane's run table: the run's identity and
@@ -506,9 +590,18 @@ func renderDetailPane(b *screenBuf, m *psModel, sc specScope, rows []detailRun, 
 
 	barH := 0
 	if ih >= 10 {
-		barH = renderRowsBar(b, m, sc.table, p.rx, iy, p.rw) + 1
+		barH = renderRowsBar(b, m, rowRingKey(sc), sc.table, p.rx, iy, p.rw) + 1
 	}
 	renderRunsTable(b, m, rows, p.rx, iy+barH, p.rw, ih-barH, colorless)
+}
+
+// rowRingKey is the row ring the pane's bar reads: the scope's pipeline, or
+// the engine-wide ring when no pipeline owns the scope.
+func rowRingKey(sc specScope) string {
+	if sc.pipeline != "" {
+		return "p:" + sc.pipeline
+	}
+	return ""
 }
 
 // detailTitle names the pane's subject, crossed when its newest run

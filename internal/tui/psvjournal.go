@@ -226,6 +226,15 @@ func (j *psJournal) rateOf(name string) []float64 {
 	return j.Rate[name]
 }
 
+// latestRate is the newest per-poll row delta observed for one table.
+func (j *psJournal) latestRate(name string) float64 {
+	rate := j.rateOf(name)
+	if len(rate) == 0 {
+		return 0
+	}
+	return rate[len(rate)-1]
+}
+
 // runWrote sums one run's captured writes across tables.
 func (j *psJournal) runWrote(runID string) int64 {
 	if j == nil {

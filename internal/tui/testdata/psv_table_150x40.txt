@@ -1,8 +1,8 @@
  │ [IRIS LAKEHOUSE]   dev   LEADER  up 2h13m  pid 42                           CPU                          ░░░░░   3.2%  MEM  126.0MiB  1r  1q  0✖ │
 
  │ [CATALOG]                         │  ┌─ TABLE · demo.orders ─────────────────────────────────────────────────────────────────────────────────────┐
- │ / type to filter                  │  │ OUTPUT                         │ ROWS / POLL · LIVE                   2391 now · 2391 peak · 2391 in view │
- │ ingest        1r·1q · 3 pipelines │  │ table              demo.orders │                                                                        █ │
+ │ / type to filter                  │  │ OUTPUT                         │ ROWS / 1MIN · 7m                       2391 now · 1204 peak · 2427 in 7m │
+ │ ingest        1r·1q · 3 pipelines │  │ table              demo.orders │                                                                  ░░██░ ░ │
  │ ● extract                      1q │  │ rows captured             2391 │                                                                          │
  │ ○ hello_iris                      │  │ watermark                 8110 │   RUN  WROTE  OP   STATE      ELAPSED  JOURNAL      TRIGGER              │
  │ ● load_orders                 run │  │                                │   14   +1187  ins  running    2m14s    7921 → 8110  loop                 │

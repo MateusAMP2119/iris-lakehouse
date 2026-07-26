@@ -112,6 +112,15 @@ type PsSeries struct {
 	CoarseCPU []float64 `json:"coarse_cpu"`
 	// CoarseRSS is the coarse grid's resident-memory history: per-bucket maxima.
 	CoarseRSS []int64 `json:"coarse_rss"`
+	// Rows is the fine grid's captured-row history: the journal rows counted
+	// in each tick's id delta (PsHistoryNoSample when the journal was unread).
+	// A successful read counting nothing is a real zero, not absence.
+	Rows []int64 `json:"rows,omitempty"`
+	// CoarseRows is the coarse grid's captured-row history: each slot the SUM
+	// of its bucket's fine deltas. Rows are additive -- unlike CPU and RSS,
+	// whose coarse slots carry the bucket MAXIMUM. A maximum here would
+	// understate a bucket by its tick count.
+	CoarseRows []int64 `json:"coarse_rows,omitempty"`
 }
 
 // PsResident is one pipeline's turn readout under the turn protocol (#206): how

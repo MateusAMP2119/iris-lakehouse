@@ -27,8 +27,9 @@ func psvHistory() *api.PsHistory {
 		Series: []api.PsSeries{
 			{Key: "engine",
 				CPU: []float64{2.1, 4.4, 12.0, 3.9, 3.2}, RSS: []int64{120 << 20, 122 << 20, 124 << 20, 125 << 20, 126 << 20},
-				CoarseCPU: []float64{24.9, 8.1, 3.6, 51.2, 12.0, 6.4, 3.2},
-				CoarseRSS: []int64{110 << 20, 114 << 20, 118 << 20, 130 << 20, 124 << 20, 125 << 20, 126 << 20}},
+				CoarseCPU:  []float64{24.9, 8.1, 3.6, 51.2, 12.0, 6.4, 3.2},
+				CoarseRSS:  []int64{110 << 20, 114 << 20, 118 << 20, 130 << 20, 124 << 20, 125 << 20, 126 << 20},
+				CoarseRows: []int64{0, 620, 1204, 1187, psNoSample, 340, 36}},
 			{Key: "lane:ingest",
 				CPU: []float64{0, 48, 51, 51, 51}, RSS: []int64{0, 20 << 20, 22 << 20, 24 << 20, 24 << 20},
 				CoarseCPU: []float64{0, 0, 62.5, 51, 51, 0, 51},
@@ -38,8 +39,9 @@ func psvHistory() *api.PsHistory {
 				CoarseCPU: []float64{0, 0, 0, 0, 0, 0, 0}, CoarseRSS: []int64{0, 0, 0, 0, 0, 0, 0}},
 			{Key: "pipeline:load_orders",
 				CPU: []float64{0, 48, 51, 51, 51}, RSS: []int64{0, 20 << 20, 22 << 20, 24 << 20, 24 << 20},
-				CoarseCPU: []float64{0, 0, 62.5, 51, 51, 0, 51},
-				CoarseRSS: []int64{0, 0, 30 << 20, 24 << 20, 24 << 20, 0, 24 << 20}},
+				CoarseCPU:  []float64{0, 0, 62.5, 51, 51, 0, 51},
+				CoarseRSS:  []int64{0, 0, 30 << 20, 24 << 20, 24 << 20, 0, 24 << 20},
+				CoarseRows: []int64{0, 0, 1204, 1187, 0, psNoSample, 36}},
 		},
 	}
 }

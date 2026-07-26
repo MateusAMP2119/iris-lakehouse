@@ -177,7 +177,7 @@ func TestLoadHistoryPersistsSeals(t *testing.T) {
 	t.Run("load-history-persists", func(t *testing.T) {
 		runs, probe := loadTestFixture()
 		p := &fakeLoadPersister{}
-		h := newLoadHistory(runs, func() int { return 200 }, p, nil)
+		h := newLoadHistory(runs, func() int { return 200 }, p, nil, nil)
 		h.probe = probe
 		h.pid = 100
 
@@ -233,7 +233,7 @@ func TestLoadHistorySeedsFromPersisted(t *testing.T) {
 			{Series: "engine", Bucket: now - 3*loadBucketSeconds, Sampled: false},
 			{Series: "pipeline:load", Bucket: now - 3*loadBucketSeconds, CPUMax: 70, RSSMax: 2 << 20, Sampled: true},
 		}}
-		h := newLoadHistory(fakeRunReader{}, nil, p, nil)
+		h := newLoadHistory(fakeRunReader{}, nil, p, nil, nil)
 		h.probe = fakeProbe{}
 		h.seed(context.Background())
 
@@ -263,7 +263,7 @@ func TestLoadHistorySeedsFromPersisted(t *testing.T) {
 
 	t.Run("load-history-seed-failure-stays-blank", func(t *testing.T) {
 		p := &fakeLoadPersister{err: errors.New("data database down")}
-		h := newLoadHistory(fakeRunReader{}, nil, p, nil)
+		h := newLoadHistory(fakeRunReader{}, nil, p, nil, nil)
 		h.probe = fakeProbe{}
 		h.seed(context.Background())
 		h.mu.Lock()
