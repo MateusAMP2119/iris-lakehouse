@@ -55,6 +55,11 @@ func rgb(r, g, b int) string {
 	return fmt.Sprintf("\033[38;2;%d;%d;%dm", r, g, b)
 }
 
+// bgRGB is a 24-bit background SGR.
+func bgRGB(r, g, b int) string {
+	return fmt.Sprintf("\033[48;2;%d;%d;%dm", r, g, b)
+}
+
 // wantsTruecolor reports whether this process should emit 24-bit SGR.
 // COLORTERM=truecolor|24bit is the de-facto signal; NO_COLOR always wins off.
 func wantsTruecolor() bool {

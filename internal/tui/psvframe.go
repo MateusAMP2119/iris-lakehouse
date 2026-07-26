@@ -806,53 +806,31 @@ func renderLogsFull(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 
 // renderPsBanner paints the justified brand banner — one blank row above,
 // one cell of side padding — and reports how many rows it spent (zero when
-// the frame cannot afford or fit it). One letter at a time carries the
-// shimmer highlight: a light source sweeping the wordmark, advanced one
-// step per poll (m.shimmer), resting between passes.
+// the frame cannot afford or fit it). Color is the lolcat wave (banner.go):
+// diagonal brand-palette stripes whose phase drifts one step per poll.
 func renderPsBanner(b *screenBuf, m *psModel, w, h int, colorless bool) int {
 	if h < psBannerMinHeight {
 		return 0
 	}
-	art, spans := psBanner(w)
+	art, _ := psBanner(w)
 	if art == nil {
 		return 0
 	}
-	center := -1.0
-	if !colorless {
-		if idx := m.shimmer % (len(spans) + psShimmerRest); idx < len(spans) {
-			span := spans[idx]
-			center = float64(span[0]+span[1]) / 2
-		}
-	}
+	phase := float64(m.shimmer) * bannerWaveStep
 	for i, row := range art {
-		base := bannerRowSGR(i)
 		if colorless {
-			base = ""
-		}
-		b.text(0, i+1, base, row)
-		if center < 0 {
+			b.text(0, i+1, "", row)
 			continue
 		}
-		// The sweep: a quadratic glow envelope around the lit letter's
-		// center, brightening each block cell by its distance — neighbors
-		// catch spill, the center stays just short of white.
-		runes := []rune(row)
-		for x, r := range runes {
+		for x, r := range []rune(row) {
 			if r == ' ' {
 				continue
 			}
-			g := bannerGlow(float64(x) - center)
-			if g <= 0.03 {
-				continue
-			}
-			b.text(x, i+1, bannerGlowSGR(i, g), string(r))
+			b.text(x, i+1, bannerWaveSGR(x, i, phase), string(r))
 		}
 	}
 	return len(art) + 1
 }
-
-// psShimmerRest is how many shimmer steps the sweep rests between passes.
-const psShimmerRest = 6
 
 // runsColumns builds the statistics pane's run history columns. ELAPSED is
 // the engine's rendered span (#238 phase 2); WROTE and the journal range are

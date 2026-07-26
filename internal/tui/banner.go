@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -94,37 +95,38 @@ func psBanner(w int) ([]string, [][2]int) {
 	return out, spans
 }
 
-// bannerGlowSGR is one banner row's tint under the light sweep: the row's
-// gradient stop blended toward a soft lavender-white by intensity (0..1) —
-// full intensity stays short of pure white so the glow keeps the brand hue.
-func bannerGlowSGR(i int, intensity float64) string {
-	if intensity <= 0 {
-		return bannerRowSGR(i)
-	}
-	if intensity > 1 {
-		intensity = 1
-	}
-	g := bannerGradient[i%len(bannerGradient)]
-	const tr, tg, tb = 226, 231, 255 // the glow target: light periwinkle
-	f := intensity * 0.9
-	blend := func(c, t int) int { return c + int(float64(t-c)*f) }
-	return rgb(blend(g[0], tr), blend(g[1], tg), blend(g[2], tb))
+// The banner's animation is the lolcat concept (github.com/busyloop/lolcat,
+// the proven terminal-text effect): a sine wave over (x + y·inclination +
+// phase) picks each cell's color, so diagonal gradient stripes drift across
+// the wordmark as the phase advances — here constrained to the brand palette
+// instead of the rainbow.
+
+// bannerWavePalette is the wave's cyclic color track: the installer's indigo
+// ramp ends, through the progress bar's pink accent, and back.
+var bannerWavePalette = [][3]int{
+	{102, 126, 234}, // G1 indigo
+	{118, 75, 162},  // G6 purple
+	{238, 111, 248}, // barGradTo pink
+	{90, 86, 224},   // barGradFrom violet
 }
 
-// bannerGlowRadius is the sweep's half-width in cells: the glow covers about
-// a letter and a half each side of its center, quadratic falloff.
-const bannerGlowRadius = 10.0
+// Lolcat's defaults, scaled to a banner instead of a scrollback: stripe
+// frequency per cell and the near-horizontal inclination.
+const (
+	bannerWaveFreq = 0.045
+	bannerWaveIncl = 2.0
+	bannerWaveStep = 0.55 // phase advance per poll, in wave radians
+)
 
-// bannerGlow is the sweep's intensity at distance d cells from its center.
-func bannerGlow(d float64) float64 {
-	if d < 0 {
-		d = -d
-	}
-	if d >= bannerGlowRadius {
-		return 0
-	}
-	t := 1 - d/bannerGlowRadius
-	return t * t
+// bannerWaveSGR picks the wave color for cell (x, row) at the given phase.
+func bannerWaveSGR(x, row int, phase float64) string {
+	pos := bannerWaveFreq*(float64(x)+bannerWaveIncl*float64(row))*2*math.Pi + phase
+	t := (math.Sin(pos) + 1) / 2 * float64(len(bannerWavePalette))
+	i := int(t) % len(bannerWavePalette)
+	f := t - math.Floor(t)
+	a, b := bannerWavePalette[i], bannerWavePalette[(i+1)%len(bannerWavePalette)]
+	lerp := func(x, y int) int { return x + int(float64(y-x)*f) }
+	return rgb(lerp(a[0], b[0]), lerp(a[1], b[1]), lerp(a[2], b[2]))
 }
 
 // bannerGradient is the installer's G1..G6 purple ramp, one stop per art row;

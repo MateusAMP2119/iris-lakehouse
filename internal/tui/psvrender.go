@@ -83,26 +83,31 @@ func (b *screenBuf) text(x, y int, sgr, s string) {
 
 // paintSelAccent marks a selected row Grok-style: a left magenta bar (▌).
 // Colorless mode keeps a plain ">" so geometry tests stay SGR-free.
-// paintSelAccent marks the cursor row: the whole row inverts (#238 tweak —
-// no bar glyph), keeping each cell's own color under the inversion. The
-// colorless painter keeps the ">" marker, its only visible channel.
+// ansiSelBg is the cursor row's background tint: a quiet indigo wash that
+// keeps every cell's own foreground readable — no inverse video, no white
+// bar (#238 tweak).
+var ansiSelBg = bgRGB(44, 49, 78)
+
+// paintSelAccent marks the cursor row: the whole row takes the selection
+// background, keeping each cell's own color on top. The colorless painter
+// keeps the ">" marker, its only visible channel.
 func paintSelAccent(b *screenBuf, x, y, w int, colorless bool) {
 	if colorless {
 		b.text(x, y, "", ">")
 		return
 	}
-	b.invertRow(x, y, w)
+	b.tintRow(x, y, w)
 }
 
-// invertRow layers inverse video over w cells of row y from x.
-func (b *screenBuf) invertRow(x, y, w int) {
+// tintRow layers the selection background under w cells of row y from x.
+func (b *screenBuf) tintRow(x, y, w int) {
 	if y < 0 || y >= b.h {
 		return
 	}
 	for xx := x; xx < x+w && xx < b.w; xx++ {
 		c := &b.cells[y*b.w+xx]
-		if !strings.HasPrefix(c.sgr, ansiInverse) {
-			c.sgr = ansiInverse + c.sgr
+		if !strings.HasPrefix(c.sgr, ansiSelBg) {
+			c.sgr = ansiSelBg + c.sgr
 		}
 	}
 }
@@ -416,7 +421,7 @@ func renderTable(b *screenBuf, y, bodyH int, cols []psColumn, selRow int, colorl
 			if colorless {
 				b.text(0, ry, "", "> ")
 			} else {
-				b.invertRow(0, ry, b.w)
+				b.tintRow(0, ry, b.w)
 			}
 		}
 	}

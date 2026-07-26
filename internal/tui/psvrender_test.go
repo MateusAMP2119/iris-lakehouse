@@ -145,7 +145,7 @@ func TestPsFrameGoldens(t *testing.T) {
 }
 
 // TestPsFrameStyling proves the SGR layer: state colors land on their cells,
-// the focused pane's border is cyan, the selection inverts its whole row
+// the focused pane's border is cyan, the selection tints its whole row
 // (or "> " when colorless), heat cells quantize into the ramp, and the
 // emission carries zero escape bytes beyond cursor addressing when the painter
 // is off.
@@ -162,8 +162,8 @@ func TestPsFrameStyling(t *testing.T) {
 					t.Errorf("frame carries no %q-styled cell", want)
 				}
 			}
-			if !strings.Contains(out, ansiInverse) {
-				t.Error("selected row carries no inverse-video highlight")
+			if !strings.Contains(out, ansiSelBg) {
+				t.Error("selected row carries no background tint")
 			}
 		})
 
