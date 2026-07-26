@@ -10,7 +10,7 @@
  │ ○ │   help · Keyboard reference      │i│                                                   │   │
  │ so│   q · Quit iris ps               │ │ Usage  :catalog                                   │   │
  │ ○ │                                  │ │ Keys   :catalog                                   │   │
- │   │                                  │o│ Group  navigate                                   │   │
+ │   │                                  │d│ Group  navigate                                   │   │
  │   │                                  │ │                                                   │   │
  │   │                                  │ │                                                   │   │
  │   │                                  │t│                                                   │   │

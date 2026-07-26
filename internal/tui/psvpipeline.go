@@ -30,6 +30,9 @@ const (
 	psRunsFullW = 62
 	// psSpecGap parts two spec blocks.
 	psSpecGap = 1
+	// psSchemaMaxRows caps the SCHEMA block's listed columns; the heading
+	// carries the true count, so a cap never hides that there are more.
+	psSchemaMaxRows = 6
 )
 
 // paneSplit is the detail pane's resolved column geometry. When split is
@@ -195,16 +198,41 @@ func renderSpecLoad(b *screenBuf, m *psModel, sc specScope, x, y, w, maxH int) i
 	return 4
 }
 
-// renderSpecSchema paints the SCHEMA block. The declared shape is not on the
-// wire yet, so the block states that rather than omitting the rows and
-// letting everything below it move once the route lands.
-func renderSpecSchema(b *screenBuf, _ *psModel, _ specScope, x, y, w, maxH int) int {
+// renderSpecSchema paints the SCHEMA block: the declared columns and the type
+// tokens the operator wrote. The heading carries the true column count, so
+// the row cap never hides that there are more.
+func renderSpecSchema(b *screenBuf, m *psModel, sc specScope, x, y, w, maxH int) int {
 	if maxH < 2 {
 		return 0
 	}
-	specHead(b, x, y, w, "SCHEMA", "")
-	b.text(x, y+1, ansiDim, clipCells("shape not on the wire", w))
-	return 2
+	shape, declared := m.snap.Shapes[sc.table]
+	if !declared {
+		// Either the route has not answered yet or the table is not declared
+		// under schemas/. Neither is a shape this view may invent.
+		specHead(b, x, y, w, "SCHEMA", "")
+		b.text(x, y+1, ansiDim, clipCells("no declared shape", w))
+		return 2
+	}
+	specHead(b, x, y, w, "SCHEMA", fmt.Sprintf("· %d cols", len(shape.Columns)))
+	room := min(maxH-1, psSchemaMaxRows)
+	shown := shape.Columns
+	if len(shown) > room {
+		shown = shown[:room-1] // the last row goes to the +N more marker
+	}
+	row := 0
+	for _, c := range shown {
+		name := c.Name
+		if c.PrimaryKey {
+			name = "· " + name
+		}
+		specRow(b, x, y+1+row, w, len([]rune(c.Type)), name, c.Type, ansiDim)
+		row++
+	}
+	if rest := len(shape.Columns) - len(shown); rest > 0 {
+		b.text(x, y+1+row, ansiDim, clipCells(fmt.Sprintf("+%d more", rest), w))
+		row++
+	}
+	return row + 1
 }
 
 // renderSpecOps paints the OPS block: the undo ledger and the per-op split of

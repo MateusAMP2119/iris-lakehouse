@@ -336,6 +336,7 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 		api.WithCatalogList(NewCatalogReadPlane(client.RegistryReader(), catalogResolver, logger)),
 		api.WithCatalogSources(catalogSrc),
 		api.WithJournalActivity(jactivity),
+		api.WithSchemas(NewSchemasPlane(dataSource, client.ShowReader())),
 	), WithServerLogger(logger), WithVerifier(verifier))
 	if err := srv.Start(ctx); err != nil {
 		return err

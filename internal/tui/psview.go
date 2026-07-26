@@ -186,6 +186,31 @@ func (c *Client) fetchPipelines(ctx context.Context) ([]api.PipelineListItem, er
 	return env.Data.Pipelines, nil
 }
 
+// fetchSchemas reads the workspace's declared table shapes. The declaration is
+// static between declare applies, so the poller reads it at open and on the
+// history cadence rather than every tick.
+func (c *Client) fetchSchemas(ctx context.Context) (map[string]api.TableShape, error) {
+	resp, err := c.get(ctx, "/schemas")
+	if err != nil {
+		return nil, err
+	}
+	defer drainClose(resp)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("daemon returned status %d from /schemas", resp.StatusCode)
+	}
+	var env struct {
+		Data api.SchemaListResult `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return nil, fmt.Errorf("decode /schemas response: %w", err)
+	}
+	out := make(map[string]api.TableShape, len(env.Data.Tables))
+	for _, t := range env.Data.Tables {
+		out[t.Schema+"."+t.Table] = t
+	}
+	return out, nil
+}
+
 // cancelRun POSTs the run cancel and renders the outcome as the view's note
 // line: success, a not_leader rejection, or the daemon's error message. The
 // view keeps running whatever the outcome -- an in-view action never crashes
@@ -391,11 +416,12 @@ type psPollMsg struct {
 func pollPs(ctx context.Context, c *Client, every time.Duration,
 	cancelCh <-chan string, polls chan psPollMsg, notes chan<- string) {
 	var (
-		lastPipes []api.PipelineListItem
-		ticks     int
-		seq       int64                   // poll ordinal, the commit marks' ordering
-		journal   *psJournal              // accumulated write activity (#238 phase 3)
-		commits   map[string]psCommitMark // newest observed write per pipeline
+		lastPipes  []api.PipelineListItem
+		lastShapes map[string]api.TableShape
+		ticks      int
+		seq        int64                   // poll ordinal, the commit marks' ordering
+		journal    *psJournal              // accumulated write activity (#238 phase 3)
+		commits    map[string]psCommitMark // newest observed write per pipeline
 	)
 	poll := func(history bool) bool {
 		ps, err := c.fetchPs(ctx, true, history)
@@ -419,6 +445,14 @@ func pollPs(ctx context.Context, c *Client, every time.Duration,
 		} else {
 			warn = "pipeline listing unavailable; lanes may be incomplete"
 		}
+		// The declared shapes ride the history cadence: static between declare
+		// applies, but a catalog apply from inside the view changes them, so
+		// they refresh rather than being read once. Soft like the listing.
+		if history || lastShapes == nil {
+			if shapes, serr := c.fetchSchemas(ctx); serr == nil {
+				lastShapes = shapes
+			}
+		}
 		// The activity aggregate is soft like the listing: a failing (or
 		// missing) route leaves the last accumulated state riding along.
 		since := int64(0)
@@ -429,14 +463,14 @@ func pollPs(ctx context.Context, c *Client, every time.Duration,
 			// one activity read that can outlast its poll. Ship what is already
 			// in hand first -- the frame opens live and the tables land when
 			// the aggregate answers.
-			sendPoll(polls, psPollMsg{snap: Snapshot{Ps: ps, Pipelines: lastPipes, Commits: commits}, warn: warn})
+			sendPoll(polls, psPollMsg{snap: Snapshot{Ps: ps, Pipelines: lastPipes, Commits: commits, Shapes: lastShapes}, warn: warn})
 		}
 		seq++
 		if act, aerr := c.fetchJournalActivity(ctx, since); aerr == nil {
 			commits = deriveCommits(commits, act.Groups, commitStamp(time.Now()), seq)
 			journal = foldJournal(journal, act)
 		}
-		snap := Snapshot{Ps: ps, Pipelines: lastPipes, Journal: journal, Commits: commits}
+		snap := Snapshot{Ps: ps, Pipelines: lastPipes, Journal: journal, Commits: commits, Shapes: lastShapes}
 		// A history-carrying poll (once a minute) refreshes the last-known-state
 		// cache: the snapshot a later unreachable-at-open view revives.
 		if ps.History != nil {

@@ -11,20 +11,20 @@
  │                        │  │ mem    ░████   24.0MiB │                                           │
  │                        │  │ time █▅       3m2s max │                                           │
  │                        │  │                        │                                           │
- │                        │  │ SCHEMA                 │                                           │
- │                        │  │ shape not on the wire  │                                           │
+ │                        │  │ SCHEMA        · 7 cols │                                           │
+ │                        │  │ · id            bigint │                                           │
+ │                        │  │ placed_at  timestamptz │                                           │
+ │                        │  │ customer          text │                                           │
+ │                        │  │ total    numeric(12,2) │                                           │
+ │                        │  │ currency    varchar(3) │                                           │
+ │                        │  │ +2 more                │                                           │
  │                        │  │                        │                                           │
  │                        │  │ OPS                    │                                           │
  │                        │  │ undo open         1187 │                                           │
  │                        │  │ promoted          1204 │                                           │
  │                        │  │ ins 2391               │                                           │
  │                        │  │                        │                                           │
- │                        │  │ RETENTION              │                                           │
- │                        │  │ oldest kept      run 6 │                                           │
- │                        │  │ runs kept            3 │                                           │
- │                        │  │                        │                                           │
- │                        │  │                        │                                           │
- │ LANE · inlast 14:31:07 │  │                        │                                           │
- │ demo.orders      +1187 │  │                        │                                           │
- │ CPU    ░▒▓▓▓     51.0% │  │                        │                                           │
+ │ LANE · inlast 14:31:07 │  │ RETENTION              │                                           │
+ │ demo.orders      +1187 │  │ oldest kept      run 6 │                                           │
+ │ CPU    ░▒▓▓▓     51.0% │  │ runs kept            3 │                                           │
  │ MEM    ░████   24.0MiB │  └────────────────────────────────────────── a all history · c cancel ┘

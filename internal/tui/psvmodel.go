@@ -78,6 +78,10 @@ type Snapshot struct {
 	// Commits is the newest write this view observed per pipeline: the rail
 	// footer's stamp. Derived from the activity delta, never raw log text.
 	Commits map[string]psCommitMark
+	// Shapes are the workspace's declared table shapes keyed "schema.table",
+	// read from /schemas. Nil until the first successful read (renders as
+	// absence); never cached to disk -- a stale schema is the worst stale.
+	Shapes map[string]api.TableShape
 	// staleAge marks a snapshot revived from the last-known-state cache (the
 	// engine was unreachable at open): how old the cached state is. Zero on a
 	// live snapshot. The view opens it under the unreachable banner.

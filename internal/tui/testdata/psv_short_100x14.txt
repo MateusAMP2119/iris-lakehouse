@@ -10,5 +10,5 @@
  │ ○ monthly              │  │ time  no timed run yet │                                           │
  │ LANE · inlast 14:31:07 │  │                        │                                           │
  │ demo.orders      +1187 │  │ SCHEMA                 │                                           │
- │ CPU    ░▒▓▓▓     51.0% │  │ shape not on the wire  │                                           │
+ │ CPU    ░▒▓▓▓     51.0% │  │ no declared shape      │                                           │
  │ MEM    ░████   24.0MiB │  └────────────────────────────────────────── a all history · c cancel ┘

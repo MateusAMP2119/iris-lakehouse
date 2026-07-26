@@ -11,8 +11,13 @@
  │ solo                        0r·0q │  │ mem            ░████   24.0MiB │                                                                          │
  │ ○ solo                            │  │ time █▅               3m2s max │                                                                          │
  │                                   │  │                                │                                                                          │
- │                                   │  │ SCHEMA                         │                                                                          │
- │                                   │  │ shape not on the wire          │                                                                          │
+ │                                   │  │ SCHEMA                · 7 cols │                                                                          │
+ │                                   │  │ · id                    bigint │                                                                          │
+ │                                   │  │ placed_at          timestamptz │                                                                          │
+ │                                   │  │ customer                  text │                                                                          │
+ │                                   │  │ total            numeric(12,2) │                                                                          │
+ │                                   │  │ currency            varchar(3) │                                                                          │
+ │                                   │  │ +2 more                        │                                                                          │
  │                                   │  │                                │                                                                          │
  │                                   │  │ OPS                            │                                                                          │
  │                                   │  │ undo open                 1187 │                                                                          │
@@ -22,11 +27,6 @@
  │                                   │  │ RETENTION                      │                                                                          │
  │                                   │  │ oldest kept              run 6 │                                                                          │
  │                                   │  │ runs kept                    3 │                                                                          │
- │                                   │  │                                │                                                                          │
- │                                   │  │                                │                                                                          │
- │                                   │  │                                │                                                                          │
- │                                   │  │                                │                                                                          │
- │                                   │  │                                │                                                                          │
  │                                   │  │                                │                                                                          │
  │                                   │  │                                │                                                                          │
  │                                   │  │                                │                                                                          │

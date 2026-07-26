@@ -10,7 +10,7 @@
  │ ○ monthly                         │  │ time  no timed run yet         │                                                                          │
  │ solo                        0r·0q │  │                                │                                                                          │
  │ ○ solo                            │  │ SCHEMA                         │                                                                          │
- │                                   │  │ shape not on the wire          │                                                                          │
+ │                                   │  │ no declared shape              │                                                                          │
  │                                   │  │                                │                                                                          │
  │                                   │  │ RETENTION                      │                                                                          │
  │                                   │  │ oldest kept             run 12 │                                                                          │

@@ -106,6 +106,7 @@ func NewMux(opts ...MuxOption) http.Handler {
 		drain:          noDrain{},
 		catalog:        noCatalog{},
 		catalogList:    noCatalogList{},
+		schemas:        noSchemas{},
 		catalogSources: noCatalogSources{},
 		jactivity:      noJournalActivity{},
 	}
@@ -160,6 +161,9 @@ type mux struct {
 	catalog        CatalogHandler
 	catalogList    CatalogListHandler
 	catalogSources CatalogSourcesHandler
+	// schemas serves the GET /schemas declared-shape listing on any role
+	// (schemas.go): declaration truth, no live-database read.
+	schemas SchemaListHandler
 	// endpoints and qreader are the /q serving seams (endpoint.go): the live
 	// compiled-shape source and the read executor. Both default nil (unwired):
 	// /q then answers the internal-fault envelope, per the unwired-seam doctrine.
@@ -232,6 +236,8 @@ func (m *mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.servePs(w, r)
 	case "/journal/activity":
 		m.serveJournalActivity(w, r)
+	case "/schemas":
+		m.serveSchemas(w, r)
 	case "/inspect":
 		m.serveInspect(w, r)
 	default:

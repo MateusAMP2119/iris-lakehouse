@@ -37,6 +37,17 @@ func psvFixture() Snapshot {
 			{RunID: 2, Pipeline: "solo", Schema: "demo", Table: "audit", Op: "update",
 				Rows: 12, MinID: 6500, MaxID: 6512, UndoOpen: 0, UndoPromoted: 12},
 		}}),
+		Shapes: map[string]api.TableShape{
+			"demo.orders": {Schema: "demo", Table: "orders", PrimaryKey: []string{"id"}, Columns: []api.ColumnShape{
+				{Name: "id", Type: "bigint", PgType: "bigint", PrimaryKey: true},
+				{Name: "placed_at", Type: "timestamptz", PgType: "timestamp with time zone", Nullable: true},
+				{Name: "customer", Type: "text", PgType: "text", Nullable: true},
+				{Name: "total", Type: "numeric(12,2)", PgType: "numeric(12,2)", Nullable: true},
+				{Name: "currency", Type: "varchar(3)", PgType: "character varying(3)", Nullable: true},
+				{Name: "lane", Type: "text", PgType: "text", Nullable: true},
+				{Name: "settled", Type: "bool", PgType: "boolean", Nullable: true},
+			}},
+		},
 		Commits: map[string]psCommitMark{
 			"solo":        {Stamp: "14:29:41", Seq: 1},
 			"load_orders": {Stamp: "14:31:07", Seq: 3},
