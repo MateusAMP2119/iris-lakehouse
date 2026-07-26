@@ -807,7 +807,10 @@ func renderLogsFull(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 // renderPsBanner paints the justified brand banner — one blank row above,
 // one cell of side padding — and reports how many rows it spent (zero when
 // the frame cannot afford or fit it). Color is one static diagonal brand
-// gradient (banner.go): smooth, no animation.
+// gradient (banner.go). Depth is a right-edge extrusion: every glyph run
+// casts one dark ▓ shadow cell. Sparkles are deterministic glints scattered
+// over the surrounding blank cells — position-hashed, so every frame (and
+// the goldens) sees the same sky.
 func renderPsBanner(b *screenBuf, w, h int, colorless bool) int {
 	if h < psBannerMinHeight {
 		return 0
@@ -816,16 +819,57 @@ func renderPsBanner(b *screenBuf, w, h int, colorless bool) int {
 	if art == nil {
 		return 0
 	}
+	shadow := map[[2]int]bool{}
 	for i, row := range art {
-		if colorless {
-			b.text(0, i+1, "", row)
-			continue
-		}
-		for x, r := range []rune(row) {
+		runes := []rune(row)
+		for x, r := range runes {
 			if r == ' ' {
+				// The extrusion: a glyph run's right edge casts one shadow.
+				if x > 0 && runes[x-1] != ' ' {
+					sgr := bannerShadowSGR
+					if colorless {
+						sgr = ""
+					}
+					b.text(x, i+1, sgr, "▓")
+					shadow[[2]int{x, i + 1}] = true
+				}
 				continue
 			}
-			b.text(x, i+1, bannerSweepSGR(x, i, w), string(r))
+			sgr := bannerSweepSGR(x, i, w)
+			if colorless {
+				sgr = ""
+			}
+			b.text(x, i+1, sgr, string(r))
+		}
+	}
+	// Sparkles: rows 0..3 (the breathing row included), blank cells only.
+	blank := func(x, y int) bool {
+		if shadow[[2]int{x, y}] {
+			return false
+		}
+		if y == 0 {
+			return true
+		}
+		runes := []rune(art[y-1])
+		return x >= len(runes) || runes[x] == ' '
+	}
+	for y := 0; y <= len(art); y++ {
+		for x := 0; x < w; x++ {
+			glyph, sgr, ok := bannerSparkle(x, y)
+			if !ok || !blank(x, y) {
+				continue
+			}
+			// Keep a one-cell quiet zone right of letters (the shadow edge).
+			if y > 0 && x > 0 {
+				runes := []rune(art[y-1])
+				if x-1 < len(runes) && runes[x-1] != ' ' {
+					continue
+				}
+			}
+			if colorless {
+				sgr = ""
+			}
+			b.text(x, y, sgr, glyph)
 		}
 	}
 	return len(art) + 1

@@ -110,6 +110,32 @@ var bannerSweepStops = [][3]int{
 	{238, 111, 248}, // barGradTo pink
 }
 
+// bannerShadowSGR is the extrusion shadow's tint: deep desaturated indigo,
+// dark enough to read as depth behind the gradient blocks.
+var bannerShadowSGR = rgb(38, 40, 66)
+
+// bannerSparkle decides deterministically whether banner cell (x, y) carries
+// a glint, and which. Position-hashed — no randomness, stable goldens, the
+// same sky every frame. Roughly one cell in forty lights up.
+func bannerSparkle(x, y int) (string, string, bool) {
+	h := uint32(x*2654435761) ^ uint32(y*40503) //nolint:gosec // deterministic hash, not crypto
+	h = (h ^ h>>13) * 1274126177
+	h ^= h >> 16
+	if h%41 != 0 {
+		return "", "", false
+	}
+	switch (h / 41) % 4 {
+	case 0:
+		return "✦", rgb(238, 111, 248), true // pink glint
+	case 1:
+		return "✧", rgb(150, 160, 245), true // periwinkle hollow
+	case 2:
+		return "˚", ansiDim, true
+	default:
+		return "·", ansiDim, true
+	}
+}
+
 // bannerSweepSGR picks the gradient color for cell (x, row) of a w-wide
 // banner: linear position along the stops with two cells of row lean.
 func bannerSweepSGR(x, row, w int) string {
