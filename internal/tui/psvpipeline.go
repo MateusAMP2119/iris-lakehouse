@@ -291,7 +291,14 @@ func renderSpecRetention(b *screenBuf, m *psModel, sc specScope, x, y, w, maxH i
 	if maxH < 3 {
 		return 2
 	}
-	specRow(b, x, y+2, w, 10, "runs kept", fmt.Sprintf("%d", len(sc.runs)), ansiDim)
+	// The kept count reads against the configured ceiling when the engine
+	// reports one: a count-based retention with no visible ceiling says
+	// nothing about how close pruning is.
+	kept := fmt.Sprintf("%d", len(sc.runs))
+	if r := m.snap.Ps.Retention; r != nil && r.Retain > 0 {
+		kept = fmt.Sprintf("%d / %d", len(sc.runs), r.Retain)
+	}
+	specRow(b, x, y+2, w, 12, "runs kept", kept, ansiDim)
 	if maxH < 4 {
 		return 3
 	}

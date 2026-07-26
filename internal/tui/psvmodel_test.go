@@ -16,6 +16,7 @@ func psvFixture() Snapshot {
 	return Snapshot{Ps: api.PsPayload{
 		Engine: api.PsEngine{Version: "dev", Role: "leader", PID: 42, Uptime: "2h13m",
 			QueuedRuns: 1, RunningRuns: 1, Load: &api.PsLoad{CPUPercent: 3.2, RSSBytes: 126 << 20}},
+		Retention: &api.PsRetention{Retain: 1000},
 		Runs: []api.PsRun{
 			{ID: "14", Pipeline: "load_orders", Lane: "ingest", State: "running", Cause: "loop",
 				Load: &api.PsLoad{CPUPercent: 51, RSSBytes: 24 << 20}, Elapsed: "2m14s"},

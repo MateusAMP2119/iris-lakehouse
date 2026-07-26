@@ -295,7 +295,7 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	turnTally := newTurnCounters()
 	runLogs := NewRunLogWriter(s)
 	sources := newSourceWatcher(logger)
-	psp := NewPsPlane(role, client.Reader(), loads, turnTally, runLogs, sources, logger)
+	psp := NewPsPlane(role, client.Reader(), loads, turnTally, runLogs, sources, s.Retain, logger)
 
 	// The dead-letter plane serves GET /dead_letters/{run}/impact (the blast readout
 	// `iris deadletter show` renders) on any node from the reader pool, and POST

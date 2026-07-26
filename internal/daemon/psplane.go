@@ -48,6 +48,7 @@ type RunSnapshotReader interface {
 // load collector (which owns the host probing and the managed-postmaster
 // summing the plane's readout reports).
 type psPlane struct {
+	retain   int64
 	role     api.RoleReporter
 	runs     RunSnapshotReader
 	loads    *loadHistory
@@ -69,12 +70,13 @@ var _ api.PsHandler = (*psPlane)(nil)
 // history). The plane records its own pid at construction and counts uptime
 // from it: the plane is built at daemon start, so its age is the daemon's. A
 // nil logger discards output.
-func NewPsPlane(role api.RoleReporter, runs RunSnapshotReader, loads *loadHistory, counters *turnCounters, runLogs *RunLogWriter, sources *sourceWatcher, logger *slog.Logger) api.PsHandler {
+func NewPsPlane(role api.RoleReporter, runs RunSnapshotReader, loads *loadHistory, counters *turnCounters, runLogs *RunLogWriter, sources *sourceWatcher, retain int64, logger *slog.Logger) api.PsHandler {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return &psPlane{
 		role:     role,
+		retain:   retain,
 		runs:     runs,
 		loads:    loads,
 		counters: counters,
@@ -181,6 +183,7 @@ func (p *psPlane) Ps(ctx context.Context, all, history bool) (api.PsPayload, err
 	}
 	payload := api.PsPayload{Engine: engine, Runs: rows, Residents: p.counters.snapshot(), SampleTick: tick}
 	payload.PipelineTimes = pipelineTimes(runs)
+	payload.Retention = pipelineRetention(runs, p.retain)
 	if p.sources != nil {
 		payload.Sources = p.sources.health()
 	}
@@ -250,6 +253,42 @@ func renderRunSpan(ms int64) string {
 		return d.Truncate(time.Millisecond).String()
 	}
 	return d.Truncate(time.Second).String()
+}
+
+// pipelineRetention folds the run snapshot into the retention readout: the
+// configured keep count and each pipeline's surviving run-id range. Pure over
+// the snapshot, so it is table-testable without a database. Ids, never
+// timestamps: prune is count-based, so the floor is the oldest id meta still
+// holds, not a moment.
+func pipelineRetention(runs []store.Run, retain int64) *api.PsRetention {
+	if len(runs) == 0 {
+		return nil
+	}
+	type span struct {
+		oldest, newest string
+		count          int
+	}
+	byPipe := map[string]*span{}
+	var order []string
+	for _, r := range runs { // ascending id, the reader's order
+		s := byPipe[r.Pipeline]
+		if s == nil {
+			s = &span{oldest: r.ID}
+			byPipe[r.Pipeline] = s
+			order = append(order, r.Pipeline)
+		}
+		s.newest = r.ID
+		s.count++
+	}
+	sort.Strings(order)
+	out := &api.PsRetention{Retain: retain}
+	for _, name := range order {
+		s := byPipe[name]
+		out.Pipelines = append(out.Pipelines, api.PsPipelineRetention{
+			Pipeline: name, Runs: s.count, OldestRunID: s.oldest, NewestRunID: s.newest,
+		})
+	}
+	return out
 }
 
 // pipelineTimes aggregates observed durations per pipeline (#238 phase 2):

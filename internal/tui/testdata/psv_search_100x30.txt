@@ -26,5 +26,5 @@
  │                        │  │                        │                                           │
  │ LANE · inlast 14:31:07 │  │ RETENTION              │                                           │
  │ demo.orders      +1187 │  │ oldest kept      run 6 │                                           │
- │ CPU    ░▒▓▓▓     51.0% │  │ runs kept            3 │                                           │
+ │ CPU    ░▒▓▓▓     51.0% │  │ runs kept     3 / 1000 │                                           │
  │ MEM    ░████   24.0MiB │  └────────────────────────────────────────── a all history · c cancel ┘

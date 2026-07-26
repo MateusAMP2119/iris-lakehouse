@@ -45,6 +45,9 @@ type PsPayload struct {
 	// ?history=1. It is daemon memory, not persistence: it survives any number
 	// of client restarts and dies with the daemon.
 	History *PsHistory `json:"history,omitempty"`
+	// Retention is the run-history retention readout: the configured keep
+	// count and each pipeline's kept run-id range.
+	Retention *PsRetention `json:"retention,omitempty"`
 	// PipelineTimes are the per-pipeline observed-duration aggregates (#238
 	// phase 2): rendered strings and quantized strip levels only, so no
 	// numeric duration rides the wire. Absent until a pipeline records a
@@ -185,6 +188,29 @@ type PsEngine struct {
 	// Load is the engine process group's sampled host load (the daemon and its
 	// managed Postgres), or null when the host could not be probed.
 	Load *PsLoad `json:"load"`
+}
+
+// PsRetention is the engine's run-history retention readout: the configured
+// keep count and each pipeline's kept run-id range. Ids, never timestamps --
+// retention in iris is count-based and clockless, so the floor is an identity.
+type PsRetention struct {
+	// Retain is the configured per-pipeline keep count.
+	Retain int64 `json:"retain"`
+	// Pipelines are the per-pipeline kept ranges, ordered by pipeline.
+	Pipelines []PsPipelineRetention `json:"pipelines,omitempty"`
+}
+
+// PsPipelineRetention is one pipeline's kept run history: how many run rows
+// survive and the id floor and ceiling they span.
+type PsPipelineRetention struct {
+	// Pipeline is the pipeline the range belongs to.
+	Pipeline string `json:"pipeline"`
+	// Runs is how many run rows meta still holds for it.
+	Runs int `json:"runs"`
+	// OldestRunID is the id floor of the kept range.
+	OldestRunID string `json:"oldest_run_id"`
+	// NewestRunID is the id ceiling of the kept range.
+	NewestRunID string `json:"newest_run_id"`
 }
 
 // PsRun is one run row of the ps readout.
