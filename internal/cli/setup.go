@@ -238,9 +238,20 @@ func (a *app) handleExistingEngine(cmd *cobra.Command, preselect string, log *ce
 	case existingRestart:
 		log.line("  • Existing engine detected · restarting on the new binary (data kept)")
 		if e.running {
+			// Same shape as `iris uninstall`'s first step: say what is being
+			// looked for, stop it, then report what was actually stopped.
+			log.line("  • Checking for running processes...")
 			if serr := a.runSelfQuiet(cmd, "engine", "stop"); serr != nil {
 				return false, serr
 			}
+			if serr := a.waitEngineStopped(cmd); serr != nil {
+				return false, serr
+			}
+			stopped := "  • Stopped the running engine"
+			if e.pid != 0 {
+				stopped = fmt.Sprintf("  • Stopped the running engine (pid %d)", e.pid)
+			}
+			log.line(stopped + " · data preserved")
 		}
 		return false, nil // the idempotent install completes; the catalog phase starts the engine
 	case existingWipe:
@@ -267,6 +278,35 @@ func (a *app) handleExistingEngine(cmd *cobra.Command, preselect string, log *ce
 		}
 		log.line("  • Existing engine data detected · preserved")
 		return false, nil
+	}
+}
+
+// waitEngineStopped blocks until no daemon answers the resolved endpoint. The
+// stop returns once the signal is delivered, not once the process is gone, and
+// the catalog phase reads a live daemon as "already running" — so a restart
+// that skipped this wait could leave the old binary serving and call it done.
+func (a *app) waitEngineStopped(cmd *cobra.Command) error {
+	settings := a.resolveTarget(cmd)
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	deadline, cancel := context.WithTimeout(ctx, stopGraceTimeout)
+	defer cancel()
+	t := time.NewTicker(150 * time.Millisecond)
+	defer t.Stop()
+	for {
+		if a.probeDaemon(deadline, settings) != nil {
+			return nil
+		}
+		select {
+		case <-deadline.Done():
+			return &fault{
+				code: exitOpFailed, codeStr: "stop_failed",
+				message: "iris setup: the running engine is still answering after stop; stop it by hand (iris engine stop) and install again",
+			}
+		case <-t.C:
+		}
 	}
 }
 

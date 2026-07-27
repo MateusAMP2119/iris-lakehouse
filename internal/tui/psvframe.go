@@ -406,30 +406,24 @@ func latestRunDelta(s Snapshot, table string) int64 {
 	return best.Rows
 }
 
-// renderTableStats is the detail pane's table shape: the two-column body
-// scoped to one written table -- its identity and undo ledger on the left,
-// the write rate over the runs that wrote it on the right. The provenance
-// walk's on-frame doorway.
+// renderTableStats is the detail pane's table shape: one written table's spec
+// beside the runs that wrote it. The provenance walk's on-frame doorway.
 func renderTableStats(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 	sc := tableSpecScope(m)
-	borderSGR, titleSGR, mark := paneChrome(m.pane == psPaneStats, colorless, "[TABLE]")
-	b.hairBox(x, y, w, h, borderSGR)
-	m.addClick(psClick{x: x, y: y, w: w, h: h, kind: psClickPane, pane: psPaneStats})
-	paneTitle(b, x, y, titleSGR, mark, colorless)
-	paneSubject(b, x, y, w, m.selTable, detailDead(sc.runs))
-	// Both edges are the caller's, deferred so every glyph painted below still
-	// takes them -- and so even an early return leaves the card whole.
-	defer b.ruleRow(x, y, w)
-	defer b.underlineRow(x, y+h-1, w)
-	if h < 6 {
-		return
-	}
 	if m.snap.Journal == nil {
-		b.text(x+2, y+1, ansiDim, clipCells("journal activity unavailable", w-4))
+		// Nothing to list, so one pane saying why, and no run pane to focus.
+		m.setDetailSplit(false)
+		card := detailCard{
+			mark: "[TABLE]", subject: m.selTable, pane: psPaneStats,
+			dead: detailDead(sc.runs), focused: m.detailFocused(),
+		}
+		renderDetailCard(b, m, card, x, y, w, h, colorless, func(ix, iy, iw, _ int) {
+			b.text(ix, iy, ansiDim, clipCells("journal activity unavailable", iw))
+		})
 		return
 	}
-	renderDetailPane(b, m, sc, tableDetailRuns(m, sc), x, y, w, h, colorless)
-	paneHint(b, x, y+h-1, w, "c cancel · :data provenance for the walk")
+	renderDetailShape(b, m, sc, tableDetailRuns(m, sc), "[TABLE]", m.selTable,
+		"c cancel · :data provenance for the walk", x, y, w, h, colorless)
 }
 
 // pipelineTableRow is one table row of the pipeline statistics pane.
@@ -514,30 +508,21 @@ func opsSplit(j *psJournal, name string) string {
 	return strings.Join(parts, " · ")
 }
 
-// renderPipelineStats is the detail pane's pipeline shape: the two-column
-// body scoped to the selected pipeline -- its output table, undo ledger and
-// retention on the left, the write rate over its run history on the right.
+// renderPipelineStats is the detail pane's pipeline shape: the selected
+// pipeline's spec beside its run history.
 func renderPipelineStats(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 	sc := pipelineSpecScope(m)
-	borderSGR, titleSGR, mark := paneChrome(m.pane == psPaneStats, colorless, "[PIPELINE]")
-	b.hairBox(x, y, w, h, borderSGR)
-	m.addClick(psClick{x: x, y: y, w: w, h: h, kind: psClickPane, pane: psPaneStats})
-	paneTitle(b, x, y, titleSGR, mark, colorless)
-	paneSubject(b, x, y, w, m.selPipeline, detailDead(sc.runs))
-	defer b.ruleRow(x, y, w)
-	defer b.underlineRow(x, y+h-1, w)
-	if h < 6 {
-		return
-	}
-	renderDetailPane(b, m, sc, pipelineDetailRuns(m, sc), x, y, w, h, colorless)
-	paneHint(b, x, y+h-1, w, "c cancel")
+	renderDetailShape(b, m, sc, pipelineDetailRuns(m, sc), "[PIPELINE]", m.selPipeline,
+		"c cancel", x, y, w, h, colorless)
 }
 
 // renderLaneStats is the statistics pane's lane shape: lane totals, lane load
 // strips, and the member pipeline table (share-of-lane-time lands with #200).
 func renderLaneStats(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 	name := m.selLane
-	borderSGR, titleSGR, mark := paneChrome(m.pane == psPaneStats, colorless, "[LANE]")
+	// The lane shape is one pane: it lists pipelines, not runs.
+	m.setDetailSplit(false)
+	borderSGR, titleSGR, mark := paneChrome(m.detailFocused(), colorless, "[LANE]")
 	b.hairBox(x, y, w, h, borderSGR)
 	m.addClick(psClick{x: x, y: y, w: w, h: h, kind: psClickPane, pane: psPaneStats})
 	paneTitle(b, x, y, titleSGR, mark, colorless)

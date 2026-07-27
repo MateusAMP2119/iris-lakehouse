@@ -1,12 +1,7 @@
 package tui
 
-// The detail pane's two-column shape: a narrow spec column on the left
-// (OUTPUT, SCHEMA, OPS, RETENTION) and the wide column on the right carrying
-// the write-rate bar over the run table. Both the pipeline shape and the table
-// shape are this layout -- they differ only in which table the spec column
-// reads and which runs the wide column lists, so the blocks are shared and the
-// two entry points are thin. A pane too narrow to hold both columns stacks
-// them instead of clipping either.
+// The detail pane, split in two: the spec pane (PIPELINE or TABLE) beside the
+// EXECUTIONS run table, or one pane stacking both when too narrow to split.
 
 import (
 	"fmt"
@@ -33,29 +28,26 @@ const (
 	// psSchemaMaxRows caps the SCHEMA block's listed columns; the heading
 	// carries the true count, so a cap never hides that there are more.
 	psSchemaMaxRows = 6
+	// psCardPad is the two columns a pane spends on each side of its interior.
+	psCardPad = 4
 )
 
-// paneSplit is the detail pane's resolved column geometry. When split is
-// false the columns stack: lx/lw describe the single column.
+// paneSplit is the two panes' geometry; split false means one pane at lx/lw.
 type paneSplit struct {
-	lx, lw int // spec column
-	rx, rw int // wide column
+	lx, lw int // spec pane
+	rx, rw int // executions pane
 	split  bool
 }
 
-// splitPane resolves the two-column geometry over an interior of width iw
-// starting at column ix. The spec column takes two sevenths, clamped to its
-// floor and ceiling (the rail's clamp idiom); the wide column takes the rest
-// less a three-cell gutter. Nothing is drawn in the gutter -- the rail holds
-// its name from its badge the same way. Too little left for the run table's
-// core columns and the pane stacks instead.
-func splitPane(ix, iw int) paneSplit {
-	lw := min(max(iw*2/7, psSpecMinW), psSpecMaxW)
-	rw := iw - lw - 3
-	if lw+3 >= iw || rw < psRunsCoreW {
-		return paneSplit{lx: ix, lw: iw, rx: ix, rw: iw}
+// splitDetail gives the spec pane two sevenths of w, clamped, and the rest to
+// the executions pane; too little left for the run columns keeps one pane.
+func splitDetail(x, w int) paneSplit {
+	lw := min(max(w*2/7, psSpecMinW+psCardPad), psSpecMaxW+psCardPad)
+	rw := w - lw - psPaneGap
+	if rw < psRunsCoreW+psCardPad {
+		return paneSplit{lx: x, lw: w, rx: x, rw: w}
 	}
-	return paneSplit{lx: ix, lw: lw, rx: ix + lw + 3, rw: rw, split: true}
+	return paneSplit{lx: x, lw: lw, rx: x + lw + psPaneGap, rw: rw, split: true}
 }
 
 // runsTier is how many run-table columns a wide column of width w affords:
@@ -134,14 +126,14 @@ type specScope struct {
 	runs     []api.PsRun
 }
 
-// pipelineSpecScope scopes the spec column to the selected pipeline: its
-// busiest written table and its whole recorded run history.
+// pipelineSpecScope scopes the spec column to the selected pipeline: the table
+// under the OUTPUT cursor and the pipeline's whole recorded run history.
 func pipelineSpecScope(m *psModel) specScope {
-	sc := specScope{pipeline: m.selPipeline, runs: deriveRuns(m.snap, m.selPipeline, true)}
-	if tables := pipelineTables(m.snap, m.selPipeline); len(tables) > 0 {
-		sc.table = tables[0].name
+	return specScope{
+		pipeline: m.selPipeline,
+		runs:     deriveRuns(m.snap, m.selPipeline, true),
+		table:    m.outputTable(),
 	}
-	return sc
 }
 
 // tableSpecScope scopes the spec column to the selected table and the runs of
@@ -155,7 +147,12 @@ func tableSpecScope(m *psModel) specScope {
 // journal captured into it, and the highest journal id it has reached. It
 // never sheds -- a detail pane that cannot name its table is not a detail pane.
 func renderSpecOutput(b *screenBuf, m *psModel, sc specScope, x, y, w int) int {
-	specHead(b, x, y, w, "OUTPUT", "")
+	// Which of several written tables the cursor sits on.
+	pos := ""
+	if keys := m.outputKeys(); len(keys) > 1 && m.selTable == "" {
+		pos = fmt.Sprintf("%d/%d", selIndex(sc.table, keys)+1, len(keys))
+	}
+	specHead(b, x, y, w, "OUTPUT", pos)
 	if sc.table == "" {
 		b.text(x, y+1, ansiDim, clipCells("no captured writes yet", w))
 		return 2
@@ -495,130 +492,6 @@ func renderSpecColumn(b *screenBuf, m *psModel, sc specScope, x, y, w, h int) {
 	}
 }
 
-// renderRowsBar paints the wide column's head: the captured-rows heading with
-// its readings right-aligned, and the bar itself.
-//
-// Two sources, each authoritative at its own zoom. The bar and the peak come
-// from the daemon's coarse row buckets (a minute each, a day deep), re-seeded
-// once a minute. `now` comes from the journal activity poll the view already
-// runs every second, so the live reading never lags the bar's cadence.
-//
-// The window total is labelled by the ring's ACTUAL filled depth, never
-// "today": the daemon has no midnight -- its clock is the sampling host's
-// zone, not the operator's -- and the ring rolls at its cap, not at 00:00.
-func renderRowsBar(b *screenBuf, m *psModel, key, table string, x, y, w int) int {
-	ring := m.rowRings[key]
-	if ring == nil || len(ring.buckets) == 0 {
-		return renderRowsBarLive(b, m, table, x, y, w)
-	}
-	// The newest bucket is still filling, so it may not set the peak: a
-	// half-sealed bucket compared against whole ones understates nothing but
-	// would make the peak jitter downward as the window rolls.
-	var peak, total int64
-	for i, v := range ring.buckets {
-		if v == psNoSample {
-			continue
-		}
-		total += v
-		if i < len(ring.buckets)-1 && v > peak {
-			peak = v
-		}
-	}
-	head := "ROWS / " + rowsBucketLabel(ring.bucketSeconds) + " · " + rowsWindowLabel(ring)
-	right := fmt.Sprintf("%d now · %d peak · %d in %s",
-		int64(m.snap.Journal.latestRate(table)), peak, total, rowsWindowLabel(ring))
-	b.text(x, y, ansiDim, clipCells(head, w))
-	if len([]rune(head))+len([]rune(right))+2 <= w {
-		b.text(x+w-len([]rune(right)), y, ansiDim, right)
-	}
-	b.underlineRow(x, y, w) // the wide column's head takes the spec column's rule
-	if peak <= 0 {
-		b.text(x, y+1, ansiDim, clipCells("no captured writes in the window", w))
-		return 2
-	}
-	b.renderHeatStrip(x, y+1, w, fitSamples(rowsPercentOfPeak(ring.buckets, peak), w))
-	return 2
-}
-
-// renderRowsBarLive is the head before any recorded history has arrived: the
-// per-poll deltas the journal fold already holds, named for what they are so
-// the pane never dresses seconds of samples as a day of them.
-func renderRowsBarLive(b *screenBuf, m *psModel, table string, x, y, w int) int {
-	head := "ROWS / POLL · LIVE"
-	rate := m.snap.Journal.rateOf(table)
-	var latest, peak, total float64
-	for _, v := range rate {
-		if v > peak {
-			peak = v
-		}
-		total += v
-	}
-	if len(rate) > 0 {
-		latest = rate[len(rate)-1]
-	}
-	if len(rate) == 0 || peak == 0 {
-		b.text(x, y, ansiDim, clipCells(head, w))
-		b.underlineRow(x, y, w)
-		b.text(x, y+1, ansiDim, clipCells("no captured writes observed yet", w))
-		return 2
-	}
-	right := fmt.Sprintf("%d now · %d peak · %d in view", int64(latest), int64(peak), int64(total))
-	b.text(x, y, ansiDim, clipCells(head, w))
-	if len([]rune(head))+len([]rune(right))+2 <= w {
-		b.text(x+w-len([]rune(right)), y, ansiDim, right)
-	}
-	b.underlineRow(x, y, w)
-	scaled := make([]float64, len(rate))
-	for i, v := range rate {
-		scaled[i] = v / peak * 100
-	}
-	b.renderHeatStrip(x, y+1, w, fitSamples(scaled, w))
-	return 2
-}
-
-// rowsPercentOfPeak scales the buckets against the window peak for the strip,
-// keeping absence absent. A bucket that counted no rows scales to a real zero
-// -- the strip's lowest tone, not a gap.
-func rowsPercentOfPeak(buckets []int64, peak int64) []float64 {
-	out := make([]float64, len(buckets))
-	for i, v := range buckets {
-		if v == psNoSample {
-			out[i] = psNoSample
-			continue
-		}
-		out[i] = float64(v) / float64(peak) * 100
-	}
-	return out
-}
-
-// rowsBucketLabel names one bucket's span for the heading.
-func rowsBucketLabel(seconds int) string {
-	switch {
-	case seconds <= 0:
-		return "BUCKET"
-	case seconds%3600 == 0:
-		return "HOUR"
-	case seconds%60 == 0:
-		return fmt.Sprintf("%dMIN", seconds/60)
-	}
-	return fmt.Sprintf("%dS", seconds)
-}
-
-// rowsWindowLabel names how much time the ring actually covers -- its filled
-// depth, not its capacity. A daemon up three hours says 3h, never 24H.
-func rowsWindowLabel(r *psRowRing) string {
-	secs := len(r.buckets) * r.bucketSeconds
-	switch {
-	case secs <= 0:
-		return "window"
-	case secs >= 3600:
-		return fmt.Sprintf("%dh", secs/3600)
-	case secs >= 60:
-		return fmt.Sprintf("%dm", secs/60)
-	}
-	return fmt.Sprintf("%ds", secs)
-}
-
 // detailRun is one row of the detail pane's run table: the run's identity and
 // state from the payload, its captured writes from the journal aggregate.
 type detailRun struct {
@@ -650,7 +523,7 @@ func pipelineDetailRuns(m *psModel, sc specScope) []detailRun {
 		if rows := j.runWrote(r.ID); rows != 0 {
 			d.wrote, d.hasRows = rows, true
 		}
-		if w, ok := j.ByRun[r.ID][sc.table]; ok {
+		if w, ok := j.runWrite(r.ID, sc.table); ok {
 			d.op = shortOp(w.Op)
 		}
 		out = append(out, d)
@@ -662,6 +535,9 @@ func pipelineDetailRuns(m *psModel, sc specScope) []detailRun {
 // first, each scoped to its writes into that one table.
 func tableDetailRuns(m *psModel, sc specScope) []detailRun {
 	j := m.snap.Journal
+	if j == nil {
+		return nil
+	}
 	var out []detailRun
 	for id, per := range j.ByRun {
 		w, ok := per[sc.table]
@@ -744,40 +620,66 @@ func renderRunsTable(b *screenBuf, m *psModel, rows []detailRun, x, y, w, h int,
 	}
 }
 
-// renderDetailPane paints the shared two-column body inside an already-drawn
-// box: the spec column, the rule, the rate bar, and the run table. A pane too
-// narrow to split stacks the spec blocks above the table instead.
-func renderDetailPane(b *screenBuf, m *psModel, sc specScope, rows []detailRun, x, y, w, h int, colorless bool) {
-	ix, iy := x+2, y+1
-	iw, ih := w-4, h-2
-	p := splitPane(ix, iw)
-
-	if !p.split {
-		// Stacked: the spec column takes what it needs off the top, the run
-		// table takes the rest. The rate bar sheds -- a column this narrow
-		// cannot carry a bar and a table both.
-		specH := min(ih/2, 9)
-		renderSpecColumn(b, m, sc, ix, iy, iw, specH)
-		renderRunsTable(b, m, rows, ix, iy+specH+1, iw, ih-specH-1, colorless)
-		return
-	}
-
-	renderSpecColumn(b, m, sc, p.lx, iy, p.lw, ih)
-
-	barH := 0
-	if ih >= 10 {
-		barH = renderRowsBar(b, m, rowRingKey(sc), sc.table, p.rx, iy, p.rw) + 1
-	}
-	renderRunsTable(b, m, rows, p.rx, iy+barH, p.rw, ih-barH, colorless)
+// detailCard is one pane's chrome: its mark, subject, hint, click target, and
+// whether it holds the focus (per pane -- two lit panes read as one).
+type detailCard struct {
+	mark, subject, hint string
+	dead                bool
+	focused             bool
+	pane                psPane
 }
 
-// rowRingKey is the row ring the pane's bar reads: the scope's pipeline, or
-// the engine-wide ring when no pipeline owns the scope.
-func rowRingKey(sc specScope) string {
-	if sc.pipeline != "" {
-		return "p:" + sc.pipeline
+// renderDetailCard draws one pane and fills it with body, which is handed the
+// interior; the rules are deferred so the body's glyphs wear them.
+func renderDetailCard(b *screenBuf, m *psModel, c detailCard, x, y, w, h int, colorless bool, body func(ix, iy, iw, ih int)) {
+	borderSGR, titleSGR, mark := paneChrome(c.focused, colorless, c.mark)
+	b.hairBox(x, y, w, h, borderSGR)
+	m.addClick(psClick{x: x, y: y, w: w, h: h, kind: psClickPane, pane: c.pane})
+	paneTitle(b, x, y, titleSGR, mark, colorless)
+	paneSubject(b, x, y, w, c.subject, c.dead)
+	defer b.ruleRow(x, y, w)
+	defer b.underlineRow(x, y+h-1, w)
+	if h < 6 {
+		return
 	}
-	return ""
+	body(x+2, y+1, w-psCardPad, h-2)
+	paneHint(b, x, y+h-1, w, c.hint)
+}
+
+// renderDetailShape draws the spec pane and the EXECUTIONS pane side by side,
+// each focusable on its own, or one pane stacking both when too narrow.
+func renderDetailShape(b *screenBuf, m *psModel, sc specScope, rows []detailRun, mark, subject, hint string, x, y, w, h int, colorless bool) {
+	p := splitDetail(x, w)
+	m.setDetailSplit(p.split)
+	spec := detailCard{mark: mark, subject: subject, dead: detailDead(sc.runs), pane: psPaneStats}
+	if !p.split {
+		// One pane, so it carries both the keys and the focus.
+		spec.hint, spec.focused = hint, m.detailFocused()
+		renderDetailCard(b, m, spec, x, y, w, h, colorless, func(ix, iy, iw, ih int) {
+			specH := min(ih/2, 9)
+			renderSpecColumn(b, m, sc, ix, iy, iw, specH)
+			renderRunsTable(b, m, rows, ix, iy+specH+1, iw, ih-specH-1, colorless)
+		})
+		return
+	}
+	spec.focused = m.pane == psPaneStats
+	spec.hint = specCardHint(m)
+	renderDetailCard(b, m, spec, p.lx, y, p.lw, h, colorless, func(ix, iy, iw, ih int) {
+		renderSpecColumn(b, m, sc, ix, iy, iw, ih)
+	})
+	runs := detailCard{mark: "[EXECUTIONS]", hint: hint, focused: m.pane == psPaneRuns, pane: psPaneRuns}
+	renderDetailCard(b, m, runs, p.rx, y, p.rw, h, colorless, func(ix, iy, iw, ih int) {
+		renderRunsTable(b, m, rows, ix, iy, iw, ih, colorless)
+	})
+}
+
+// specCardHint is the spec pane's key hint: the pane right of it, and the key
+// that closes an open TABLE view.
+func specCardHint(m *psModel) string {
+	if m.selTable != "" {
+		return "→ runs · ← close"
+	}
+	return "→ runs"
 }
 
 // detailDead reports the pane subject's newest run dead-lettering -- the cross

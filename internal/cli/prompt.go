@@ -191,8 +191,10 @@ const (
 // selectExistingEngineAction runs the installer's existing-engine menu: local
 // engine state (and possibly a live daemon) already sits under the engine
 // home, and a fresh install must surface it, never silently adopt it.
-// preselect (IRIS_SETUP_EXISTING) short-circuits; headless defaults to reuse,
-// the one choice that stops nothing and destroys nothing.
+// preselect (IRIS_SETUP_EXISTING) short-circuits. Headless follows what the
+// machine holds: a live daemon defaults to restart, since an install whose
+// engine keeps serving the old binary installed nothing an operator can see;
+// state without a daemon defaults to reuse, which stops and destroys nothing.
 func selectExistingEngineAction(preselect string, running bool, out io.Writer) (existingEngineAction, error) {
 	switch preselect {
 	case "reuse":
@@ -202,21 +204,27 @@ func selectExistingEngineAction(preselect string, running bool, out io.Writer) (
 	case "wipe":
 		return existingWipe, nil
 	}
+	headless := existingReuse
+	if running {
+		headless = existingRestart
+	}
 	in, closer := ceremonyReviewInput()
 	if in == nil {
-		return existingReuse, nil
+		return headless, nil
 	}
 	if closer != nil {
 		defer closer.Close()
 	}
 	desc := "This machine already has engine data under ~/.iris."
-	opts := []huh.Option[string]{
-		huh.NewOption("Keep it: reuse the engine and its data", "reuse"),
-	}
+	var opts []huh.Option[string]
 	if running {
+		// Restart leads while a daemon is up: the running engine holds the old
+		// binary until it is relaunched, so it is the choice that makes the
+		// install real. Reuse stays available, one line down.
 		desc = "An engine is already running with data under ~/.iris."
 		opts = append(opts, huh.NewOption("Restart it: relaunch on the new binary (data kept)", "restart"))
 	}
+	opts = append(opts, huh.NewOption("Keep it: reuse the engine and its data", "reuse"))
 	opts = append(opts, huh.NewOption("Start clean: erase local engine state (data is lost)", "wipe"))
 	var choice string
 	form := newCeremonySetupForm(
@@ -232,10 +240,12 @@ func selectExistingEngineAction(preselect string, running bool, out io.Writer) (
 		form = form.WithOutput(out)
 	}
 	if err := form.Run(); err != nil {
+		// An aborted menu is not consent to anything: it falls back to the same
+		// answer a headless run would have taken.
 		if errors.Is(err, huh.ErrUserAborted) {
-			return existingReuse, nil
+			return headless, nil
 		}
-		return existingReuse, err
+		return headless, err
 	}
 	switch choice {
 	case "restart":

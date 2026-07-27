@@ -2,33 +2,32 @@ package tui
 
 import "testing"
 
-// TestSplitPane pins the detail pane's column arithmetic at every tier the
-// frame actually reaches, plus the boundaries either side of the split. The
-// widths come from the real geometry: a 150-column terminal leaves the pane
-// an interior of 105, a 100-column one 66, an 80-column one 46, and a
-// 60-column one 54 (the rail sheds below 70, handing its width back).
-func TestSplitPane(t *testing.T) {
-	t.Run("split-pane", func(t *testing.T) {
-		const ix = 3
+// TestSplitDetail pins the two panes' arithmetic at every tier the frame
+// reaches, plus the boundaries either side of the split. The widths are the
+// real geometry: 150 columns leave the detail pane 109, 100 leave 70, 80 leave
+// 50, 60 leave 58 (the rail sheds below 70, handing its width back).
+func TestSplitDetail(t *testing.T) {
+	t.Run("split-detail", func(t *testing.T) {
+		const px = 3
 		tests := []struct {
 			name      string
-			iw        int
+			w         int
 			wantSplit bool
 			wantLW    int
 			wantRW    int
 		}{
-			{name: "150x40 interior", iw: 105, wantSplit: true, wantLW: 30, wantRW: 72},
-			{name: "wide interior clamps the spec column at its ceiling", iw: 95, wantSplit: true, wantLW: 27, wantRW: 65},
-			{name: "100x30 interior clamps at the floor", iw: 66, wantSplit: true, wantLW: 22, wantRW: 41},
-			{name: "narrowest split", iw: 62, wantSplit: true, wantLW: 22, wantRW: 37},
-			{name: "one column short of a split stacks", iw: 61, wantSplit: false, wantLW: 61, wantRW: 61},
-			{name: "60x20 interior stacks", iw: 54, wantSplit: false, wantLW: 54, wantRW: 54},
-			{name: "80x24 interior stacks", iw: 46, wantSplit: false, wantLW: 46, wantRW: 46},
-			{name: "an interior narrower than the spec floor still stacks", iw: 20, wantSplit: false, wantLW: 20, wantRW: 20},
+			{name: "150x40 detail pane", w: 109, wantSplit: true, wantLW: 31, wantRW: 76},
+			{name: "a wide pane clamps the spec pane at its ceiling", w: 140, wantSplit: true, wantLW: 34, wantRW: 104},
+			{name: "100x30 clamps at the floor", w: 70, wantSplit: true, wantLW: 26, wantRW: 42},
+			{name: "narrowest split", w: 69, wantSplit: true, wantLW: 26, wantRW: 41},
+			{name: "one column short of a split keeps one pane", w: 68, wantSplit: false, wantLW: 68, wantRW: 68},
+			{name: "60x20 keeps one pane", w: 58, wantSplit: false, wantLW: 58, wantRW: 58},
+			{name: "80x24 keeps one pane", w: 50, wantSplit: false, wantLW: 50, wantRW: 50},
+			{name: "narrower than the spec floor still keeps one pane", w: 20, wantSplit: false, wantLW: 20, wantRW: 20},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				got := splitPane(ix, tt.iw)
+				got := splitDetail(px, tt.w)
 				if got.split != tt.wantSplit {
 					t.Fatalf("split = %v, want %v (%+v)", got.split, tt.wantSplit, got)
 				}
@@ -38,13 +37,16 @@ func TestSplitPane(t *testing.T) {
 				if !got.split {
 					return
 				}
-				// The two columns plus the gutter must account for every
-				// interior cell, and never overrun it.
-				if got.lw+3+got.rw != tt.iw {
-					t.Errorf("columns span %d cells, want the whole interior %d", got.lw+3+got.rw, tt.iw)
+				// The panes plus the gap must account for every cell, no more.
+				if got.lw+psPaneGap+got.rw != tt.w {
+					t.Errorf("panes span %d cells, want the whole width %d", got.lw+psPaneGap+got.rw, tt.w)
 				}
-				if got.rx != ix+got.lw+3 || got.lx != ix {
-					t.Errorf("column origins = lx %d rx %d, want lx %d and rx three past the spec column", got.lx, got.rx, ix)
+				if got.rx != px+got.lw+psPaneGap || got.lx != px {
+					t.Errorf("pane origins = lx %d rx %d, want lx %d and rx one gap past it", got.lx, got.rx, px)
+				}
+				// Both panes must still afford their content once chrome is paid.
+				if got.lw-psCardPad < psSpecMinW || got.rw-psCardPad < psRunsCoreW {
+					t.Errorf("panes cannot hold their content: lw %d rw %d", got.lw, got.rw)
 				}
 			})
 		}

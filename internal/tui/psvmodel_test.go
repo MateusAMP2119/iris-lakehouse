@@ -215,6 +215,89 @@ func TestPsModelUpdate(t *testing.T) {
 			}
 		})
 
+		t.Run("a split detail pane adds the runs stop to the cycle", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			renderPsFrame(m, 150, 40, false) // the frame reports the geometry back
+			if !m.detailSplit {
+				t.Fatal("150 columns must split the detail pane")
+			}
+			for _, want := range []psPane{psPaneStats, psPaneRuns, psPaneLanes} {
+				m.update(psKey{kind: psKeyTab})
+				if m.pane != want {
+					t.Fatalf("pane = %d, want %d", m.pane, want)
+				}
+			}
+			// Too narrow to split takes the run stop back with the pane.
+			m.pane = psPaneRuns
+			renderPsFrame(m, 80, 24, false)
+			if m.detailSplit || m.pane != psPaneStats {
+				t.Fatalf("narrowed frame: split %v pane %d", m.detailSplit, m.pane)
+			}
+		})
+
+		t.Run("arrows walk the split panes left and right", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			renderPsFrame(m, 150, 40, false)
+			m.update(psKey{kind: psKeyRight}) // rail -> spec pane
+			if m.pane != psPaneStats {
+				t.Fatalf("right from the rail: pane %d, want the spec pane", m.pane)
+			}
+			m.update(psKey{kind: psKeyRight}) // spec pane -> runs pane
+			if m.pane != psPaneRuns {
+				t.Fatalf("right from the spec pane: pane %d, want the runs pane", m.pane)
+			}
+			if m.selTable != "" {
+				t.Errorf("right must step across, not drill: table %q open", m.selTable)
+			}
+			m.update(psKey{kind: psKeyRight}) // nothing to the right of it
+			if m.pane != psPaneRuns {
+				t.Errorf("right past the last pane: pane %d", m.pane)
+			}
+			for _, want := range []psPane{psPaneStats, psPaneLanes} {
+				m.update(psKey{kind: psKeyLeft})
+				if m.pane != want {
+					t.Fatalf("left: pane %d, want %d", m.pane, want)
+				}
+			}
+			// Unsplit there is no pane to the right, so right drills as before.
+			renderPsFrame(m, 80, 24, false)
+			m.pane = psPaneStats
+			m.update(psKey{kind: psKeyRight})
+			if m.pane != psPaneStats {
+				t.Errorf("right on an unsplit pane: pane %d", m.pane)
+			}
+		})
+
+		t.Run("the split panes cursor their own lists", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			m.selectTree(psTreeRow{lane: "ingest", pipeline: "load_orders"})
+			renderPsFrame(m, 150, 40, false)
+
+			m.pane = psPaneRuns
+			m.update(key('j')) // 14 -> 9, the runs pane's own cursor
+			if m.tblRun != "9" {
+				t.Fatalf("run cursor = %q, want 9", m.tblRun)
+			}
+			m.update(psKey{kind: psKeyLeft}) // left retreats to the pane beside it
+			if m.pane != psPaneStats {
+				t.Fatalf("left in the runs pane: pane %d, want the spec pane", m.pane)
+			}
+
+			// The spec pane cursors OUTPUT, so it must not move the run cursor.
+			m.update(key('j'))
+			if m.tblRun != "9" {
+				t.Fatalf("spec card move touched the run cursor: %q", m.tblRun)
+			}
+			m.update(psKey{kind: psKeyEnter}) // the spec pane has nowhere to drill
+			if m.pane != psPaneStats || m.selTable != "" {
+				t.Fatalf("enter on the spec pane must be inert: pane %d table %q", m.pane, m.selTable)
+			}
+			m.update(psKey{kind: psKeyLeft})
+			if m.pane != psPaneLanes {
+				t.Fatalf("left in the spec pane must hand focus back, pane %d", m.pane)
+			}
+		})
+
 		t.Run("detail pane selects a run, left climbs back to the rail", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
 			m.update(key('j'))

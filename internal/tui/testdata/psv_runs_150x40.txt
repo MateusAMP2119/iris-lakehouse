@@ -1,40 +1,40 @@
  │ [IRIS LAKEHOUSE]   dev   LEADER  up 2h13m  pid 42                           CPU                          ░░░░░   3.2%  MEM  126.0MiB  1r  1q  0✖ │
 
- │ [CATALOG]                         │  │ [PIPELINE]                                                                                    load_orders │
- │ / type to filter                  │  │ OUTPUT                           ROWS / 1MIN · 7m                       2391 now · 1204 peak · 2427 in 7m │
- │ ingest        1r·1q · 3 pipelines │  │ table              demo.orders                                                                    ░░██░ ░ │
- │ ● extract                      1q │  │ rows captured             2391                                                                            │
- │ ○ hello_iris                      │  │ journal id                8110     RUN  WROTE  OP   STATE      ELAPSED  JOURNAL      TRIGGER              │
- │ ● load_orders                 run │  │                                    14   +1187  ins  running    2m14s    7921 → 8110  loop                 │
- │ reporting                   0r·0q │  │ DISPATCH                           9    +1204  ins  succeeded  3m2s     6800 → 7920  loop                 │
- │ ○ monthly                         │  │ state                  passing     6    -      -    ✖ dead     1m34s    -            replay               │
- │ solo                        0r·0q │  │ gate                      open                                                                            │
- │ ○ solo                            │  │   extract                 open                                                                            │
- │                                   │  │ lane           ingest · 3 of 3                                                                            │
- │                                   │  │ passes                      47                                                                            │
- │                                   │  │ wakes on           3 pipelines                                                                            │
- │                                   │  │                                                                                                           │
- │                                   │  │ LOAD                                                                                                      │
- │                                   │  │ cpu            ░▒▓▓▓     51.0%                                                                            │
- │                                   │  │ mem            ░████   24.0MiB                                                                            │
- │                                   │  │ time █▅               3m2s max                                                                            │
- │                                   │  │                                                                                                           │
- │                                   │  │ SCHEMA                · 7 cols                                                                            │
- │                                   │  │ · id                    bigint                                                                            │
- │                                   │  │ placed_at          timestamptz                                                                            │
- │                                   │  │ customer                  text                                                                            │
- │                                   │  │ total            numeric(12,2)                                                                            │
- │                                   │  │ currency            varchar(3)                                                                            │
- │                                   │  │ +2 more                                                                                                   │
- │                                   │  │                                                                                                           │
- │                                   │  │ OPS                                                                                                       │
- │                                   │  │ undo open                 1187                                                                            │
- │                                   │  │ promoted                  1204                                                                            │
- │                                   │  │ ins 2391                                                                                                  │
- │                                   │  │                                                                                                           │
- │                                   │  │ RETENTION                                                                                                 │
- │                                   │  │ oldest kept              run 6                                                                            │
- │ LANE · ingest       last 14:31:07 │  │ runs kept             3 / 1000                                                                            │
- │ demo.orders                 +1187 │  │ pack                orders-etl                                                                            │
- │ CPU               ░▒▓▓▓     51.0% │  │                                                                                                           │
- │ MEM               ░████   24.0MiB │  │                                                                                                  c cancel │
+ │ [CATALOG]                         │  │ [PIPELINE]      load_orders │  │ [EXECUTIONS]                                                             │
+ │ / type to filter                  │  │ OUTPUT                      │  │   RUN  WROTE  OP   STATE      ELAPSED  JOURNAL      TRIGGER              │
+ │ ingest        1r·1q · 3 pipelines │  │ table           demo.orders │  │   14   +1187  ins  running    2m14s    7921 → 8110  loop                 │
+ │ ● extract                      1q │  │ rows captured          2391 │  │   9    +1204  ins  succeeded  3m2s     6800 → 7920  loop                 │
+ │ ○ hello_iris                      │  │ journal id             8110 │  │   6    -      -    ✖ dead     1m34s    -            replay               │
+ │ ● load_orders                 run │  │                             │  │                                                                          │
+ │ reporting                   0r·0q │  │ DISPATCH                    │  │                                                                          │
+ │ ○ monthly                         │  │ state               passing │  │                                                                          │
+ │ solo                        0r·0q │  │ gate                   open │  │                                                                          │
+ │ ○ solo                            │  │   extract              open │  │                                                                          │
+ │                                   │  │ lane        ingest · 3 of 3 │  │                                                                          │
+ │                                   │  │ passes                   47 │  │                                                                          │
+ │                                   │  │ wakes on        3 pipelines │  │                                                                          │
+ │                                   │  │                             │  │                                                                          │
+ │                                   │  │ LOAD                        │  │                                                                          │
+ │                                   │  │ cpu         ░▒▓▓▓     51.0% │  │                                                                          │
+ │                                   │  │ mem         ░████   24.0MiB │  │                                                                          │
+ │                                   │  │ time █▅            3m2s max │  │                                                                          │
+ │                                   │  │                             │  │                                                                          │
+ │                                   │  │ SCHEMA             · 7 cols │  │                                                                          │
+ │                                   │  │ · id                 bigint │  │                                                                          │
+ │                                   │  │ placed_at       timestamptz │  │                                                                          │
+ │                                   │  │ customer               text │  │                                                                          │
+ │                                   │  │ total         numeric(12,2) │  │                                                                          │
+ │                                   │  │ currency         varchar(3) │  │                                                                          │
+ │                                   │  │ +2 more                     │  │                                                                          │
+ │                                   │  │                             │  │                                                                          │
+ │                                   │  │ OPS                         │  │                                                                          │
+ │                                   │  │ undo open              1187 │  │                                                                          │
+ │                                   │  │ promoted               1204 │  │                                                                          │
+ │                                   │  │ ins 2391                    │  │                                                                          │
+ │                                   │  │                             │  │                                                                          │
+ │                                   │  │ RETENTION                   │  │                                                                          │
+ │                                   │  │ oldest kept           run 6 │  │                                                                          │
+ │ LANE · ingest       last 14:31:07 │  │ runs kept          3 / 1000 │  │                                                                          │
+ │ demo.orders                 +1187 │  │ pack             orders-etl │  │                                                                          │
+ │ CPU               ░▒▓▓▓     51.0% │  │                             │  │                                                                          │
+ │ MEM               ░████   24.0MiB │  │                      → runs │  │                                                                 c cancel │

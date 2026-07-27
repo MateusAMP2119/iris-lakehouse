@@ -81,10 +81,10 @@ func TestPsClick(t *testing.T) {
 		if m.pane != psPaneStats {
 			t.Fatalf("detail pane click should focus the detail pane, pane=%d", m.pane)
 		}
-		// The rail opens on a pipeline, so the detail pane lists its runs.
+		// A run row focuses the runs pane, not the spec pane beside it.
 		m.click(tableRow.x, tableRow.y)
-		if m.pane != psPaneStats || m.tblRun != tableRow.name {
-			t.Fatalf("table row click should focus the pane and select %q, got pane=%d sel=%q",
+		if m.pane != psPaneRuns || m.tblRun != tableRow.name {
+			t.Fatalf("table row click should focus the runs pane and select %q, got pane=%d sel=%q",
 				tableRow.name, m.pane, m.tblRun)
 		}
 	})
