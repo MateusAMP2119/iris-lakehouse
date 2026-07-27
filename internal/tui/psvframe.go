@@ -430,7 +430,7 @@ func renderTableStats(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) 
 	if h < 6 {
 		return
 	}
-	bottomHint(b, x, y+h-1, w, "a all history · c cancel · :data provenance for the walk")
+	bottomHint(b, x, y+h-1, w, "c cancel · :data provenance for the walk")
 	if m.snap.Journal == nil {
 		b.text(x+2, y+1, ansiDim, clipCells("journal activity unavailable", w-4))
 		return
@@ -531,7 +531,7 @@ func renderPipelineStats(b *screenBuf, m *psModel, x, y, w, h int, colorless boo
 	if h < 6 {
 		return
 	}
-	bottomHint(b, x, y+h-1, w, "a all history · c cancel")
+	bottomHint(b, x, y+h-1, w, "c cancel")
 	renderDetailPane(b, m, sc, pipelineDetailRuns(m, sc), x, y, w, h, colorless)
 }
 

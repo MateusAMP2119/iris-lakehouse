@@ -474,7 +474,7 @@ type detailRun struct {
 // carrying the writes the journal recorded for it.
 func pipelineDetailRuns(m *psModel, sc specScope) []detailRun {
 	j := m.snap.Journal
-	runs := deriveRuns(m.snap, sc.pipeline, m.showAll)
+	runs := deriveRuns(m.snap, sc.pipeline, true)
 	out := make([]detailRun, 0, len(runs))
 	for _, r := range runs {
 		lo, hi := j.runRange(r.ID)
@@ -558,11 +558,7 @@ func renderRunsTable(b *screenBuf, m *psModel, rows []detailRun, x, y, w, h int,
 		return
 	}
 	if len(rows) == 0 {
-		hint := "no live runs · press a for full history"
-		if m.showAll {
-			hint = "no runs in history"
-		}
-		b.text(x, y, ansiDim, clipCells(hint, w))
+		b.text(x, y, ansiDim, clipCells("no runs recorded", w))
 		return
 	}
 	keys := make([]string, len(rows))

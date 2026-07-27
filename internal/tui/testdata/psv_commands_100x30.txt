@@ -4,11 +4,11 @@
  │ / ┌─ COMMANDS ───────────────────────┐ ┌─ ABOUT · catalog ─────────────────────────────────┐   │
  │ in│ ▸ catalog · Browse and install … │d│ Browse and install pipeline packs                 │   │
  │ ● │   search · Fuzzy-find lanes, pi… │ │                                                   │   │
- │ ○ │   all · Toggle full run history… │ │ Opens the catalog overlay over the dashboard:     │   │
- │ ● │   history · Toggle day-deep loa… │ │ pack list on the left, README and tree on the     │   │
- │ re│   cancel · Cancel the run under… │ │ right. Install and apply without leaving iris ps. │   │
- │ ○ │   help · Keyboard reference      │i│                                                   │   │
- │ so│   q · Quit iris ps               │ │ Usage  :catalog                                   │   │
+ │ ○ │   history · Toggle day-deep loa… │ │ Opens the catalog overlay over the dashboard:     │   │
+ │ ● │   cancel · Cancel the run under… │ │ pack list on the left, README and tree on the     │   │
+ │ re│   help · Keyboard reference      │ │ right. Install and apply without leaving iris ps. │   │
+ │ ○ │   q · Quit iris ps               │i│                                                   │   │
+ │ so│                                  │ │ Usage  :catalog                                   │   │
  │ ○ │                                  │ │ Keys   :catalog                                   │   │
  │   │                                  │d│ Group  navigate                                   │   │
  │   │                                  │ │                                                   │   │
@@ -26,5 +26,5 @@
  │ LA│ :█                                                                  tab · ↑↓ · ⏎ · esc │   │
  │ de└────────────────────────────────────────────────────────────────────────────────────────┘   │
  │ CPU    ░▒▓▓▓     51.0% │  │                        │                                           │
- │ MEM    ░████   24.0MiB │  └────────────────────────────────────────── a all history · c cancel ┘
+ │ MEM    ░████   24.0MiB │  └────────────────────────────────────────────────────────── c cancel ┘
   ↑↓ select · tab complete · ⏎ run · esc close

@@ -89,7 +89,6 @@ func TestDetailRunsAbsence(t *testing.T) {
 	t.Run("detail-runs-absence", func(t *testing.T) {
 		m := newPsModel(psvFixture(), "")
 		m.selectTree(psTreeRow{lane: "ingest", pipeline: "load_orders"})
-		m.showAll = true
 		rows := pipelineDetailRuns(m, pipelineSpecScope(m))
 		if len(rows) == 0 {
 			t.Fatal("load_orders must have recorded runs in the fixture")

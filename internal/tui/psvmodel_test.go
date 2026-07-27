@@ -204,10 +204,6 @@ func TestPsModelUpdate(t *testing.T) {
 			if m.pane != psPaneStats || m.selPipeline != "load_orders" {
 				t.Fatalf("tab: pane %d pipeline %q", m.pane, m.selPipeline)
 			}
-			m.update(key('a')) // whole history in
-			if !m.showAll {
-				t.Fatal("a did not widen the runs table")
-			}
 			m.update(key('j')) // 14 -> 9
 			if m.tblRun != "9" || m.cancelTarget() != "9" {
 				t.Fatalf("the run cursor is the selection: cursor %q target %q", m.tblRun, m.cancelTarget())
@@ -222,21 +218,20 @@ func TestPsModelUpdate(t *testing.T) {
 			}
 		})
 
-		t.Run("a is inert outside the statistics pane", func(t *testing.T) {
+		t.Run("the runs table lists the whole recorded history, no toggle", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
-			m.update(key('a')) // lanes pane
-			if m.showAll {
-				t.Fatal("a toggled history from the lanes pane")
+			m.selectTree(psTreeRow{lane: "ingest", pipeline: "load_orders"})
+			// load_orders has one running run and two terminal ones; all three
+			// are listed without any key being pressed.
+			if got := m.runKeys(); len(got) != 3 {
+				t.Fatalf("run keys = %v, want the whole history", got)
 			}
-			m.update(psKey{kind: psKeyTab}) // statistics pane, scoped to a pipeline
-			m.update(key('a'))
-			if !m.showAll {
-				t.Fatal("a did not widen the pipeline's runs table")
-			}
-			m.update(psKey{kind: psKeyTab}) // back to the rail
-			m.update(key('a'))
-			if !m.showAll {
-				t.Fatal("a outside the detail pane must not touch the toggle")
+			// Moving the rail cursor away and back keeps it that way -- there
+			// is no per-selection state left to reset.
+			m.selectTree(psTreeRow{lane: "ingest", pipeline: "extract"})
+			m.selectTree(psTreeRow{lane: "ingest", pipeline: "load_orders"})
+			if got := m.runKeys(); len(got) != 3 {
+				t.Fatalf("run keys after a cursor round trip = %v, want the whole history", got)
 			}
 		})
 

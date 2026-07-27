@@ -93,7 +93,6 @@ func TestPsFrameGoldens(t *testing.T) {
 			m.update(key('j'))              // extract -> hello_iris
 			m.update(key('j'))              // -> load_orders, the lane member with history
 			m.update(psKey{kind: psKeyTab}) // focus its runs table
-			m.update(key('a'))              // whole history
 			golden.Assert(t, []byte(framePlain(m, 150, 40)), "testdata/psv_runs_150x40.txt")
 		})
 

@@ -113,7 +113,6 @@ type psModel struct {
 	tblPipeline string
 	tblRun      string
 
-	showAll       bool // runs table: 'a' toggled the whole history in
 	confirmCancel bool // y/N cancel confirm armed over the run under the cursor
 	confirmBulk   bool // y/N bulk-cancel confirm armed over the marked pipelines
 
@@ -755,7 +754,7 @@ func (m *psModel) pipelineKeys() []string {
 
 // runKeys lists the runs table's row identities in display order.
 func (m *psModel) runKeys() []string {
-	runs := deriveRuns(m.snap, m.selPipeline, m.showAll)
+	runs := deriveRuns(m.snap, m.selPipeline, true)
 	keys := make([]string, len(runs))
 	for i, r := range runs {
 		keys[i] = r.ID
@@ -986,11 +985,6 @@ func (m *psModel) updateRune(r rune) {
 		m.openCommand()
 	case '?':
 		m.openCommandHelp()
-	case 'a':
-		if m.pane == psPaneStats && m.selPipeline != "" {
-			m.showAll = !m.showAll
-			m.tblRun = clampKey(m.tblRun, m.runKeys())
-		}
 	case 'h':
 		m.histView = !m.histView
 	case 't':
@@ -1102,13 +1096,12 @@ func (m *psModel) selectTable(lane, name string) {
 }
 
 // selectTree lands the rail cursor on a row, resetting the per-selection
-// state that follows it: the table cursors and the runs toggle.
+// state that follows it: the table cursors.
 func (m *psModel) selectTree(row psTreeRow) {
 	if row.lane == m.selLane && row.pipeline == m.selPipeline && row.table == m.selTable {
 		return
 	}
 	m.selLane, m.selPipeline, m.selTable = row.lane, row.pipeline, row.table
-	m.showAll = false
 	m.clampTable()
 }
 

@@ -48,11 +48,6 @@ var psCommandRoster = []psCmdSpec{
 		category: psCmdNav, keys: "/",
 	},
 	{
-		name: "all", usage: ":all", summary: "Toggle full run history in the table",
-		detail:   "When a pipeline's runs table is open, flip between live (queued + running) and the whole history. Same as the a key in that pane.",
-		category: psCmdWatch, keys: "a",
-	},
-	{
 		name: "history", usage: ":history", summary: "Toggle day-deep load strips",
 		detail:   "Swaps every heat strip between the live fine ring and the coarse per-bucket history the daemon keeps. Same as the h key.",
 		category: psCmdWatch, keys: "h",
@@ -253,20 +248,6 @@ func (m *psModel) runCommand(line string) {
 			m.search.query = []rune(arg)
 			m.search.rematch(m.snap)
 		}
-	case "all":
-		if m.selPipeline == "" {
-			m.commandErr("open a pipeline's runs first (⏎ on a pipeline)")
-			return
-		}
-		m.showAll = !m.showAll
-		m.tblRun = clampKey(m.tblRun, m.runKeys())
-		m.pane = psPaneStats
-		m.command = nil
-		if m.showAll {
-			m.note = "showing full run history"
-		} else {
-			m.note = "showing live runs only"
-		}
 	case "history":
 		m.histView = !m.histView
 		m.command = nil
@@ -364,7 +345,6 @@ func commandDetailBody(spec psCmdSpec, width int) []string {
 		lines = append(lines, "  q          quit")
 		lines = append(lines, "")
 		lines = append(lines, "CATALOG / STATISTICS")
-		lines = append(lines, "  a          all / live runs")
 		lines = append(lines, "  ␣          mark pipeline")
 		lines = append(lines, "  c          cancel marked runs")
 		return lines

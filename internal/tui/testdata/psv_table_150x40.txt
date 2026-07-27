@@ -37,4 +37,4 @@
  │ LANE · ingest       last 14:31:07 │  │                                │                                                                          │
  │ demo.orders                 +1187 │  │                                │                                                                          │
  │ CPU               ░▒▓▓▓     51.0% │  │                                │                                                                          │
- │ MEM               ░████   24.0MiB │  └───────────────────────────────────────────────── a all history · c cancel · :data provenance for the walk ┘
+ │ MEM               ░████   24.0MiB │  └───────────────────────────────────────────────────────────────── c cancel · :data provenance for the walk ┘

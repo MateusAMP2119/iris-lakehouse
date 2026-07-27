@@ -4,10 +4,10 @@
  │ / ord█        6 hidden │  │ OUTPUT                 │ ROWS / 1MIN · 7m                          │
  │ ing1r·1q · 3 pipelines │  │ table      demo.orders │                                   ░░██░ ░ │
  │ ● load_orders      run │  │ rows captur       2391 │                                           │
- │                        │  │ watermark         8110 │   RUN  WROTE  OP   STATE    ELAPSED       │
- │                        │  │                        │   14   +1187  ins  running  2m14s         │
- │                        │  │ LOAD                   │                                           │
- │                        │  │ cpu    ░▒▓▓▓     51.0% │                                           │
+ │                        │  │ watermark         8110 │   RUN  WROTE  OP   STATE      ELAPSED     │
+ │                        │  │                        │   14   +1187  ins  running    2m14s       │
+ │                        │  │ LOAD                   │   9    +1204  ins  succeeded  3m2s        │
+ │                        │  │ cpu    ░▒▓▓▓     51.0% │   6    -      -    ✖ dead     1m34s       │
  │                        │  │ mem    ░████   24.0MiB │                                           │
  │                        │  │ time █▅       3m2s max │                                           │
  │                        │  │                        │                                           │
@@ -27,4 +27,4 @@
  │ LANE · inlast 14:31:07 │  │ RETENTION              │                                           │
  │ demo.orders      +1187 │  │ oldest kept      run 6 │                                           │
  │ CPU    ░▒▓▓▓     51.0% │  │ runs kept     3 / 1000 │                                           │
- │ MEM    ░████   24.0MiB │  └────────────────────────────────────────── a all history · c cancel ┘
+ │ MEM    ░████   24.0MiB │  └────────────────────────────────────────────────────────── c cancel ┘
