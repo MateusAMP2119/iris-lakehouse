@@ -12,7 +12,8 @@ import (
 // captured output from the daemon (GET /runs/{id}/logs) and streams the plain
 // text to stdout -- raw process output, never an envelope. A framed capture (a
 // declared logs block) renders naturalized by default; --log and --frames
-// filter it to one stream, --tagged streams the raw tagged file. Transport
+// filter it to one stream, --level to a minimum application-log level, and
+// --tagged streams the raw tagged file. Transport
 // failure is no-daemon (exit 3) with start guidance; a run with no captured
 // output on the answering node is operation-failed (exit 4) with the daemon's
 // explanation.
@@ -39,6 +40,16 @@ func (a *app) runLogs() runE {
 			query = "?stream=frames"
 		case tagged:
 			query = "?format=tagged"
+		}
+		if level, _ := cmd.Flags().GetString("level"); level != "" {
+			if tagged {
+				return &fault{code: exitOpFailed, codeStr: "flags", message: "run logs: --level does not combine with --tagged (the raw file is unfiltered)"}
+			}
+			sep := "?"
+			if query != "" {
+				sep = "&"
+			}
+			query += sep + "level=" + level
 		}
 		settings := a.resolveTarget(cmd)
 		client, base, overTCP := a.daemonHTTPClient(settings)

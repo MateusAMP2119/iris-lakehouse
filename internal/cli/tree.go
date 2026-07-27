@@ -89,6 +89,7 @@ func (a *app) newRootCommand() *cobra.Command {
 	pf.String("token", "", "PAT presented to a remote engine over TCP")
 
 	root.AddCommand(
+		a.applyCmd(),
 		a.declareCmd(),
 		a.pipelineCmd(),
 		a.runCmd(),
@@ -102,6 +103,8 @@ func (a *app) newRootCommand() *cobra.Command {
 		a.pluginCmd(),
 		a.catalogCmd(),
 		a.updateCmd(),
+		a.setupCmd(),
+		a.ceremonyCmd(),
 		a.uninstallCmd(),
 	)
 	return root
@@ -252,6 +255,7 @@ func (a *app) runCmd() *cobra.Command {
 	logs.Flags().Bool("log", false, "framed captures: only the pipeline's log lines")
 	logs.Flags().Bool("frames", false, "framed captures: only the protocol transcript")
 	logs.Flags().Bool("tagged", false, "framed captures: the raw tagged file, unrendered")
+	logs.Flags().String("level", "", "minimum log level to show (debug|info|warn|error)")
 	cancel := &cobra.Command{
 		Use: "cancel <run>", Short: "Cancel one running run (kills its process group)",
 		Args: cobra.ExactArgs(1), RunE: a.runCancel(),
@@ -307,7 +311,7 @@ func (a *app) engineCmd() *cobra.Command {
 	start.Flags().String("tls-key", "", "TLS key for the TCP listener")
 
 	stop := &cobra.Command{
-		Use: "stop", Short: "Stop a detached daemon (graceful SIGTERM)",
+		Use: "stop", Short: "Stop every local iris engine (pidfile + orphans)",
 		Args: cobra.NoArgs, RunE: a.engineStop(),
 	}
 	install := &cobra.Command{

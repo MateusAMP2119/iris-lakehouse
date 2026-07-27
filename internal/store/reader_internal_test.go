@@ -97,3 +97,67 @@ func TestReaderNoBusyRetry(t *testing.T) {
 		})
 	})
 }
+
+// runRows is a poolRows fake serving one prepared run row, assigning
+// through the destination pointers the reader hands Scan.
+type runRows struct {
+	rows []func(dest ...any) error
+	at   int
+}
+
+func (r *runRows) Next() bool { return r.at < len(r.rows) }
+func (r *runRows) Scan(dest ...any) error {
+	err := r.rows[r.at](dest...)
+	r.at++
+	return err
+}
+func (r *runRows) Err() error { return nil }
+func (r *runRows) Close()     {}
+
+// runRowsPool serves prepared rows to the reader.
+type runRowsPool struct{ rows *runRows }
+
+func (p *runRowsPool) query(context.Context, string, ...any) (poolRows, error) {
+	return p.rows, nil
+}
+
+// TestReaderScansCause proves runs.cause reaches Run.Cause. The column feeds
+// the ps readout's TRIGGER, and the projection is positional -- a column added
+// out of step with the scan would silently shift every field after it.
+func TestReaderScansCause(t *testing.T) {
+	t.Run("reader-scans-cause", func(t *testing.T) {
+		for _, want := range []RunCause{CauseManual, CauseLoop, CauseReplay, CausePropagated} {
+			t.Run(string(want), func(t *testing.T) {
+				pool := &runRowsPool{rows: &runRows{rows: []func(...any) error{
+					func(dest ...any) error {
+						if len(dest) != 9 {
+							t.Fatalf("scan takes %d destinations, want 9 (the projection changed)", len(dest))
+						}
+						*(dest[0].(*string)) = "14"
+						*(dest[1].(*string)) = "load_orders"
+						*(dest[2].(*RunState)) = RunRunning
+						*(dest[3].(*int64)) = 0
+						*(dest[4].(*int64)) = 991
+						*(dest[5].(*string)) = "ingest"
+						*(dest[6].(*string)) = string(want)
+						return nil
+					},
+				}}}
+				runs, err := newPgxReader(pool).Runs(context.Background(), RunFilter{})
+				if err != nil {
+					t.Fatalf("Runs error = %v", err)
+				}
+				if len(runs) != 1 {
+					t.Fatalf("read %d runs, want 1", len(runs))
+				}
+				if runs[0].Cause != want {
+					t.Errorf("Cause = %q, want %q", runs[0].Cause, want)
+				}
+				// The fields either side of cause must not have shifted.
+				if runs[0].Lane != "ingest" || runs[0].Handle != 991 {
+					t.Errorf("positional scan drifted: lane %q handle %d", runs[0].Lane, runs[0].Handle)
+				}
+			})
+		}
+	})
+}

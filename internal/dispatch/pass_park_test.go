@@ -202,7 +202,7 @@ func TestQueuedManualPickupAtMemberTurn(t *testing.T) {
 		)
 
 		lane := dispatch.Lane{Name: "etl", Pipelines: []string{"a", "b"}}
-		if err := loop.RunLanePass(context.Background(), lane); err != nil {
+		if _, err := loop.RunLanePass(context.Background(), lane); err != nil {
 			t.Fatalf("RunLanePass returned %v, want nil", err)
 		}
 

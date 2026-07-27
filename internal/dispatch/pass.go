@@ -99,6 +99,13 @@ type PassReport struct {
 	// Poisoned are the pipelines whose gate resolved poisoned this pass (deferred to
 	// post-pass failure propagation), in composer order.
 	Poisoned []PoisonedMember
+	// Quiet are the pipelines whose turn ran and ended quiet this pass (a
+	// successful turn that recorded nothing), in composer order. A quiet turn
+	// is a successful run, and success never parks: the loop re-passes the
+	// lane immediately -- the script paces itself inside its turn. Only a
+	// dead-letter parks (the gate's no-retry brake), and a closed gate waits
+	// on the watermark (gating, not parking).
+	Quiet []string
 }
 
 // PoisonedMember is one pipeline whose gate poisoned in a pass: its name and the gate
@@ -213,6 +220,20 @@ type Loop struct {
 	// completes: an observability hook the daemon and tests synchronize on. It never
 	// influences dispatch.
 	onPass func(PassReport)
+
+	// state, when set, is the leader's live dispatch state (dispatchstate.go): the
+	// loop publishes each reconcile's lane park/pass view into it and records every
+	// member's gate resolution as the pass evaluates it. Read-only observability --
+	// it never influences dispatch, and a nil state records nothing.
+	state *State
+
+	// background, when set, runs beside the loop for its lifetime: spawned by
+	// Run, cancelled with its ctx, and JOINED before Run returns, so a demoted
+	// leader never leaves the previous term's companion racing the next one's.
+	// The contract is prompt exit on cancellation (any I/O it holds must ride
+	// its ctx). The daemon uses it for the declared-source watcher: fresh
+	// external bytes land as watermark bumps like any other cause.
+	background func(context.Context)
 }
 
 // LoopOption configures a Loop at construction.
@@ -235,6 +256,20 @@ func WithOnPass(hook func(PassReport)) LoopOption {
 // Absent it, every walk lane re-spawns at each pass boundary.
 func WithEvents(e *Events) LoopOption {
 	return func(l *Loop) { l.events = e }
+}
+
+// WithState sets the live dispatch state the loop publishes its lane
+// park/pass view and per-member gate resolutions into. It is observability only:
+// absent it (or nil), the loop records nothing and behaves identically.
+func WithState(s *State) LoopOption {
+	return func(l *Loop) { l.state = s }
+}
+
+// WithBackground sets a companion the loop runs for its lifetime: Run spawns
+// it with its own ctx and joins it before returning. The daemon wires the
+// declared-source watcher here.
+func WithBackground(fn func(context.Context)) LoopOption {
+	return func(l *Loop) { l.background = fn }
 }
 
 // WithQueuedStarter sets the queued-manual pickup seam: at each member's turn the
@@ -286,6 +321,11 @@ func (l *Loop) runLanePass(ctx context.Context, lane Lane) (PassReport, error) {
 		if err != nil {
 			return report, fmt.Errorf("dispatch: lane %q gate %q: %w", lane.Name, pipeline, err)
 		}
+		// Record what the gate said before acting on it: the readout answers
+		// "why is this not running?" with the pass's own verdict, so it costs no
+		// gate query of its own. A failed evaluation records nothing -- the last
+		// good verdict is more honest than a blank.
+		l.state.RecordGate(pipeline, d)
 		switch {
 		case d.Poisoned:
 			// An awaited upstream dead-lettered: no run starts, and the member is
@@ -306,6 +346,8 @@ func (l *Loop) runLanePass(ctx context.Context, lane Lane) (PassReport, error) {
 			}
 			if outcome != RunQuiet {
 				report.Started = append(report.Started, pipeline)
+			} else {
+				report.Quiet = append(report.Quiet, pipeline)
 			}
 		default:
 			// Closed gate: nothing new to consume, or an unmet dependency. No run row
@@ -320,17 +362,18 @@ func (l *Loop) runLanePass(ctx context.Context, lane Lane) (PassReport, error) {
 // mid-pass). A pass cut short by ctx cancellation runs no post-pass work and returns the
 // cancellation, so the loop exits promptly on shutdown. Any in-flight runs the pass
 // started are left to finish (the engine never kills a run unilaterally -- clock
-// doctrine).
-func (l *Loop) RunLanePass(ctx context.Context, lane Lane) error {
+// doctrine). The completed report returns beside the error so the loop reads
+// the pass's quiet set (a quiet turn re-passes rather than parking).
+func (l *Loop) RunLanePass(ctx context.Context, lane Lane) (PassReport, error) {
 	report, err := l.runLanePass(ctx, lane)
 	if err != nil {
-		return err
+		return report, err
 	}
 	// POST-PASS: dispatcher-owned bookkeeping runs opportunistically now that every run
 	// of this pass has reached a terminal state -- never interleaved mid-pass.
 	if l.post != nil {
 		if err := l.post.AfterPass(ctx, report); err != nil {
-			return fmt.Errorf("dispatch: lane %q post-pass: %w", lane.Name, err)
+			return report, fmt.Errorf("dispatch: lane %q post-pass: %w", lane.Name, err)
 		}
 	}
 	// Best-effort straggler guard: check-then-act, not a term fence -- the pass
@@ -338,11 +381,31 @@ func (l *Loop) RunLanePass(ctx context.Context, lane Lane) error {
 	if l.onPass != nil && ctx.Err() == nil {
 		l.onPass(report)
 	}
-	return nil
+	return report, nil
 }
 
-// laneDone signals that a lane's perpetual-loop goroutine finished one pass.
-type laneDone struct{ lane string }
+// laneDone signals that a lane's perpetual-loop goroutine finished one pass;
+// quiet reports the pass ran at least one quiet turn, so the lane re-passes
+// immediately instead of parking (success never parks).
+type laneDone struct {
+	lane  string
+	quiet bool
+}
+
+// memberInFlight reports whether any of pipelines is already a member of a
+// running pass, whatever lane name that pass runs under.
+func memberInFlight(running map[string][]string, pipelines []string) bool {
+	for _, members := range running {
+		for _, m := range members {
+			for _, p := range pipelines {
+				if m == p {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
 
 // Run drives the perpetual dispatch loop until ctx is cancelled: one goroutine per
 // lane, each running that lane's pass, distinct lanes in parallel with no engine cap.
@@ -356,12 +419,14 @@ type laneDone struct{ lane string }
 // dispatching -- a hung or failed run is isolated, never globally fatal, and no
 // engine timer frees it (clock doctrine).
 //
-// With an Events watermark wired, a lane is eligible only when the sequence advanced
-// since its last pass STARTED (or it has never passed this term). A pass that starts
-// runs advances the watermark through its own run records, so it re-passes
-// immediately: roots re-run back to back indefinitely, the perpetual for-loop. A
-// pass that starts nothing writes nothing, so its lane parks and costs nothing -- no
-// walk read, no gate query, no run -- until a cause lands. Every engine-visible
+// With an Events watermark wired, a lane is eligible only when a cause it cares
+// about landed since its last pass STARTED (or it has never passed this term): its
+// members' and their upstreams' labeled causes, or any unlabeled (global) cause. A
+// pass that starts runs advances its own members' marks through its run records, so
+// it re-passes immediately: roots re-run back to back indefinitely, the perpetual
+// for-loop. A pass that starts nothing writes nothing, so its lane parks and costs
+// nothing -- no walk read, no gate query, no run -- and an unrelated pipeline's
+// cause leaves it parked, until a cause it consumes lands. Every engine-visible
 // cause bumps the watermark through the single dispatcher, so a parked lane wakes
 // exactly when one lands. Without a watermark every walk lane is always eligible
 // (the walk-only wiring tests).
@@ -372,12 +437,30 @@ type laneDone struct{ lane string }
 // their run seam and drain themselves -- so shutdown is not delayed by a
 // still-running (or hung) lane.
 func (l *Loop) Run(ctx context.Context) error {
-	running := map[string]bool{}
-	// lastSeq is each lane's watermark sequence at its last pass START (this term).
+	if l.background != nil {
+		bgDone := make(chan struct{})
+		go func() {
+			defer close(bgDone)
+			l.background(ctx)
+		}()
+		defer func() { <-bgDone }()
+	}
+	// running maps each in-flight pass's lane name to its member pipelines. The
+	// members matter: a pipeline's lane identity can change between walk reads
+	// (mid-apply, a pipeline is its own anonymous lane until the composer row
+	// lands), and a pass spawned under the new name would drive the same
+	// resident session as the still-running pass under the old name --
+	// interleaving the turn protocol and dead-lettering healthy turns.
+	running := map[string][]string{}
+	// lastSeq is each lane's care-set watermark mark at its last pass START (this term).
 	// Recording the sequence before the pass reads the walk means a bump landing
 	// mid-pass re-opens eligibility at the pass boundary: a change is never missed,
 	// at worst one extra (empty, cheap) pass runs.
 	lastSeq := map[string]uint64{}
+	// quietRerun marks lanes whose last pass ran a quiet turn: a quiet turn is a
+	// successful run and success never parks, so the lane re-passes once
+	// regardless of the watermark -- the script paces itself inside its turn.
+	quietRerun := map[string]bool{}
 	done := make(chan laneDone)
 
 	// wake is the watermark's coalescing channel, nil (never ready) when no
@@ -402,27 +485,54 @@ func (l *Loop) Run(ctx context.Context) error {
 		// pass finishes. A parked lane (watermark unchanged since its last pass
 		// started) is skipped without a gate query or a run.
 		walkNames := make(map[string]bool, len(lanes))
+		// parked records which lanes this reconcile skipped on the watermark, for
+		// the observability publish below. It is written only where the loop
+		// already decided; it never participates in the decision.
+		parked := make(map[string]bool, len(lanes))
 		for _, lane := range lanes {
 			walkNames[lane.Name] = true
-			if running[lane.Name] {
+			if _, ok := running[lane.Name]; ok {
+				continue
+			}
+			if memberInFlight(running, lane.Pipelines) {
+				// A member is already being driven under another lane identity
+				// (the lane renamed or recomposed mid-flight). Skip without
+				// recording a park sequence, so the lane stays eligible and
+				// spawns at the reconcile boundary where the overlapping pass
+				// ends -- never two passes over one pipeline's session.
 				continue
 			}
 			if l.events != nil {
-				if seq, passed := lastSeq[lane.Name]; passed && seq == l.events.Seq() {
-					continue // parked: no cause since this lane's last pass started
+				// Eligibility reads only the marks this lane cares about (its
+				// members and their upstreams), so an unrelated pipeline's cause
+				// leaves it parked at zero cost; an unlabeled (global) cause
+				// moves every lane's mark. A lane whose last pass ran a quiet
+				// turn re-passes regardless: quiet is success, success never
+				// parks -- only a dead-letter does (the gate's no-retry brake).
+				cur := l.events.CareSeq(lane.Cares)
+				if seq, passed := lastSeq[lane.Name]; passed && seq == cur && !quietRerun[lane.Name] {
+					parked[lane.Name] = true
+					continue // parked: no cause this lane consumes since its last pass started
 				}
-				lastSeq[lane.Name] = l.events.Seq()
+				delete(quietRerun, lane.Name)
+				lastSeq[lane.Name] = cur
 			}
-			running[lane.Name] = true
+			running[lane.Name] = append([]string(nil), lane.Pipelines...)
 			l.spawnLanePass(ctx, lane, done)
 		}
 		// Forget the park state of lanes the walk no longer names, so a removed
 		// pipeline's entry does not accumulate and a re-added lane passes fresh.
 		for name := range lastSeq {
-			if !walkNames[name] && !running[name] {
+			if _, alive := running[name]; !walkNames[name] && !alive {
 				delete(lastSeq, name)
+				delete(quietRerun, name)
 			}
 		}
+		// Publish this reconcile's lane view: the walk the loop just acted on,
+		// each lane marked with what the loop decided about it. Observability
+		// only -- it reads the same locals the decisions above wrote, so it can
+		// never disagree with them, and a nil state makes it a no-op.
+		l.publishLanes(lanes, running, parked)
 
 		// No lane running: idle. Block until the watermark advances (a cause landed)
 		// or shutdown -- nothing else, no timer (clock doctrine: events initiate
@@ -447,11 +557,36 @@ func (l *Loop) Run(ctx context.Context) error {
 		select {
 		case d := <-done:
 			delete(running, d.lane)
+			if d.quiet {
+				quietRerun[d.lane] = true
+			}
 		case <-wake:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
+}
+
+// publishLanes records the reconcile's lane view into the live dispatch state: each
+// walk lane with its composer-ordered members, its care set, and whether the loop
+// left it passing or parked. A lane that is neither is eligible and about to pass.
+// It is a no-op without a state wired.
+func (l *Loop) publishLanes(lanes []Lane, running map[string][]string, parked map[string]bool) {
+	if l.state == nil {
+		return
+	}
+	view := make([]LaneDispatch, 0, len(lanes))
+	for _, lane := range lanes {
+		_, passing := running[lane.Name]
+		view = append(view, LaneDispatch{
+			Lane:    lane.Name,
+			Members: lane.Pipelines,
+			Cares:   lane.Cares,
+			Passing: passing,
+			Parked:  parked[lane.Name],
+		})
+	}
+	l.state.ObserveLanes(view)
 }
 
 // spawnLanePass launches one lane's pass on its own goroutine (one goroutine per lane)
@@ -461,11 +596,12 @@ func (l *Loop) Run(ctx context.Context) error {
 // never blocks forever after Run has stopped receiving.
 func (l *Loop) spawnLanePass(ctx context.Context, lane Lane, done chan<- laneDone) {
 	go func() {
-		if err := l.RunLanePass(ctx, lane); err != nil && ctx.Err() == nil {
+		report, err := l.RunLanePass(ctx, lane)
+		if err != nil && ctx.Err() == nil {
 			l.logger.Warn("iris lane pass error", "lane", lane.Name, "err", err)
 		}
 		select {
-		case done <- laneDone{lane: lane.Name}:
+		case done <- laneDone{lane: lane.Name, quiet: err == nil && len(report.Quiet) > 0}:
 		case <-ctx.Done():
 		}
 	}()

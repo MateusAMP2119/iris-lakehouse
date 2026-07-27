@@ -203,11 +203,71 @@ func TestRemotePackURLGuards(t *testing.T) {
 	}
 }
 
+// TestRemoteFilePack proves the plain-file (format 2) pack fetch: per-file sha
+// verify, dir-prefixed fetch paths, README capture, and the mismatch refusal.
+func TestRemoteFilePack(t *testing.T) {
+	decl := []byte("kind: pipeline\n")
+	readme := []byte("# Demo pack\n")
+	e := IndexEntry{Name: "demo", Dir: "packs/demo", Files: []IndexFile{
+		{Path: "pipelines/demo/iris-declare.yaml", SHA256: sha256Hex(decl)},
+		{Path: ReadmeName, SHA256: sha256Hex(readme)},
+	}}
+	r := catalogServer(t, []IndexEntry{e}, map[string][]byte{
+		"packs/demo/pipelines/demo/iris-declare.yaml": decl,
+		"packs/demo/" + ReadmeName:                    readme,
+	})
+
+	p, err := r.Pack(context.Background(), e)
+	if err != nil {
+		t.Fatalf("Pack: %v", err)
+	}
+	if p.README != string(readme) {
+		t.Errorf("README = %q, want the root README.md content", p.README)
+	}
+	if len(p.Files) != 1 || p.Files[0].Path != "pipelines/demo/iris-declare.yaml" || string(p.Files[0].Data) != string(decl) {
+		t.Errorf("Files = %+v, want the declare file at its pack-relative path", p.Files)
+	}
+
+	t.Run("sha-mismatch-refused", func(t *testing.T) {
+		bad := e
+		bad.Files = []IndexFile{{Path: "pipelines/demo/iris-declare.yaml", SHA256: sha256Hex([]byte("other"))}}
+		if _, err := r.Pack(context.Background(), bad); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
+			t.Fatalf("Pack = %v, want the per-file digest refusal", err)
+		}
+	})
+	t.Run("readme-only-refused", func(t *testing.T) {
+		only := e
+		only.Files = e.Files[1:]
+		if _, err := r.Pack(context.Background(), only); err == nil || !strings.Contains(err.Error(), "no files") {
+			t.Fatalf("Pack = %v, want the readme-only refusal", err)
+		}
+	})
+	t.Run("scheme-escape-refused", func(t *testing.T) {
+		esc := e
+		esc.Files = []IndexFile{{Path: "a", SHA256: "ab"}}
+		esc.Dir = ""
+		guarded := Remote{URL: "https://catalog.example/catalog.json", Fetch: func(context.Context, string) ([]byte, error) {
+			t.Fatal("fetch reached on a guarded entry")
+			return nil, nil
+		}}
+		esc.Files[0].Path = "ftp://evil.example/a"
+		if _, err := guarded.Pack(context.Background(), esc); err == nil {
+			t.Fatal("Pack: nil error, want a refusal")
+		}
+	})
+}
+
 // TestResolverList proves source order, shadowing, and the failed-catalog partial listing.
 func TestResolverList(t *testing.T) {
 	alphaA := demoTarball(t)
-	a := catalogServer(t, []IndexEntry{demoEntry(StarterPack, alphaA), demoEntry("alpha", alphaA)}, nil)
-	b := catalogServer(t, []IndexEntry{demoEntry("alpha", alphaA), demoEntry("beta", alphaA)}, nil)
+	a := catalogServer(t, []IndexEntry{demoEntry(StarterPack, alphaA), demoEntry("alpha", alphaA)}, map[string][]byte{
+		"packs/" + StarterPack + ".tar.gz": alphaA,
+		"packs/alpha.tar.gz":               alphaA,
+	})
+	b := catalogServer(t, []IndexEntry{demoEntry("alpha", alphaA), demoEntry("beta", alphaA)}, map[string][]byte{
+		"packs/alpha.tar.gz": alphaA,
+		"packs/beta.tar.gz":  alphaA,
+	})
 
 	t.Run("shadowing order", func(t *testing.T) {
 		out, err := Resolver{Catalogs: []Remote{a, b}}.List(context.Background())
@@ -223,9 +283,7 @@ func TestResolverList(t *testing.T) {
 			got = append(got, row{l.Name, l.Source, l.Shadowed})
 		}
 		want := []row{
-			{StarterPack, SourceEmbedded, false},
-			{"dlq-demo", SourceEmbedded, false},
-			{StarterPack, a.URL, true},
+			{StarterPack, a.URL, false},
 			{"alpha", a.URL, false},
 			{"alpha", b.URL, true},
 			{"beta", b.URL, false},
@@ -254,15 +312,25 @@ func TestResolverList(t *testing.T) {
 		for _, l := range out {
 			names[l.Name+"@"+l.Source] = l.Source
 		}
-		for _, want := range []string{StarterPack + "@" + SourceEmbedded, "dlq-demo@" + SourceEmbedded, "alpha@" + b.URL, "beta@" + b.URL} {
+		for _, want := range []string{"alpha@" + b.URL, "beta@" + b.URL} {
 			if _, ok := names[want]; !ok {
 				t.Errorf("partial listing lacks %s: %v", want, names)
 			}
 		}
 	})
+
+	t.Run("empty catalogs list is empty", func(t *testing.T) {
+		out, err := Resolver{}.List(context.Background())
+		if err != nil {
+			t.Fatalf("List empty: %v", err)
+		}
+		if len(out) != 0 {
+			t.Fatalf("List empty = %v, want none", out)
+		}
+	})
 }
 
-// TestResolverResolve proves embedded-first ownership, remote sha-verified wins, and clean not-found.
+// TestResolverResolve proves first-catalog ownership, remote sha-verified wins, and clean not-found.
 func TestResolverResolve(t *testing.T) {
 	winner := packTarGz(t, []tarEntry{regEntry("pipelines/alpha/iris-declare.yaml", "first catalog\n")})
 	loser := packTarGz(t, []tarEntry{regEntry("pipelines/alpha/iris-declare.yaml", "second catalog\n")})
@@ -270,21 +338,10 @@ func TestResolverResolve(t *testing.T) {
 	b := catalogServer(t, []IndexEntry{demoEntry("alpha", loser)}, map[string][]byte{"packs/alpha.tar.gz": loser})
 	res := Resolver{Catalogs: []Remote{a, b}}
 
-	t.Run("embedded wins without fetching", func(t *testing.T) {
-		var fetched bool
-		spy := Remote{URL: "https://catalog.example/catalog.json", Fetch: func(context.Context, string) ([]byte, error) {
-			fetched = true
-			return nil, errors.New("unreachable")
-		}}
-		p, ok, err := Resolver{Catalogs: []Remote{spy}}.Resolve(context.Background(), StarterPack)
-		if err != nil || !ok {
-			t.Fatalf("Resolve(%s) = ok=%v, err=%v", StarterPack, ok, err)
-		}
-		if p.Source != SourceEmbedded {
-			t.Errorf("Source = %q, want %q", p.Source, SourceEmbedded)
-		}
-		if fetched {
-			t.Error("remote fetched although the embedded set owns the name")
+	t.Run("unknown name with empty catalogs is clean not-found", func(t *testing.T) {
+		p, ok, err := Resolver{}.Resolve(context.Background(), StarterPack)
+		if err != nil || ok || p.Name != "" {
+			t.Fatalf("Resolve(%s) with no catalogs = ok=%v err=%v p=%+v", StarterPack, ok, err, p)
 		}
 	})
 

@@ -10,11 +10,9 @@ import (
 	"os"
 	osexec "os/exec"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
-	"github.com/MateusAMP2119/iris-lakehouse/internal/catalog"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/config"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/dispatch"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/exec"
@@ -214,14 +212,16 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	role := api.NewRoleState()
 	control := newControlPlane()
 	// The catalog plane serves POST /catalog/install once this daemon leads (#217).
-	// The resolver spans the embedded packs plus the iris.toml catalogs list (#220);
-	// the client names packs, never URLs, so all catalog egress is daemon-side.
+	// The resolver spans the iris.toml catalogs list (#220); the client names packs,
+	// never URLs, so all catalog egress is daemon-side.
 	catalogCtl := newCatalogPlane()
-	catalogRemotes := make([]catalog.Remote, 0, len(s.Catalogs))
-	for _, u := range s.Catalogs {
-		catalogRemotes = append(catalogRemotes, catalog.Remote{URL: u})
-	}
-	catalogResolver := catalog.Resolver{Catalogs: catalogRemotes}
+	// The live source set behind every catalog plane: iris.toml's catalogs list,
+	// growable at runtime through POST /catalog/sources with the grown list
+	// persisted back to iris.toml.
+	catalogSrc := newCatalogSources(s.Catalogs, func(urls []string) error {
+		return config.UpsertTOML(filepath.Join(home, config.FileName), nil, map[string][]string{"catalogs": urls})
+	}, logger)
+	catalogResolver := catalogSrc.resolver
 	// The pipeline plane serves iris pipeline list from the reader pool (any node) and,
 	// once this daemon leads, POST /pipeline/run through the single writer and exec seam.
 	pipelines := newPipelinePlane(client.PipelineLister(), logger)
@@ -236,6 +236,9 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	// pg.WalkProvenance. Archived-partition stamps resolve via the object store.
 	objects := store.NewObjectStore(s.ObjectsPath)
 	prov := NewProvenancePlane(client.Reader(), data, objects, client.CheckpointChainReader(), logger)
+	// The journal-activity plane (#238 phase 3): the same data client answers
+	// the write-activity aggregate behind GET /journal/activity.
+	jactivity := NewJournalActivityPlane(data, client.Reader(), logger)
 
 	// The wipe and promote planes serve POST /workload/wipe and POST
 	// /pipeline/promote once this daemon leads: the journal-driven revert over
@@ -260,6 +263,10 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	residents := newResidentRuns()
 	lanes := newLanePlane(logger, inflight, residents, client.ManualReader())
 	passCounter := dispatch.NewPassCounter()
+	// The live dispatch state: the lane loop publishes its park/pass view and its
+	// gate verdicts here, and the ps plane reads them. Leader-held runtime memory
+	// like the pass counter beside it, reset on each leadership term.
+	dispatchState := dispatch.NewState()
 
 	// The ps plane serves GET /ps (and `iris ps`) on any node: the run snapshot
 	// over the reader pool composed with the live leadership role and the load
@@ -281,11 +288,18 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	} else {
 		loadStore = data
 	}
-	loads := newLoadHistory(client.Reader(), ManagedPostmasterPID(s), loadStore, logger)
+	// The rows sampler shares the collector's tick and its run snapshot: one
+	// journal id-delta per tick, attributed to the writing run's pipeline.
+	var rowsRead journalRowsReader
+	if data != nil {
+		rowsRead = data
+	}
+	loads := newLoadHistory(client.Reader(), ManagedPostmasterPID(s), loadStore, newRowsSampler(rowsRead, logger), logger)
 	go loads.run(ctx)
 	turnTally := newTurnCounters()
 	runLogs := NewRunLogWriter(s)
-	psp := NewPsPlane(role, client.Reader(), loads, turnTally, runLogs, logger)
+	sources := newSourceWatcher(logger)
+	psp := NewPsPlane(role, client.Reader(), loads, turnTally, runLogs, sources, dispatchState, passCounter, s.Retain, logger)
 
 	// The dead-letter plane serves GET /dead_letters/{run}/impact (the blast readout
 	// `iris deadletter show` renders) on any node from the reader pool, and POST
@@ -330,6 +344,9 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 		api.WithRuns(runs), api.WithRunTrace(runTrace), api.WithPipelineGate(pipelineGate),
 		api.WithRunLogs(NewRunLogsPlane(runLogs)), api.WithCatalog(catalogCtl),
 		api.WithCatalogList(NewCatalogReadPlane(client.RegistryReader(), catalogResolver, logger)),
+		api.WithCatalogSources(catalogSrc),
+		api.WithJournalActivity(jactivity),
+		api.WithSchemas(NewSchemasPlane(dataSource, client.ShowReader())),
 	), WithServerLogger(logger), WithVerifier(verifier))
 	if err := srv.Start(ctx); err != nil {
 		return err
@@ -366,8 +383,8 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 		turnTally.reset() // a new leadership term starts a fresh turn account
 		return newLaneLoop(submit, inflight, residents, workspace, pluginsRoot, pluginServicesReg, client.RegistryReader(), client.ManualReader(),
 			client.QueuedManualReader(), events,
-			exec.NewOSRunner(), data, data, objects, turnTally, passCounter,
-			client.RetentionReader(), s.Retain, runLogs, logger)
+			exec.NewOSRunner(), data, data, objects, turnTally, passCounter, dispatchState,
+			client.RetentionReader(), s.Retain, runLogs, sources, logger)
 	}
 
 	cand := NewCandidate(client.Lock(), role, client.WriteConn(), logger,
@@ -379,6 +396,7 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 		WithPromotePlane(promos, submitShim{}, client.PromoteStateReader(), &liveJournalPromoter{reader: client.Reader(), db: data}),
 		WithWipePlane(wipes, client.Reader(), data),
 		WithLaneLoop(laneBuild),
+		WithSourceWatcher(sources),
 		WithPluginsRoot(pluginsRoot),
 		WithPluginServices(pluginServicesReg),
 		WithLanePlane(lanes),
@@ -386,6 +404,7 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 		WithGrantDrift(client.DataPATGrantsReader()),
 		WithRunLogs(runLogs),
 		WithPassCounter(passCounter),
+		WithDispatchState(dispatchState),
 		WithDeadletterPlane(deadletters),
 		WithInflightKiller(inflight),
 		WithFreshSessions(freshLeaderSession(ctx, client, logger)),
@@ -471,15 +490,16 @@ func Detach(ctx context.Context, s config.Settings, exePath string, childArgs []
 }
 
 // StopDaemon signals the daemon with the given pid to shut down gracefully
-// (SIGTERM), waits until the process is gone, and escalates to SIGKILL if the grace
-// deadline (ctx) passes. It removes the pidfile once the daemon is gone (engine
-// stop stops a detached daemon).
+// (SIGTERM on unix; a hard kill on Windows, which has no cross-console
+// equivalent), waits until the process is gone, and escalates to SIGKILL if the
+// grace deadline (ctx) passes. It removes the pidfile once the daemon is gone
+// (engine stop stops a detached daemon).
 func StopDaemon(ctx context.Context, s config.Settings, pid int) error {
 	proc, err := os.FindProcess(pid)
 	if err != nil {
 		return fmt.Errorf("daemon: find process %d: %w", pid, err)
 	}
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
+	if err := signalStop(proc); err != nil {
 		if errors.Is(err, os.ErrProcessDone) {
 			return RemovePIDFile(s)
 		}
@@ -531,8 +551,9 @@ func waitProcessGone(ctx context.Context, pid int) {
 	}
 }
 
-// processAlive reports whether a process with pid is still running, probed with
-// the null signal (signal 0 delivers nothing but validates the target exists).
+// processAlive reports whether a process with pid is still running. The probe
+// is platform-specific (processalive_unix.go / processalive_windows.go): the
+// null signal on unix, an OpenProcess exit-code query on Windows.
 //
 // Limitation: this cannot distinguish the original daemon from an unrelated
 // process that has since been assigned the same pid (PID reuse), so a SIGKILL
@@ -542,13 +563,6 @@ func waitProcessGone(ctx context.Context, pid int) {
 // kernel process handle, which the standard library does not expose portably.
 // Accepted for the minimal stop; a pidfd-based handle can close it when the
 // platform surface allows.
-func processAlive(pid int) bool {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return proc.Signal(syscall.Signal(0)) == nil
-}
 
 // waitSocketReachable polls until the unix socket at path accepts a connection or
 // ctx is done. Readiness is decided by a successful dial, never elapsed time; the

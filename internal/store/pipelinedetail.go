@@ -45,6 +45,8 @@ type ShowReader interface {
 	PipelineDetail(ctx context.Context, name string) (PipelineDetail, bool, error)
 	// GrantsForRole returns a role's field-level grants, in stable order.
 	GrantsForRole(ctx context.Context, pgRole string) ([]Grant, error)
+	// WriteBindings returns every role's written tables, in stable order.
+	WriteBindings(ctx context.Context) ([]WriteBinding, error)
 	// Runs returns the runs matching filter, in ordering-identity order.
 	Runs(ctx context.Context, filter RunFilter) ([]Run, error)
 	// DependencyEdges returns every persisted depends_on edge (from = dependent).
@@ -72,7 +74,24 @@ const (
 	// reserved column names schema and table are double-quoted.
 	selectRoleGrantsSQL = `SELECT "schema", "table", field, access FROM grants WHERE pg_role = $1
 ORDER BY "schema", "table", field, access`
+
+	// selectWriteBindingsSQL reads every role's written tables, one row per
+	// (role, table) rather than per field: the whole workspace's write map in
+	// one plain MVCC read, so a caller needing it for N pipelines issues one
+	// query instead of N.
+	selectWriteBindingsSQL = `SELECT DISTINCT pg_role, "schema", "table" FROM grants WHERE access = 'write'
+ORDER BY pg_role, "schema", "table"`
 )
+
+// WriteBinding is one role's declared write on one table.
+type WriteBinding struct {
+	// Role is the grantee's Postgres login-role name.
+	Role string
+	// Schema is the written table's schema.
+	Schema string
+	// Table is the written table's name.
+	Table string
+}
 
 // pgxShowReader is the pgx-pool-backed ShowReader. It embeds the runs, registry,
 // and manual-run readers to reuse their plain-MVCC reads (Runs, DependencyEdges,
@@ -146,6 +165,29 @@ func (r *pgxShowReader) GrantsForRole(ctx context.Context, pgRole string) ([]Gra
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: read grants for role %q: %w", pgRole, err)
+	}
+	return out, nil
+}
+
+// WriteBindings reads every role's written tables in one plain MVCC query, in
+// a stable order.
+func (r *pgxShowReader) WriteBindings(ctx context.Context) ([]WriteBinding, error) {
+	rows, err := r.pool.query(ctx, selectWriteBindingsSQL)
+	if err != nil {
+		return nil, fmt.Errorf("store: read write bindings: %w", err)
+	}
+	defer rows.Close()
+
+	var out []WriteBinding
+	for rows.Next() {
+		var wb WriteBinding
+		if err := rows.Scan(&wb.Role, &wb.Schema, &wb.Table); err != nil {
+			return nil, fmt.Errorf("store: scan write binding: %w", err)
+		}
+		out = append(out, wb)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: read write bindings: %w", err)
 	}
 	return out, nil
 }

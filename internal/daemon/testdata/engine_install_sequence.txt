@@ -42,6 +42,11 @@ meta: CREATE TABLE IF NOT EXISTS lanes (
     UNIQUE (pipeline),
     UNIQUE (lane, pos)
 );
+meta: CREATE TABLE IF NOT EXISTS declaration_heads (
+    path text,
+    checksum text NOT NULL,
+    PRIMARY KEY (path)
+);
 meta: CREATE TABLE IF NOT EXISTS artifacts (
     hash text,
     pipeline text NOT NULL,
@@ -103,6 +108,13 @@ meta: CREATE TABLE IF NOT EXISTS run_plugin_calls (
     PRIMARY KEY (run_id, seq),
     FOREIGN KEY (run_id) REFERENCES runs (id),
     CHECK (outcome IN ('ok', 'err'))
+);
+meta: CREATE TABLE IF NOT EXISTS run_times (
+    run_id bigint,
+    started_at text,
+    finished_at text,
+    PRIMARY KEY (run_id),
+    FOREIGN KEY (run_id) REFERENCES runs (id)
 );
 meta: CREATE TABLE IF NOT EXISTS dead_letters (
     run_id bigint,

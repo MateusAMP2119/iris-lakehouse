@@ -3,6 +3,13 @@
 # the repo's own install.sh against it (IRIS_BASE_URL=file://). 1:1 with
 # `curl -fsSL https://install.iris-lakehouse.bymarreco.com/snapshot | bash`,
 # local bits. Extra knobs pass through: IRIS_DEST, IRIS_ENGINE_SETUP, NO_COLOR.
+#
+# Same-shell: after install, `iris` should work without hash -r when the primary
+# shim (~/.local/bin) is on PATH, or when a passwordless-sudo refresh of
+# /usr/local/bin/iris covers a stale bash hash from older installs.
+#   sh install-local.sh && iris --version
+#   sh install-local.sh --default   # clean dev loop: wipe existing state, local engine, public catalog
+#   sh install-local.sh && iris uninstall --yes
 set -eu
 
 ROOT="$(git rev-parse --show-toplevel)"
@@ -26,4 +33,4 @@ CGO_ENABLED=0 go build -trimpath \
 tar -czf "${DEV}/iris_${os}_${arch}.tar.gz" -C "$DEV" iris
 (cd "$DEV" && shasum -a 256 "iris_${os}_${arch}.tar.gz" > checksums.txt)
 
-exec env IRIS_BASE_URL="file://${DEV}" bash "${ROOT}/install.sh"
+exec env IRIS_BASE_URL="file://${DEV}" bash "${ROOT}/install.sh" "$@"

@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -108,6 +109,9 @@ func awaitOutput(t *testing.T, buf *lockedBuffer, want string) {
 // writeScript drops an executable shell script into dir and returns its argv.
 func writeScript(t *testing.T, dir, body string) []string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture is a POSIX shell script")
+	}
 	path := filepath.Join(dir, "main.sh")
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o700); err != nil { //nolint:gosec // test script must be executable
 		t.Fatalf("write script: %v", err)
@@ -153,7 +157,7 @@ func TestResidentSessionRealProcess(t *testing.T) {
 
 			first := &lockedBuffer{}
 			ses.out.Set(first)
-			res := driveTurn(ctx, ses, ses.nextTurn(), nil, testTurnWrites(), nil, nil)
+			res := driveTurn(ctx, ses, ses.nextTurn(), nil, nil, testTurnWrites(), nil, nil, nil)
 			if res.kind != turnDone || len(res.rows) != 1 || res.rows[0].Table != "marts.daily" {
 				t.Fatalf("turn 1 = %+v, want done with one declared-write row", res)
 			}
@@ -162,7 +166,7 @@ func TestResidentSessionRealProcess(t *testing.T) {
 
 			second := &lockedBuffer{}
 			ses.out.Set(second)
-			res = driveTurn(ctx, ses, ses.nextTurn(), nil, testTurnWrites(), nil, nil)
+			res = driveTurn(ctx, ses, ses.nextTurn(), nil, nil, testTurnWrites(), nil, nil, nil)
 			if res.kind != turnDone || len(res.rows) != 1 || string(res.rows[0].Row) != `{"day":"d-2","sum":1}` {
 				t.Fatalf("turn 2 = %+v, want done echoing turn 2's row", res)
 			}
@@ -209,7 +213,7 @@ done
 				{Table: "raw.orders", Row: []byte(`{"id":1}`)},
 				{Table: "raw.orders", Row: []byte(`{"id":2}`)},
 			}
-			res := driveTurn(ctx, ses, ses.nextTurn(), feed, testTurnWrites(), nil, nil)
+			res := driveTurn(ctx, ses, ses.nextTurn(), nil, feed, testTurnWrites(), nil, nil, nil)
 			if res.kind != turnDone || len(res.rows) != 1 || string(res.rows[0].Row) != `{"day":"count","sum":2}` {
 				t.Fatalf("fed turn = %+v, want the pipeline to have seen both input rows", res)
 			}
@@ -228,7 +232,7 @@ done
 				t.Fatalf("spawnResident: %v", err)
 			}
 			defer ses.end()
-			res := driveTurn(ctx, ses, ses.nextTurn(), nil, testTurnWrites(), nil, nil)
+			res := driveTurn(ctx, ses, ses.nextTurn(), nil, nil, testTurnWrites(), nil, nil, nil)
 			if res.kind != turnErrored || res.end.Reason != "upstream gone" {
 				t.Fatalf("errored turn = %+v", res)
 			}
@@ -237,11 +241,11 @@ done
 			}
 		})
 
-		t.Run("non-frame stdout is a violation quoting the line", func(t *testing.T) {
+		t.Run("non-frame stdout is an application log line, not a violation", func(t *testing.T) {
 			dir := t.TempDir()
 			argv := writeScript(t, dir, `while read line; do
   case "$line" in
-  *'"run"'*) echo "done 0" ;;
+  *'"run"'*) echo "done 0"; exit 0 ;;
   esac
 done
 `)
@@ -250,9 +254,13 @@ done
 				t.Fatalf("spawnResident: %v", err)
 			}
 			defer ses.end()
-			res := driveTurn(ctx, ses, ses.nextTurn(), nil, testTurnWrites(), nil, nil)
-			if res.kind != turnViolated || !strings.Contains(res.violation.Error(), `"done 0"`) {
-				t.Fatalf("violation = %+v, want the legacy line quoted", res)
+			logs := &strings.Builder{}
+			res := driveTurn(ctx, ses, ses.nextTurn(), nil, nil, testTurnWrites(), nil, nil, logs)
+			if res.kind != turnDied {
+				t.Fatalf("turn = %+v, want death (the line logged, no terminal frame arrived)", res)
+			}
+			if !strings.Contains(logs.String(), "done 0") {
+				t.Fatalf("log sink = %q, want the plain stdout line routed there", logs.String())
 			}
 		})
 
@@ -272,7 +280,7 @@ done
 			if err != nil {
 				t.Fatalf("spawnResident: %v", err)
 			}
-			res := driveTurn(ctx, ses, ses.nextTurn(), nil, testTurnWrites(), nil, nil)
+			res := driveTurn(ctx, ses, ses.nextTurn(), nil, nil, testTurnWrites(), nil, nil, nil)
 			if res.kind != turnDone || len(res.rows) != 1 {
 				t.Fatalf("one-shot turn = %+v, want done with its row", res)
 			}
@@ -293,7 +301,7 @@ exit 3
 			if err != nil {
 				t.Fatalf("spawnResident: %v", err)
 			}
-			res := driveTurn(ctx, ses, ses.nextTurn(), nil, testTurnWrites(), nil, nil)
+			res := driveTurn(ctx, ses, ses.nextTurn(), nil, nil, testTurnWrites(), nil, nil, nil)
 			if res.kind != turnDied || res.status.Code != 3 {
 				t.Fatalf("death = %+v, want died with exit 3", res)
 			}

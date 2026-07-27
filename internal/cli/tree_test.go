@@ -27,6 +27,9 @@ func walk(cmd *cobra.Command, fn func(*cobra.Command)) {
 func childNames(c *cobra.Command) []string {
 	var out []string
 	for _, ch := range c.Commands() {
+		if ch.Hidden {
+			continue
+		}
 		out = append(out, ch.Name())
 	}
 	return out
@@ -93,12 +96,13 @@ func TestCommandTree(t *testing.T) {
 	t.Run("resource-first-command-tree", func(t *testing.T) {
 		root := testRoot()
 
-		// Top-level commands are exactly the ten resource nouns plus the three
+		// Top-level commands are exactly the ten resource nouns plus the
 		// admitted root verbs: the lifecycle pair `update` (self-replace of the
-		// binary) and `uninstall` (self-removal of the binary), and the
-		// process-status verb `ps` (the docker-ps-shaped engine readout), each
+		// binary) and `uninstall` (self-removal of the binary), the
+		// process-status verb `ps` (the docker-ps-shaped engine readout), and
+		// the workspace-sync verb `apply` (whole-tree declare sync), each
 		// belonging to no resource noun: no other flat verbs, no extras.
-		wantTop := append(mapKeys(wantTree), "update", "uninstall", "ps")
+		wantTop := append(mapKeys(wantTree), "update", "setup", "uninstall", "ps", "apply")
 		assertSetEqual(t, "top-level nouns", childNames(root), wantTop)
 
 		// Each noun exposes exactly its documented verbs.
@@ -170,15 +174,17 @@ func TestSoleAlias(t *testing.T) {
 	})
 }
 
-// TestDryRunScope proves --dry-run is registered only on declare apply/destroy.
+// TestDryRunScope proves --dry-run is registered only on declare apply/destroy
+// and the root workspace-sync `apply`.
 func TestDryRunScope(t *testing.T) {
 	t.Run("dry-run-only-on-declare", func(t *testing.T) {
 		root := testRoot()
 		walk(root, func(c *cobra.Command) {
 			hasDryRun := c.Flags().Lookup("dry-run") != nil
 			onDeclareVerb := parentName(c) == "declare" && (c.Name() == "apply" || c.Name() == "destroy")
-			if hasDryRun != onDeclareVerb {
-				t.Errorf("command %q: registers --dry-run = %v, want %v", c.CommandPath(), hasDryRun, onDeclareVerb)
+			onRootApply := parentName(c) == "iris" && c.Name() == "apply"
+			if want := onDeclareVerb || onRootApply; hasDryRun != want {
+				t.Errorf("command %q: registers --dry-run = %v, want %v", c.CommandPath(), hasDryRun, want)
 			}
 		})
 	})

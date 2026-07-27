@@ -30,6 +30,12 @@ One command, no dependencies. Installs the latest prebuilt static binary.
 curl -fsSL https://install.iris-lakehouse.bymarreco.com | bash
 ```
 
+On Windows, in PowerShell:
+
+```powershell
+irm https://install.iris-lakehouse.bymarreco.com/install.ps1 | iex
+```
+
 The installer ends by printing the first commands of a real session — see [Getting started](#getting-started).
 
 ### Snapshot channel (bleeding edge)
@@ -38,6 +44,10 @@ Want the newest code before it ships? Every merge to `development` automatically
 
 ```sh
 curl -fsSL https://install.iris-lakehouse.bymarreco.com/snapshot | bash
+```
+
+```powershell
+irm https://install.iris-lakehouse.bymarreco.com/snapshot.ps1 | iex   # Windows
 ```
 
 Already have iris installed? Switch channels in place — no installer needed:
@@ -144,7 +154,7 @@ Global flags everywhere: `--json` (machine output), `--socket`, `--host`, `--tok
 | `iris engine` | `start`, `stop`, `install`, `uninstall`, `logs`, `inspect`, `connect`, `service …` | Daemon and host lifecycle |
 | `iris ps` | *(root verb)* | Engine process status: a live full-screen view on a terminal (lanes, pipelines, runs, log tails); the `GET /ps` JSON envelope when piped or under `--json` (`--all` widens the JSON runs to history) |
 | `iris update` | *(root verb)* | Self-replace the installed binary with the latest release (`--snapshot` for the rolling build) |
-| `iris uninstall` | *(root verb)* | Remove the installed iris binary itself (prompts first; engine must be down) |
+| `iris uninstall` | *(root verb)* | Stop every local engine, remove engine state, and remove the binary (prompts; `--yes` skips prompts) |
 
 Exit codes are a contract, not an accident:
 

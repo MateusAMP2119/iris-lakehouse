@@ -13,6 +13,12 @@ release. One command, from the repo root (script lives next to install.sh):
 sh install-local.sh
 ```
 
+On Windows (PowerShell), the sibling script drives `install.ps1` the same way:
+
+```powershell
+.\install-local.ps1
+```
+
 The script builds with the release workflow's exact flags (CGO_ENABLED=0,
 -trimpath, buildinfo.Version stamped `local.<date>.<sha>[-dirty]`), packages
 `iris_<os>_<arch>.tar.gz` + `checksums.txt` into `.local/`, then execs the
@@ -24,7 +30,15 @@ upgrade-in-place detection, plain next-steps lines.
 ## Knobs (pass through to install.sh)
 
 - `IRIS_DEST=<dir>` — install somewhere other than `/usr/local/bin`.
+- `IRIS_ENGINE_SETUP=local|remote|skip` — headless `[3/4] Engine Setup`.
+- `IRIS_SETUP_CATALOGS=public|skip|<url>[,url…]` — headless `[4/4] Catalog` (`public` pins iris-catalog).
 - `NO_COLOR=1` — plain output.
+
+Smoke local install with packs:
+
+```bash
+IRIS_ENGINE_SETUP=local IRIS_SETUP_CATALOGS=public sh install-local.sh
+```
 
 ## Rules
 

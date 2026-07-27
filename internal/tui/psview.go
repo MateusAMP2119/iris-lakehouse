@@ -9,10 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
@@ -50,10 +47,6 @@ const psUnreachableWarn = "engine unreachable · showing last known state · ret
 // then re-seeds every this-many ticks so the coarse rings (sealed daemon-side
 // once a minute) stay current without the history document riding every poll.
 const psHistoryRefreshPolls = 60
-
-// psMaxLogLines bounds the log tail held client-side for the run detail
-// screen; scrollback beyond it is `iris run logs`' job.
-const psMaxLogLines = 2000
 
 // ErrEngineGone signals the poller lost the daemon mid-view: the loop exits,
 // the terminal restores, and ps() maps it to the no-daemon fault.
@@ -193,30 +186,29 @@ func (c *Client) fetchPipelines(ctx context.Context) ([]api.PipelineListItem, er
 	return env.Data.Pipelines, nil
 }
 
-// fetchRunLogs reads a run's captured output and keeps the tail. The route
-// streams the whole current log then EOF (no offset support), so following is
-// this re-read each tick, bounded client-side.
-func (c *Client) fetchRunLogs(ctx context.Context, id string) ([]string, error) {
-	resp, err := c.get(ctx, "/runs/"+id+"/logs")
+// fetchSchemas reads the workspace's declared table shapes. The declaration is
+// static between declare applies, so the poller reads it at open and on the
+// history cadence rather than every tick.
+func (c *Client) fetchSchemas(ctx context.Context) (map[string]api.TableShape, error) {
+	resp, err := c.get(ctx, "/schemas")
 	if err != nil {
 		return nil, err
 	}
 	defer drainClose(resp)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("daemon returned status %d from /runs/%s/logs", resp.StatusCode, id)
+		return nil, fmt.Errorf("daemon returned status %d from /schemas", resp.StatusCode)
 	}
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+	var env struct {
+		Data api.SchemaListResult `json:"data"`
 	}
-	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
-	if len(lines) == 1 && lines[0] == "" {
-		return nil, nil
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return nil, fmt.Errorf("decode /schemas response: %w", err)
 	}
-	if len(lines) > psMaxLogLines {
-		lines = lines[len(lines)-psMaxLogLines:]
+	out := make(map[string]api.TableShape, len(env.Data.Tables))
+	for _, t := range env.Data.Tables {
+		out[t.Schema+"."+t.Table] = t
 	}
-	return lines, nil
+	return out, nil
 }
 
 // cancelRun POSTs the run cancel and renders the outcome as the view's note
@@ -271,11 +263,49 @@ func (c *Client) catalogAction(ctx context.Context, req psCatalogReq) psCatalogM
 	switch req.kind {
 	case psCatalogList:
 		return c.fetchCatalog(ctx)
-	case psCatalogInstall:
-		return c.installPack(ctx, req, false)
+	case psCatalogAddSource:
+		return c.addCatalogSource(ctx, req)
 	default:
-		return c.installPack(ctx, req, true)
+		return c.installPack(ctx, req)
 	}
+}
+
+// addCatalogSource POSTs /catalog/sources for the '+' add-source prompt.
+func (c *Client) addCatalogSource(ctx context.Context, req psCatalogReq) psCatalogMsg {
+	msg := psCatalogMsg{kind: psCatalogAddSource}
+	body, _ := json.Marshal(api.CatalogSourceRequest{URL: req.url})
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/catalog/sources", bytes.NewReader(body))
+	if err != nil {
+		msg.err = "catalog source: " + err.Error()
+		return msg
+	}
+	hreq.Header.Set("Content-Type", "application/json")
+	if c.overTCP && c.token != "" {
+		hreq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.client.Do(hreq)
+	if err != nil {
+		msg.err = "catalog source: engine unreachable: " + err.Error()
+		return msg
+	}
+	defer drainClose(resp)
+	if resp.StatusCode != http.StatusOK {
+		var env struct {
+			Error errBody `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&env)
+		msg.err = catalogFailText("catalog source add", resp.StatusCode, env.Error.Message, "")
+		return msg
+	}
+	var env struct {
+		Data api.CatalogSourceResult `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		msg.err = "decode /catalog/sources response: " + err.Error()
+		return msg
+	}
+	msg.sources = env.Data.Sources
+	return msg
 }
 
 // fetchCatalog reads GET /catalog for the overlay's pack list.
@@ -306,14 +336,10 @@ func (c *Client) fetchCatalog(ctx context.Context) psCatalogMsg {
 	return msg
 }
 
-// installPack POSTs /catalog/install for the overlay ('a' rides apply=true).
-func (c *Client) installPack(ctx context.Context, req psCatalogReq, apply bool) psCatalogMsg {
-	kind := psCatalogInstall
-	if apply {
-		kind = psCatalogApply
-	}
-	msg := psCatalogMsg{kind: kind}
-	body, _ := json.Marshal(api.CatalogInstallRequest{Pack: req.pack, Apply: apply, Force: req.force})
+// installPack POSTs /catalog/install for the batch apply (always install+apply).
+func (c *Client) installPack(ctx context.Context, req psCatalogReq) psCatalogMsg {
+	msg := psCatalogMsg{kind: psCatalogApply}
+	body, _ := json.Marshal(api.CatalogInstallRequest{Pack: req.pack, Apply: true, Force: req.force})
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/catalog/install", bytes.NewReader(body))
 	if err != nil {
 		msg.err = "catalog install: " + err.Error()
@@ -380,20 +406,22 @@ type psPollMsg struct {
 }
 
 // pollPs is the live view's poller goroutine: every tick it re-reads the /ps
-// history and the pipeline listing, plus the focused run's log tail, and ships
-// one snapshot. A transport failure is an unreachable tick, not a teardown:
-// the poller keeps ticking and reconnects when the engine returns (the
+// history, the pipeline listing, and the journal activity delta, and ships one
+// snapshot. A transport failure is an unreachable tick, not a teardown: the
+// poller keeps ticking and reconnects when the engine returns (the
 // docker-parity behavior the stale banner narrates). Only a reached daemon
-// REFUSING the read ends the poller (and the view). The listing and logs are
-// soft -- their last good value rides along. Cancel requests arrive on
-// cancelCh and their outcomes return as notes.
+// REFUSING the read ends the poller (and the view). The listing and the
+// activity aggregate are soft -- their last good value rides along. Cancel
+// requests arrive on cancelCh and their outcomes return as notes.
 func pollPs(ctx context.Context, c *Client, every time.Duration,
-	focusCh <-chan string, cancelCh <-chan string, polls chan psPollMsg, notes chan<- string) {
+	cancelCh <-chan string, polls chan psPollMsg, notes chan<- string) {
 	var (
-		focus     string
-		lastPipes []api.PipelineListItem
-		lastLogs  []string
-		ticks     int
+		lastPipes  []api.PipelineListItem
+		lastShapes map[string]api.TableShape
+		ticks      int
+		seq        int64                   // poll ordinal, the commit marks' ordering
+		journal    *psJournal              // accumulated write activity (#238 phase 3)
+		commits    map[string]psCommitMark // newest observed write per pipeline
 	)
 	poll := func(history bool) bool {
 		ps, err := c.fetchPs(ctx, true, history)
@@ -409,26 +437,40 @@ func pollPs(ctx context.Context, c *Client, every time.Duration,
 			sendPoll(polls, psPollMsg{unreachable: true})
 			return true // keep ticking: the view shows its last state until the engine returns
 		}
-		// The listing and the log tail are soft: their last good value rides
-		// along, but the failure is surfaced -- an empty lanes screen on a
-		// healthy engine must say why.
+		// The listing is soft: its last good value rides along, but the failure
+		// is surfaced -- an empty lanes screen on a healthy engine must say why.
 		var warn string
 		if pipes, perr := c.fetchPipelines(ctx); perr == nil {
 			lastPipes = pipes
 		} else {
 			warn = "pipeline listing unavailable; lanes may be incomplete"
 		}
-		if focus != "" {
-			if logs, lerr := c.fetchRunLogs(ctx, focus); lerr == nil {
-				lastLogs = logs
-			} else if warn == "" {
-				warn = "run logs unavailable"
+		// The declared shapes ride the history cadence: static between declare
+		// applies, but a catalog apply from inside the view changes them, so
+		// they refresh rather than being read once. Soft like the listing.
+		if history || lastShapes == nil {
+			if shapes, serr := c.fetchSchemas(ctx); serr == nil {
+				lastShapes = shapes
 			}
 		}
-		snap := Snapshot{Ps: ps, Pipelines: lastPipes}
-		if focus != "" {
-			snap.Logs, snap.LogsRun = lastLogs, focus
+		// The activity aggregate is soft like the listing: a failing (or
+		// missing) route leaves the last accumulated state riding along.
+		since := int64(0)
+		if journal != nil {
+			since = journal.Watermark
+		} else {
+			// The first fold reads the journal whole (since_id 0), so it is the
+			// one activity read that can outlast its poll. Ship what is already
+			// in hand first -- the frame opens live and the tables land when
+			// the aggregate answers.
+			sendPoll(polls, psPollMsg{snap: Snapshot{Ps: ps, Pipelines: lastPipes, Commits: commits, Shapes: lastShapes}, warn: warn})
 		}
+		seq++
+		if act, aerr := c.fetchJournalActivity(ctx, since); aerr == nil {
+			commits = deriveCommits(commits, act.Groups, commitStamp(time.Now()), seq)
+			journal = foldJournal(journal, act)
+		}
+		snap := Snapshot{Ps: ps, Pipelines: lastPipes, Journal: journal, Commits: commits, Shapes: lastShapes}
 		// A history-carrying poll (once a minute) refreshes the last-known-state
 		// cache: the snapshot a later unreachable-at-open view revives.
 		if ps.History != nil {
@@ -438,17 +480,18 @@ func pollPs(ctx context.Context, c *Client, every time.Duration,
 		return true
 	}
 
+	// The seed the view opened on carries /ps and the listing only, so every
+	// poll-derived surface (the journal tables, the commit marks) is empty
+	// until a poll lands. Take one now rather than a tick from now.
+	if !poll(false) {
+		return
+	}
 	tick := time.NewTicker(every)
 	defer tick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case f := <-focusCh:
-			focus, lastLogs = f, nil
-			if focus != "" && !poll(false) { // fetch the tail now, not a tick later
-				return
-			}
 		case id := <-cancelCh:
 			select {
 			case notes <- c.cancelRun(ctx, id):
@@ -495,7 +538,6 @@ type psView struct {
 	keys     <-chan psKey
 	polls    <-chan psPollMsg
 	notes    <-chan string
-	focusCh  chan<- string
 	cancelCh chan<- string
 	// catalogMsgs delivers overlay action outcomes; runCatalog services a parked
 	// overlay request off the loop (#219). Nil seams leave the overlay inert.
@@ -508,20 +550,14 @@ type psView struct {
 // SIGTERM) and the poll error when the poller lost the daemon (a transport
 // failure) or the daemon refused the read (a *HTTPError).
 func runPsLoop(ctx context.Context, v *psView, m *psModel) error {
-	// The poller starts with no log target; the first push below points it at
-	// the initial selection's run, and every later push follows a change from
-	// any message (a key moved the selection, a poll started or finished runs).
-	sentFocus := ""
-	syncFocus := func() {
-		if f := m.focus(); f != sentFocus {
-			select {
-			case v.focusCh <- f:
-				sentFocus = f
-			default:
-			}
+	// Catalog fetches can be parked outside a keypress too (the idle card's
+	// inline catalog opens with the model or on a poll), so drain everywhere.
+	drainCatalog := func() {
+		if req := m.takeCatalogReq(); req != nil && v.runCatalog != nil {
+			v.runCatalog(*req)
 		}
 	}
-	syncFocus()
+	drainCatalog()
 	for {
 		w, h := v.size()
 		if _, err := v.out.Write(renderPsFrame(m, w, h, !v.p.enabled).render(v.p)); err != nil {
@@ -534,21 +570,18 @@ func runPsLoop(ctx context.Context, v *psView, m *psModel) error {
 			if !ok {
 				return nil
 			}
-			cancelID := m.update(k)
+			cancelIDs := m.update(k)
 			if m.quit {
 				return nil
 			}
-			if cancelID != "" {
+			for _, id := range cancelIDs {
 				select {
-				case v.cancelCh <- cancelID:
+				case v.cancelCh <- id:
 				default:
 					m.note = "cancel already in flight"
 				}
 			}
-			if req := m.takeCatalogReq(); req != nil && v.runCatalog != nil {
-				v.runCatalog(*req)
-			}
-			syncFocus()
+			drainCatalog()
 		case pm := <-v.polls:
 			if pm.err != nil {
 				return pm.err
@@ -561,76 +594,17 @@ func runPsLoop(ctx context.Context, v *psView, m *psModel) error {
 			}
 			m.warn = pm.warn
 			m.absorb(pm.snap)
-			syncFocus()
+			drainCatalog()
 		case note := <-v.notes:
 			m.note = note
 		case cm := <-v.catalogMsgs:
 			m.absorbCatalog(cm)
-			syncFocus()
+			drainCatalog() // a batch apply chains its next pack off the absorb
 		}
 	}
 }
 
-// RunLive is the production live view: raw mode and the alternate screen
-// around the poller and the event loop. The first snapshot was fetched before
-// this ran (a dead engine never enters the alternate screen); a raw-mode
-// refusal reports false so the caller falls back to the JSON emit. color
-// enables SGR styling when stdout is a TTY and NO_COLOR is unset.
-func RunLive(ctx context.Context, out io.Writer, color bool, c *Client, first Snapshot, target string) (bool, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	ts, ok := openPsTerm(out)
-	if !ok {
-		return false, nil
-	}
-	defer ts.leave()
-
-	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	keys := make(chan psKey, 8)
-	polls := make(chan psPollMsg, 1)
-	notes := make(chan string, 1)
-	focusCh := make(chan string, 4)
-	cancelCh := make(chan string, 4)
-	catalogMsgs := make(chan psCatalogMsg, 4)
-	go readPsKeys(os.Stdin, keys)
-	go pollPs(ctx, c, psPollInterval, focusCh, cancelCh, polls, notes)
-
-	m := newPsModel(first, target)
-	v := &psView{
-		out: out, p: makePainter(color), size: ts.size,
-		keys: keys, polls: polls, notes: notes, focusCh: focusCh, cancelCh: cancelCh,
-		catalogMsgs: catalogMsgs,
-		runCatalog: func(req psCatalogReq) {
-			go func() {
-				msg := c.catalogAction(ctx, req)
-				msg.seq = req.seq
-				select {
-				case catalogMsgs <- msg:
-				case <-ctx.Done():
-				}
-			}()
-		},
-	}
-	err := runPsLoop(ctx, v, m)
-	ts.leave() // explicit: restored before any fault renders on stderr
-
-	// Unblock the stdin reader so it never outlives the view: an in-process
-	// caller reading the same stdin next would have its keystrokes stolen by
-	// an orphaned Read. Best-effort -- a stdin that supports no deadline keeps
-	// the old dies-with-the-process behavior.
-	if derr := os.Stdin.SetReadDeadline(time.Now()); derr == nil {
-		// Drain until the decoder closes behind the unblocked reader.
-		for range keys { //nolint:revive // the draining itself is the work
-		}
-		_ = os.Stdin.SetReadDeadline(time.Time{})
-	}
-	return true, err
-}
-
-// TargetLabel names the watched engine for the footer's right slot.
+// TargetLabel names the watched engine for cache keys and connection identity.
 func TargetLabel(s config.Settings, overTCP bool) string {
 	if overTCP {
 		return "remote " + strings.TrimPrefix(strings.TrimPrefix(s.Host, "https://"), "http://")

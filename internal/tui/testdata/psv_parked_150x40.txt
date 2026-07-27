@@ -1,0 +1,40 @@
+ │ [IRIS LAKEHOUSE]   dev   LEADER  up 2h13m  pid 42                           CPU                          ░░░░░   3.2%  MEM  126.0MiB  1r  1q  0✖ │
+
+ │ [CATALOG]                         │  │ [PIPELINE]                                                                                        monthly │
+ │ / type to filter                  │  │ OUTPUT                           ROWS / POLL · LIVE                                                       │
+ │ ingest                      1r·1q │  │ no captured writes yet           no captured writes observed yet                                          │
+ │ ● extract                      1q │  │                                                                                                           │
+ │ ○ hello_iris                      │  │ DISPATCH                         no runs recorded                                                         │
+ │ ● load_orders                 run │  │ state                   parked                                                                            │
+ │ reporting     0r·0q · 1 pipelines │  │ gate                    closed                                                                            │
+ │ ○ monthly                         │  │   load_orders       up_to_date                                                                            │
+ │ solo                        0r·0q │  │ lane                 reporting                                                                            │
+ │ ○ solo                            │  │ passes                       3                                                                            │
+ │                                   │  │ wakes on           2 pipelines                                                                            │
+ │                                   │  │                                                                                                           │
+ │                                   │  │ LOAD                                                                                                      │
+ │                                   │  │ cpu                       0.0%                                                                            │
+ │                                   │  │ mem                         0B                                                                            │
+ │                                   │  │ time  no timed run yet                                                                                    │
+ │                                   │  │                                                                                                           │
+ │                                   │  │ SCHEMA                                                                                                    │
+ │                                   │  │ no declared shape                                                                                         │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │                                   │  │                                                                                                           │
+ │ LANE · reporting                  │  │                                                                                                           │
+ │ CPU               ░░░░░      0.0% │  │                                                                                                           │
+ │ MEM               ░░░░░        0B │  │                                                                                                  c cancel │

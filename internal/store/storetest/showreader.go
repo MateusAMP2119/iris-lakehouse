@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"sort"
 	"sync"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/store"
@@ -137,6 +138,36 @@ func (f *ShowFake) GrantsForRole(_ context.Context, pgRole string) ([]store.Gran
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]store.Grant(nil), f.grants[pgRole]...), nil
+}
+
+// WriteBindings derives the write map from the seeded grants: one binding per
+// (role, table) holding at least one write grant, in stable order.
+func (f *ShowFake) WriteBindings(_ context.Context) ([]store.WriteBinding, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	seen := map[store.WriteBinding]bool{}
+	for role, grants := range f.grants {
+		for _, g := range grants {
+			if g.Access != store.AccessWrite {
+				continue
+			}
+			seen[store.WriteBinding{Role: role, Schema: g.Schema, Table: g.Table}] = true
+		}
+	}
+	out := make([]store.WriteBinding, 0, len(seen))
+	for wb := range seen {
+		out = append(out, wb)
+	}
+	sort.Slice(out, func(a, b int) bool {
+		if out[a].Role != out[b].Role {
+			return out[a].Role < out[b].Role
+		}
+		if out[a].Schema != out[b].Schema {
+			return out[a].Schema < out[b].Schema
+		}
+		return out[a].Table < out[b].Table
+	})
+	return out, nil
 }
 
 // DependencyEdges returns a copy of the seeded depends_on edges.

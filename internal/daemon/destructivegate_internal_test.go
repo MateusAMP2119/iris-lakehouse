@@ -21,7 +21,7 @@ import (
 // gateSubmitter hands each mutation the single writer over the recorder.
 type gateSubmitter struct{ rec *storetest.WriteRecorder }
 
-func (s gateSubmitter) Submit(_ context.Context, fn func(*store.Writer) error) error {
+func (s gateSubmitter) Submit(_ context.Context, fn func(*store.Writer) error, _ ...string) error {
 	return fn(store.NewWriter(s.rec))
 }
 

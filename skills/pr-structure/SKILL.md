@@ -40,7 +40,7 @@ Bullets only. Every meaningful **added** or **changed** behavior/feature gets a 
 
 Good:
 
-- `iris catalog list` falls back to embedded packs when no remote catalogs are configured
+- `iris catalog list` requires a running engine; packs come from configured remote catalogs only
 - Overlay install refuses non-leader with an inline banner
 
 Bad:

@@ -56,7 +56,7 @@ func newCache(target string) *cache {
 }
 
 // save persists a snapshot as the target's last known state: best-effort,
-// atomic (temp file + rename), owner-only permissions, log tail dropped. A
+// atomic (temp file + rename), owner-only permissions. A
 // failed save is silently skipped -- the cache must never make a healthy view
 // noisy.
 func (c *cache) save(snap Snapshot) {

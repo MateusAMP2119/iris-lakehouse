@@ -82,9 +82,9 @@ type Candidate struct {
 	appliedHds store.AppliedHeadReader
 	data       dataPlane
 	// catalogs is the pack-install plane (#217), riding the control orchestrator's apply
-	// seam; catalogResolver spans the embedded set plus the configured remote catalogs (#220).
+	// seam; catalogResolver spans the configured remote catalogs (#220).
 	catalogs        *catalogPlane
-	catalogResolver catalog.Resolver
+	catalogResolver resolverFn
 
 	// Manual-run wiring, installed on winning leadership and cleared on demotion so
 	// the api mux's POST /pipeline/run reaches the single meta writer and the exec
@@ -139,6 +139,10 @@ type Candidate struct {
 	// stdout/stderr through (the lane loop receives it via its build closure).
 	// Nil leaves manual runs uncaptured (shape-test compositions).
 	runLogs *RunLogWriter
+	// sources is the shared declared-source watcher: the manual path takes
+	// bodies from the same instance the lane loop's watcher fills, and the
+	// control planes poke its roster on apply/destroy.
+	sources *sourceWatcher
 
 	// patGrantLedger is the meta read of every data-PAT role's ledgered grants:
 	// the authoritative set the leader reconciles each role's live Postgres
@@ -188,6 +192,11 @@ type Candidate struct {
 	// resets it by construction -- it is process memory). Nil leaves pass counting
 	// unwired.
 	passCounter *dispatch.PassCounter
+
+	// dispatchState is the leader-held live lane-loop state behind the ps readout's
+	// dispatch block. Reset on each term beside the pass counter: a deposed term's
+	// park view describes lanes this leader is not walking. Nil leaves it unwired.
+	dispatchState *dispatch.State
 
 	// Endpoint-apply wiring, installed on winning leadership and cleared on demotion
 	// so POST /endpoint/apply reaches the single meta writer and the shared serving
@@ -269,8 +278,8 @@ func WithControlPlane(cp *controlPlane, workspace string, reg store.RegistryRead
 	}
 }
 
-// WithCatalogPlane wires the leader-side catalog plane (#217): its orchestrator installs with the control plane's, so pack installs ride the same workspace, registry reader, and apply path. resolver spans the embedded set plus the configured remote catalogs (#220). A nil cp leaves installs unwired.
-func WithCatalogPlane(cp *catalogPlane, resolver catalog.Resolver) CandidateOption {
+// WithCatalogPlane wires the leader-side catalog plane (#217): its orchestrator installs with the control plane's, so pack installs ride the same workspace, registry reader, and apply path. resolver snapshots the live configured remote catalogs (#220). A nil cp leaves installs unwired.
+func WithCatalogPlane(cp *catalogPlane, resolver func() catalog.Resolver) CandidateOption {
 	return func(c *Candidate) {
 		c.catalogs = cp
 		c.catalogResolver = resolver
@@ -416,6 +425,12 @@ func WithRunLogs(logs *RunLogWriter) CandidateOption {
 	}
 }
 
+// WithSourceWatcher shares the declared-source watcher with the leadership
+// term's planes (manual turns take from it; apply/destroy refresh its roster).
+func WithSourceWatcher(f *sourceWatcher) CandidateOption {
+	return func(c *Candidate) { c.sources = f }
+}
+
 // WithGrantDrift wires data-PAT grant-drift reconciliation: on winning
 // leadership the candidate diffs every ledgered data-PAT role's live Postgres
 // grants against the meta ledger, re-issues missing GRANTs (the ledger is
@@ -484,6 +499,15 @@ func WithLanePlane(lanes *lanePlane) CandidateOption {
 // is ignored.
 func WithPassCounter(pc *dispatch.PassCounter) CandidateOption {
 	return func(c *Candidate) { c.passCounter = pc }
+}
+
+// WithDispatchState wires the leader-held live dispatch state the ps readout's
+// dispatch block reads: the candidate resets it on winning a term, so a readout
+// never reports a previous term's park view. The lane loop's build composes the
+// state into the loop (dispatch.WithState); this option owns only the term
+// reset. A nil state is ignored.
+func WithDispatchState(ds *dispatch.State) CandidateOption {
+	return func(c *Candidate) { c.dispatchState = ds }
 }
 
 // WithEndpointPlane wires the leader-side endpoint-apply plane: on winning
@@ -654,6 +678,9 @@ func (c *Candidate) lead(ctx context.Context) (demoted bool, err error) {
 	if c.passCounter != nil {
 		c.passCounter.Reset()
 	}
+	// Likewise the live dispatch view: a fresh term walks its own lanes, so the
+	// previous term's park state is cleared before any reconcile publishes.
+	c.dispatchState.Reset()
 
 	d := dispatch.New(c.writeConn)
 	// This term's meta-change watermark: the dispatcher bumps it on every
@@ -741,6 +768,9 @@ func (c *Candidate) lead(ctx context.Context) (demoted bool, err error) {
 			roleCreds,
 			c.logger,
 		)
+		if c.sources != nil {
+			orch.sourcesForget = c.sources.forget
+		}
 		c.control.install(orch)
 		defer c.control.clear()
 
@@ -767,7 +797,7 @@ func (c *Candidate) lead(ctx context.Context) (demoted bool, err error) {
 		// store (the *pg.Client that also serves as the journal high-watermark), the
 		// meta seal read seam, the single dispatcher (checkpoint insert + archive
 		// flip), and the object store. Nil seams (the shape tests) leave sealing off.
-		mo := newManualOrchestrator(c.workspace, c.pluginsRoot, c.services, d, c.registry, c.manualReader, c.objects, c.runner, c.journalHM, c.turnDB, reg, c.buildSealer(d), c.runLogs, c.logger)
+		mo := newManualOrchestrator(c.workspace, c.pluginsRoot, c.services, d, c.registry, c.manualReader, c.objects, c.runner, c.journalHM, c.turnDB, reg, c.buildSealer(d), c.runLogs, c.sources, c.logger)
 		c.pipelines.install(mo)
 		defer c.pipelines.clear()
 	}

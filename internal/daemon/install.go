@@ -49,13 +49,17 @@ func InstallEngine(ctx context.Context, s config.Settings, logger *slog.Logger) 
 
 	mgr := NewManager(s, EmbeddedSupervisor)
 	// Managed mode: download and place the pinned Postgres before it can be started;
-	// external mode: a no-op.
+	// external mode: a no-op. The stage lines here and below double as the real
+	// progress signal for the setup ceremony (see the CLI's stage scanner) --
+	// placement is the long pole on a cold machine (download + extraction).
+	logger.Info("engine install: placing managed Postgres")
 	if err := mgr.Install(ctx); err != nil {
 		return InstallReport{}, fmt.Errorf("daemon: install managed Postgres: %w", err)
 	}
 	// Bring up Postgres and resolve the admin DSN -- the managed subprocess or the
 	// external cluster -- the one code path both modes share. Shutdown stops a managed
 	// instance on return; it is a no-op in external mode.
+	logger.Info("engine install: starting Postgres")
 	adminDSN, err := mgr.Startup(ctx)
 	if err != nil {
 		return InstallReport{}, fmt.Errorf("daemon: bring up Postgres for install: %w", err)

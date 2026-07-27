@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 
 	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
@@ -32,6 +33,7 @@ type workspaceDataSource struct {
 
 	mu     sync.Mutex
 	shapes map[string]*api.DataShape
+	tables []api.TableShape
 	loaded bool
 	err    error
 }
@@ -52,10 +54,7 @@ func newWorkspaceDataSource(workspace string) *workspaceDataSource {
 func (s *workspaceDataSource) DataShape(schema, table string) (*api.DataShape, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.loaded {
-		s.shapes, s.err = discoverDataShapes(s.workspace)
-		s.loaded = true
-	}
+	s.load()
 	if s.err != nil {
 		return nil, false
 	}
@@ -63,28 +62,87 @@ func (s *workspaceDataSource) DataShape(schema, table string) (*api.DataShape, b
 	return sh, ok
 }
 
+// TableShapes returns every declared table's shape, ordered schema then table,
+// or false when the tree cannot be read (a misread tree yields no shapes, so
+// the listing reports absence rather than half a workspace).
+func (s *workspaceDataSource) TableShapes() ([]api.TableShape, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.load()
+	if s.err != nil {
+		return nil, false
+	}
+	return append([]api.TableShape(nil), s.tables...), true
+}
+
+// load walks the schemas tree once, under the caller's lock.
+func (s *workspaceDataSource) load() {
+	if s.loaded {
+		return
+	}
+	s.shapes, s.tables, s.err = discoverDataShapes(s.workspace)
+	s.loaded = true
+}
+
 // discoverDataShapes walks the workspace schemas/ tree and builds the declared-table
 // shapes keyed "schema.table". An absent schemas/ tree yields an empty set (no
 // declared tables, every /data request 404s); a malformed tree or an unmappable
 // column type is an error the caller treats as "no shapes".
-func discoverDataShapes(workspace string) (map[string]*api.DataShape, error) {
+func discoverDataShapes(workspace string) (map[string]*api.DataShape, []api.TableShape, error) {
 	schemasDir := filepath.Join(workspace, "schemas")
 	if info, err := os.Stat(schemasDir); err != nil || !info.IsDir() {
-		return map[string]*api.DataShape{}, nil
+		return map[string]*api.DataShape{}, nil, nil
 	}
 	tables, err := declare.ValidateSchemaTree(schemasDir)
 	if err != nil {
-		return nil, fmt.Errorf("daemon: read schemas tree for /data shapes: %w", err)
+		return nil, nil, fmt.Errorf("daemon: read schemas tree for /data shapes: %w", err)
 	}
 	out := make(map[string]*api.DataShape, len(tables))
+	declared := make([]api.TableShape, 0, len(tables))
 	for _, dt := range tables {
 		shape, err := dataShapeOf(dt.Spec)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		out[dt.Schema+"."+dt.Table] = shape
+		ts, err := tableShapeOf(dt.Spec)
+		if err != nil {
+			return nil, nil, err
+		}
+		declared = append(declared, ts)
 	}
-	return out, nil
+	sort.Slice(declared, func(a, b int) bool {
+		if declared[a].Schema != declared[b].Schema {
+			return declared[a].Schema < declared[b].Schema
+		}
+		return declared[a].Table < declared[b].Table
+	})
+	return out, declared, nil
+}
+
+// tableShapeOf renders one declared table into its /schemas shape: the columns
+// in declaration order carrying BOTH the token the operator wrote and the
+// Postgres type it resolves to, plus the declared constraints.
+func tableShapeOf(t *declare.Table) (api.TableShape, error) {
+	if t == nil {
+		return api.TableShape{}, fmt.Errorf("daemon: /schemas shape: nil declared table")
+	}
+	cols := make([]api.ColumnShape, 0, len(t.Columns))
+	var pk []string
+	for _, c := range t.Columns {
+		pt, err := declare.ResolveColumnType(c)
+		if err != nil {
+			return api.TableShape{}, fmt.Errorf("daemon: /schemas shape %s.%s: column %q: %w", t.Schema, t.Table, c.Name, err)
+		}
+		cols = append(cols, api.ColumnShape{
+			Name: c.Name, Type: c.Type, PgType: pt,
+			PrimaryKey: c.PrimaryKey, Nullable: c.IsNullable(), Unique: c.Unique, Default: c.Default,
+		})
+		if c.PrimaryKey {
+			pk = append(pk, c.Name)
+		}
+	}
+	return api.TableShape{Schema: t.Schema, Table: t.Table, Columns: cols, PrimaryKey: pk}, nil
 }
 
 // dataShapeOf renders one declared table into its /data shape: the declared columns

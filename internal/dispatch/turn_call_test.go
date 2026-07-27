@@ -14,7 +14,7 @@ func testCalls() CallSet {
 
 func TestCollectorAdmitsDeclaredCall(t *testing.T) {
 	c := NewTurnCollector(9, testWrites(), testCalls())
-	_, call, terminal, err := c.Feed(`{"event":"call","call":1,"verb":"mail.send","args":{"to":"x@y.z"}}`)
+	_, call, _, terminal, err := c.Feed(`{"event":"call","call":1,"verb":"mail.send","args":{"to":"x@y.z"}}`)
 	if err != nil || terminal {
 		t.Fatalf("declared call: err %v, terminal %v", err, terminal)
 	}
@@ -22,16 +22,16 @@ func TestCollectorAdmitsDeclaredCall(t *testing.T) {
 		t.Fatalf("call = %+v", call)
 	}
 	// A second call before the reply violates.
-	if _, _, _, err := c.Feed(`{"event":"call","call":2,"verb":"mail.send"}`); err == nil || !strings.Contains(err.Error(), "before call 1's reply") {
+	if _, _, _, _, err := c.Feed(`{"event":"call","call":2,"verb":"mail.send"}`); err == nil || !strings.Contains(err.Error(), "before call 1's reply") {
 		t.Fatalf("overlapping call err = %v", err)
 	}
 	// After the reply, the next call is admissible again and the turn can end.
 	c.ReplyDelivered()
-	if _, call, _, err := c.Feed(`{"event":"call","call":2,"verb":"mail.send"}`); err != nil || call == nil {
+	if _, call, _, _, err := c.Feed(`{"event":"call","call":2,"verb":"mail.send"}`); err != nil || call == nil {
 		t.Fatalf("post-reply call: %v %+v", err, call)
 	}
 	c.ReplyDelivered()
-	if _, _, terminal, err := c.Feed(`{"event":"done","turn":9}`); err != nil || !terminal {
+	if _, _, _, terminal, err := c.Feed(`{"event":"done","turn":9}`); err != nil || !terminal {
 		t.Fatalf("terminal after calls: err %v, terminal %v", err, terminal)
 	}
 }
@@ -48,7 +48,7 @@ func TestCollectorCallViolations(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			c := NewTurnCollector(9, testWrites(), testCalls())
-			_, _, _, err := c.Feed(tc.line)
+			_, _, _, _, err := c.Feed(tc.line)
 			var fe *FrameError
 			if !errors.As(err, &fe) || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want violation containing %q", err, tc.want)
@@ -59,7 +59,7 @@ func TestCollectorCallViolations(t *testing.T) {
 
 func TestCollectorNilCallSetRefusesCalls(t *testing.T) {
 	c := NewTurnCollector(9, testWrites(), nil)
-	if _, _, _, err := c.Feed(`{"event":"call","call":1,"verb":"mail.send"}`); err == nil {
+	if _, _, _, _, err := c.Feed(`{"event":"call","call":1,"verb":"mail.send"}`); err == nil {
 		t.Fatal("nil call set admitted a call")
 	}
 }

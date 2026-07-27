@@ -83,29 +83,32 @@ func WithRole(r RoleReporter) MuxOption {
 // mutations are rejected until election confirms a leader.
 func NewMux(opts ...MuxOption) http.Handler {
 	m := &mux{
-		role:         unknownRole{},
-		control:      noControl{},
-		pipelines:    noPipelines{},
-		build:        noBuild{},
-		promote:      noPromote{},
-		wipe:         noWipe{},
-		runCancel:    noRunCancel{},
-		ps:           noPs{},
-		inspect:      noInspect{},
-		pipelineShow: noPipelineShow{},
-		workloadShow: noWorkloadShow{},
-		provenance:   noProvenance{},
-		runs:         noRuns{},
-		runTrace:     noRunTrace{},
-		runLogs:      noRunLogs{},
-		pipelineGate: noPipelineGate{},
-		deadImpact:   noDeadImpact{},
-		endpointCtl:  noEndpointControl{},
-		patMint:      noPATMint{},
-		replay:       noReplay{},
-		drain:        noDrain{},
-		catalog:      noCatalog{},
-		catalogList:  noCatalogList{},
+		role:           unknownRole{},
+		control:        noControl{},
+		pipelines:      noPipelines{},
+		build:          noBuild{},
+		promote:        noPromote{},
+		wipe:           noWipe{},
+		runCancel:      noRunCancel{},
+		ps:             noPs{},
+		inspect:        noInspect{},
+		pipelineShow:   noPipelineShow{},
+		workloadShow:   noWorkloadShow{},
+		provenance:     noProvenance{},
+		runs:           noRuns{},
+		runTrace:       noRunTrace{},
+		runLogs:        noRunLogs{},
+		pipelineGate:   noPipelineGate{},
+		deadImpact:     noDeadImpact{},
+		endpointCtl:    noEndpointControl{},
+		patMint:        noPATMint{},
+		replay:         noReplay{},
+		drain:          noDrain{},
+		catalog:        noCatalog{},
+		catalogList:    noCatalogList{},
+		schemas:        noSchemas{},
+		catalogSources: noCatalogSources{},
+		jactivity:      noJournalActivity{},
 	}
 	for _, o := range opts {
 		o(m)
@@ -153,9 +156,14 @@ type mux struct {
 	replay ReplayHandler
 	drain  DrainHandler
 	// catalog runs the leader-side POST /catalog/install (catalog.go, #217);
-	// catalogList serves the GET /catalog pack listing on any role (catalogread.go, #219).
-	catalog     CatalogHandler
-	catalogList CatalogListHandler
+	// catalogList serves the GET /catalog pack listing on any role (catalogread.go, #219);
+	// catalogSources grows the configured source list via POST /catalog/sources.
+	catalog        CatalogHandler
+	catalogList    CatalogListHandler
+	catalogSources CatalogSourcesHandler
+	// schemas serves the GET /schemas declared-shape listing on any role
+	// (schemas.go): declaration truth, no live-database read.
+	schemas SchemaListHandler
 	// endpoints and qreader are the /q serving seams (endpoint.go): the live
 	// compiled-shape source and the read executor. Both default nil (unwired):
 	// /q then answers the internal-fault envelope, per the unwired-seam doctrine.
@@ -167,6 +175,9 @@ type mux struct {
 	// internal-fault envelope, per the unwired-seam doctrine.
 	datasrc  DataSource
 	readexec ReadExecutor
+	// jactivity is the GET /journal/activity seam (journalactivity.go): the
+	// #238 phase 3 write-activity aggregate. Defaults unwired.
+	jactivity JournalActivityHandler
 }
 
 // ServeHTTP gates mutations to the leader, scope-checks the request's authority
@@ -191,6 +202,8 @@ func (m *mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.serveApply(w, r)
 	case "/destroy":
 		m.serveDestroy(w, r)
+	case "/workspace/apply":
+		m.serveWorkspaceApply(w, r)
 	case "/deadletter/drain":
 		m.serveDeadletterDrain(w, r)
 	case "/deadletter/replay":
@@ -209,6 +222,8 @@ func (m *mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.serveEndpointApply(w, r)
 	case "/catalog/install":
 		m.serveCatalogInstall(w, r)
+	case "/catalog/sources":
+		m.serveCatalogSources(w, r)
 	case "/catalog":
 		m.serveCatalogList(w, r)
 	case "/pat/create":
@@ -219,6 +234,10 @@ func (m *mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.servePipelineShow(w, r)
 	case "/ps":
 		m.servePs(w, r)
+	case "/journal/activity":
+		m.serveJournalActivity(w, r)
+	case "/schemas":
+		m.serveSchemas(w, r)
 	case "/inspect":
 		m.serveInspect(w, r)
 	default:

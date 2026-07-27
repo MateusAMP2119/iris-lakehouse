@@ -33,8 +33,9 @@ import (
 // a failed turn mints its run directly dead-lettered (the worklist is the
 // product); a quiet turn writes nothing at all -- no run row, no watermark bump --
 // so the lane parks until the next cause lands. The pipeline process receives no
-// database credentials: the engine feeds declared-read input over stdin and
-// performs declared-write output itself with exact run attribution.
+// database credentials: the engine feeds declared-read input (and any declared
+// source's watcher-fetched body) over stdin and performs declared-write output
+// itself with exact run attribution.
 
 // runCancelDetail is the dead-letter text an operator cancel writes; the lane gate parks on exactly it (#192: a manual stop is not resurrected), while other stopped details (crash reconciliation) never park.
 const runCancelDetail = "run cancelled by iris run cancel"
@@ -155,7 +156,7 @@ func (p *lanePlane) CancelPipeline(ctx context.Context, pipeline string) (string
 			rec := store.TurnRunRecord{Pipeline: pipeline, Cause: store.CauseManual}
 			return w.DeadLetterTurnRun(ctx, rec, store.ReasonStopped, runCancelDetail)
 		}
-	})
+	}, pipeline)
 	if err != nil {
 		return "", err
 	}
@@ -199,9 +200,11 @@ func newLaneLoop(
 	objects *store.ObjectStore,
 	counters *turnCounters,
 	passCounter *dispatch.PassCounter,
+	dispatchState *dispatch.State,
 	retention store.RetentionReader,
 	retain int64,
 	runLogs *RunLogWriter,
+	sources *sourceWatcher,
 	logger *slog.Logger,
 ) *dispatch.Loop {
 	if logger == nil {
@@ -228,6 +231,7 @@ func newLaneLoop(
 		journal:     journal,
 		data:        data,
 		access:      newAccessCache(),
+		sources:     sources,
 		objects:     objects,
 		counters:    counters,
 		runLogs:     runLogs,
@@ -254,6 +258,9 @@ func newLaneLoop(
 	}
 	if events != nil {
 		opts = append(opts, dispatch.WithEvents(events))
+	}
+	if dispatchState != nil {
+		opts = append(opts, dispatch.WithState(dispatchState))
 	}
 	return dispatch.NewLoop(walk, gate, runnerSeam, logger, opts...)
 }
@@ -284,7 +291,36 @@ func (r laneWalkReader) Walk(ctx context.Context) ([]dispatch.Lane, error) {
 	for i, e := range entries {
 		rows[i] = dispatch.LaneRow{Lane: e.Lane, Pipeline: e.Pipeline, Pos: e.Pos}
 	}
-	return dispatch.BuildWalk(rows, registered), nil
+	lanes := dispatch.BuildWalk(rows, registered)
+	// Fill each lane's care-set (members plus their upstreams) from one bulk
+	// edges read, so a cross-lane dependent wakes to its upstream's labeled
+	// causes and an unrelated pipeline's cause leaves the lane parked.
+	edges, err := r.registry.DependencyEdges(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("lane loop: read dependency edges: %w", err)
+	}
+	upstreams := map[string][]string{}
+	for _, e := range edges {
+		upstreams[e.From] = append(upstreams[e.From], e.To)
+	}
+	for i := range lanes {
+		seen := map[string]bool{}
+		var cares []string
+		for _, p := range lanes[i].Pipelines {
+			if !seen[p] {
+				seen[p] = true
+				cares = append(cares, p)
+			}
+			for _, up := range upstreams[p] {
+				if !seen[up] {
+					seen[up] = true
+					cares = append(cares, up)
+				}
+			}
+		}
+		lanes[i].Cares = cares
+	}
+	return lanes, nil
 }
 
 // lanePassGate resolves a pipeline's depends_on eligibility at its turn in a pass,
@@ -356,8 +392,9 @@ type laneExec struct {
 	queued      store.QueuedManualReader // enqueued lane-member manual runs; nil skips pickup (shape tests)
 	runner      exec.Runner
 	journal     dispatch.JournalHighWatermark
-	data        turnData     // data-database turn seam; nil composes shape tests (no feed, producing turns fault)
-	access      *accessCache // per-pipeline declared-access cache keyed by declaration checksum
+	data        turnData       // data-database turn seam; nil composes shape tests (no feed, producing turns fault)
+	access      *accessCache   // per-pipeline declared-access cache keyed by declaration checksum
+	sources     *sourceWatcher // declared-source watcher, engine-side input
 	objects     *store.ObjectStore
 	counters    *turnCounters // resident turn tallies for the ps readout; nil skips
 	runLogs     *RunLogWriter // per-run output capture; nil discards (shape tests)
@@ -434,7 +471,7 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 		trec.Plugins = rp.pins
 	}
 
-	res := driveTurn(ctx, ses, ses.nextTurn(), feed.Rows, acc.writes, rp, tr)
+	res := driveTurn(ctx, ses, ses.nextTurn(), m.sourceFetcher(rec.Pipeline, acc), feed.Rows, acc.writes, rp, tr, buf)
 	trec.Calls = res.calls
 	switch res.kind {
 	case turnShutdown:
@@ -464,7 +501,7 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 			// running (pins and calls ride the mint), advance the consumed feed
 			// position if any, complete with no snapshot stamps.
 			m.counters.bump(rec.Pipeline, true)
-			if err := m.submit.Submit(ctx, func(w *store.Writer) error { return w.CreateTurnRun(ctx, trec) }); err != nil {
+			if err := m.submit.Submit(ctx, func(w *store.Writer) error { return w.CreateTurnRun(ctx, trec) }, rec.Pipeline); err != nil {
 				return dispatch.RunSucceeded, fmt.Errorf("lane turn %q: mint calls-only: %w", rec.Pipeline, err)
 			}
 			id, err := m.mintedRunID(ctx, rec.Pipeline)
@@ -478,7 +515,7 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 					detail := fmt.Sprintf("turn commit failed: %v", cerr)
 					if derr := m.submit.Submit(ctx, func(w *store.Writer) error {
 						return w.DeadLetterRun(ctx, runID, store.ReasonFailed, detail)
-					}); derr != nil {
+					}, rec.Pipeline); derr != nil {
 						return dispatch.RunSucceeded, fmt.Errorf("lane turn %s: dead-letter: %w", runID, derr)
 					}
 					return dispatch.RunDeadLettered, nil
@@ -486,7 +523,7 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 			}
 			if err := m.submit.Submit(ctx, func(w *store.Writer) error {
 				return w.CompleteTurnRun(ctx, runID, "", 0, 0, ref)
-			}); err != nil {
+			}, rec.Pipeline); err != nil {
 				return dispatch.RunSucceeded, fmt.Errorf("lane turn %s: record succeeded: %w", runID, err)
 			}
 			return dispatch.RunSucceeded, nil
@@ -498,7 +535,7 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 		// turn's stamps. A crash between mint and complete leaves a running run
 		// for the next leader's reconciliation -- never data without a record.
 		m.counters.bump(rec.Pipeline, true)
-		if err := m.submit.Submit(ctx, func(w *store.Writer) error { return w.CreateTurnRun(ctx, trec) }); err != nil {
+		if err := m.submit.Submit(ctx, func(w *store.Writer) error { return w.CreateTurnRun(ctx, trec) }, rec.Pipeline); err != nil {
 			return dispatch.RunSucceeded, fmt.Errorf("lane turn %q: mint: %w", rec.Pipeline, err)
 		}
 		id, err := m.mintedRunID(ctx, rec.Pipeline)
@@ -520,14 +557,14 @@ func (m *laneExec) StartFresh(ctx context.Context, rec store.RunRecord) (dispatc
 			detail := fmt.Sprintf("turn commit failed: %v", cerr)
 			if derr := m.submit.Submit(ctx, func(w *store.Writer) error {
 				return w.DeadLetterRun(ctx, runID, store.ReasonFailed, detail)
-			}); derr != nil {
+			}, rec.Pipeline); derr != nil {
 				return dispatch.RunSucceeded, fmt.Errorf("lane turn %s: dead-letter: %w", runID, derr)
 			}
 			return dispatch.RunDeadLettered, nil
 		}
 		if err := m.submit.Submit(ctx, func(w *store.Writer) error {
 			return w.CompleteTurnRun(ctx, runID, stamps.SnapshotLSN, stamps.JournalFloor, stamps.JournalCeiling, ref)
-		}); err != nil {
+		}, rec.Pipeline); err != nil {
 			return dispatch.RunSucceeded, fmt.Errorf("lane turn %s: record succeeded: %w", runID, err)
 		}
 		return dispatch.RunSucceeded, nil
@@ -564,7 +601,7 @@ func (m *laneExec) deadLetterFreshTurn(ctx context.Context, trec store.TurnRunRe
 	m.counters.bump(trec.Pipeline, true)
 	if err := m.submit.Submit(ctx, func(w *store.Writer) error {
 		return w.DeadLetterTurnRun(ctx, trec, store.ReasonFailed, detail)
-	}); err != nil {
+	}, trec.Pipeline); err != nil {
 		return dispatch.RunSucceeded, fmt.Errorf("lane turn %q: dead-letter: %w", trec.Pipeline, err)
 	}
 	id, err := m.mintedRunID(ctx, trec.Pipeline)
@@ -573,7 +610,7 @@ func (m *laneExec) deadLetterFreshTurn(ctx context.Context, trec store.TurnRunRe
 	}
 	runID := strconv.FormatInt(id, 10)
 	if ref := m.flushTurnLog(runID, trec.Pipeline, target, buf, tr, "dead_lettered"); ref != "" {
-		if err := m.submit.Submit(ctx, func(w *store.Writer) error { return w.StampRunLogRef(ctx, runID, ref) }); err != nil {
+		if err := m.submit.Submit(ctx, func(w *store.Writer) error { return w.StampRunLogRef(ctx, runID, ref) }, trec.Pipeline); err != nil {
 			m.logger.Warn("lane turn: could not stamp log ref", "run", runID, "err", err)
 		}
 	}
@@ -662,7 +699,7 @@ func (m *laneExec) StartQueued(ctx context.Context, pipeline string) error {
 			// Unregistered since enqueue: the run can never start; remove the
 			// phantom so the gate stops reading it as in flight.
 			runID := strconv.FormatInt(q.ID, 10)
-			if derr := m.submit.Submit(ctx, func(w *store.Writer) error { return w.DeleteQueuedRun(ctx, runID) }); derr != nil {
+			if derr := m.submit.Submit(ctx, func(w *store.Writer) error { return w.DeleteQueuedRun(ctx, runID) }, pipeline); derr != nil {
 				m.logger.Warn("queued manual run: could not delete unregistered phantom", "run", runID, "err", derr)
 			}
 			continue
@@ -685,7 +722,7 @@ func (m *laneExec) runToTerminal(ctx context.Context, pipeline string, target st
 	ses, err := m.ensureSession(ctx, pipeline, target, artifactHash)
 	if err != nil {
 		// Nothing started: remove the queued run so meta carries no phantom.
-		if derr := m.submit.Submit(ctx, func(w *store.Writer) error { return w.DeleteQueuedRun(ctx, runID) }); derr != nil {
+		if derr := m.submit.Submit(ctx, func(w *store.Writer) error { return w.DeleteQueuedRun(ctx, runID) }, pipeline); derr != nil {
 			m.logger.Warn("lane run: could not delete queued run after start failure", "run", runID, "err", derr)
 		}
 		return dispatch.RunSucceeded, fmt.Errorf("lane run %q: start: %w", pipeline, err)
@@ -717,7 +754,7 @@ func (m *laneExec) runToTerminal(ctx context.Context, pipeline string, target st
 
 	// Record running with the session's group handle; on a record failure end the
 	// session so no unrecorded process escapes.
-	if err := m.submit.Submit(ctx, func(w *store.Writer) error { return w.MarkRunRunning(ctx, runID, ses.handle.PGID(), logRef) }); err != nil {
+	if err := m.submit.Submit(ctx, func(w *store.Writer) error { return w.MarkRunRunning(ctx, runID, ses.handle.PGID(), logRef) }, pipeline); err != nil {
 		ses.end()
 		m.residents.drop(pipeline)
 		return dispatch.RunSucceeded, fmt.Errorf("lane run %s: record running: %w", runID, err)
@@ -733,12 +770,12 @@ func (m *laneExec) runToTerminal(ctx context.Context, pipeline string, target st
 		// Guarded on the running state, so a cancel's stopped reason stands.
 		if derr := m.submit.Submit(ctx, func(w *store.Writer) error {
 			return w.DeadLetterRun(ctx, runID, store.ReasonFailed, detail)
-		}); derr != nil {
+		}, pipeline); derr != nil {
 			return dispatch.RunSucceeded, fmt.Errorf("lane run %s: dead-letter: %w", runID, derr)
 		}
 		_ = m.submit.Submit(ctx, func(w *store.Writer) error {
 			return dispatch.StampTerminal(ctx, w, m.journal, runID)
-		})
+		}, pipeline)
 		return dispatch.RunDeadLettered, nil
 	}
 
@@ -751,12 +788,12 @@ func (m *laneExec) runToTerminal(ctx context.Context, pipeline string, target st
 	}
 	defer rp.end()
 
-	res := driveTurn(ctx, ses, ses.nextTurn(), feed.Rows, acc.writes, rp, sink)
+	res := driveTurn(ctx, ses, ses.nextTurn(), m.sourceFetcher(pipeline, acc), feed.Rows, acc.writes, rp, sink, sink)
 	if res.kind != turnShutdown {
 		m.counters.bump(pipeline, true) // a pre-minted run's row always records
 		if rp != nil {
 			prec := store.TurnRunRecord{Plugins: rp.pins, Calls: res.calls}
-			if lerr := m.submit.Submit(ctx, func(w *store.Writer) error { return w.RecordRunPlugins(ctx, runID, prec) }); lerr != nil {
+			if lerr := m.submit.Submit(ctx, func(w *store.Writer) error { return w.RecordRunPlugins(ctx, runID, prec) }, pipeline); lerr != nil {
 				m.logger.Warn("lane run: could not record plugin ledger", "run", runID, "err", lerr)
 			}
 		}
@@ -801,13 +838,26 @@ func (m *laneExec) runToTerminal(ctx context.Context, pipeline string, target st
 		}
 	}
 	sink.SetOutcome("succeeded")
-	if serr := m.submit.Submit(ctx, func(w *store.Writer) error { return w.MarkRunSucceeded(ctx, runID) }); serr != nil {
+	if serr := m.submit.Submit(ctx, func(w *store.Writer) error { return w.MarkRunSucceeded(ctx, runID) }, pipeline); serr != nil {
 		return dispatch.RunSucceeded, fmt.Errorf("lane run %s: record succeeded: %w", runID, serr)
 	}
 	_ = m.submit.Submit(ctx, func(w *store.Writer) error {
 		return dispatch.StampTerminal(ctx, w, m.journal, runID)
-	})
+	}, pipeline)
 	return dispatch.RunSucceeded, nil
+}
+
+// sourceFetcher returns the turn's on-demand source-fetch seam: nil for a
+// pipeline with no declared source (a fetch frame then violates), else a
+// closure fetching the declared URL when the script asks.
+func (m *laneExec) sourceFetcher(pipeline string, acc declaredAccess) func(context.Context) *sourceFrame {
+	if acc.source == nil || m.sources == nil {
+		return nil
+	}
+	url := acc.source.HTTP
+	return func(ctx context.Context) *sourceFrame {
+		return m.sources.fetch(ctx, pipeline, url)
+	}
 }
 
 // residentKey fingerprints what a resident process was spawned as (folder,
@@ -902,7 +952,7 @@ func (p *lanePostPass) propagateFailures(ctx context.Context, report dispatch.Pa
 			PoisonedUpstreamRunIDs: plan.PoisonedUpstreamRunIDs,
 			Detail:                 fmt.Sprintf("upstream %s dead-lettered", plan.FailedUpstream),
 		}
-		if err := p.submit.Submit(ctx, func(w *store.Writer) error { return w.DeadLetterPropagated(ctx, rec) }); err != nil {
+		if err := p.submit.Submit(ctx, func(w *store.Writer) error { return w.DeadLetterPropagated(ctx, rec) }, m.Pipeline); err != nil {
 			return fmt.Errorf("lane post-pass %q: propagate: %w", m.Pipeline, err)
 		}
 	}
@@ -962,7 +1012,7 @@ func (p *lanePostPass) pruneRetention(ctx context.Context, report dispatch.PassR
 		batch := records[start:min(start+pruneBatchSize, len(records))]
 		if err := p.submit.Submit(ctx, func(w *store.Writer) error {
 			return w.PruneRuns(ctx, batch, p.deleteLog)
-		}); err != nil {
+		}, report.Pipelines...); err != nil {
 			return fmt.Errorf("lane post-pass %q: prune batch of %d runs: %w", report.Lane, len(batch), err)
 		}
 	}

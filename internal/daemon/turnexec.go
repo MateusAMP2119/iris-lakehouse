@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 
@@ -36,12 +37,14 @@ type turnData interface {
 }
 
 // declaredAccess is a pipeline's declared access resolved for the turn protocol:
-// the reads the feed covers, the writes the collector enforces, and the declared
-// plugin bindings the turn resolves at start (#215).
+// the reads the feed covers, the writes the collector enforces, the declared
+// plugin bindings the turn resolves at start (#215), and the declared source
+// block whose watcher-fetched body the turn takes.
 type declaredAccess struct {
 	reads   []pg.TurnRead
 	writes  dispatch.WriteSet
 	plugins map[string]declare.PluginUse
+	source  *declare.Source
 }
 
 // accessFromDeclaration resolves a pipeline's declared access straight from its
@@ -50,7 +53,7 @@ type declaredAccess struct {
 // (never the grants ledger) keeps the resolution free of any apply-ordering
 // race: a registered pipeline always has its declaration on disk.
 func accessFromDeclaration(decl *declare.Pipeline) declaredAccess {
-	acc := declaredAccess{writes: dispatch.WriteSet{}, plugins: decl.Plugins}
+	acc := declaredAccess{writes: dispatch.WriteSet{}, plugins: decl.Plugins, source: decl.Source}
 	for _, r := range decl.Reads {
 		schema, table, ok := strings.Cut(r.Table, ".")
 		if !ok {
@@ -177,20 +180,27 @@ type turnResult struct {
 	status    exec.ExitStatus
 }
 
-// driveTurn runs one turn over a live session: it writes the go/row/run frames,
-// feeds every stdout line to the turn collector, services declared-plugin calls
-// (answering each with a res frame before reading on), and classifies the
-// ending. A send failure is not an ending of its own -- the process is gone, and
-// its exit reports through the session's exited channel. On process exit the
-// scanner's already-delivered lines are drained first, so a one-shot pipeline
-// that answers its frames and exits cleanly still ends in done, not death.
-func driveTurn(ctx context.Context, ses *residentSession, turn int64, feed []pg.FeedRow, writes dispatch.WriteSet, plugins *resolvedPlugins, rec frameRecorder) turnResult {
+// driveTurn runs one turn over a live session: it writes the go frame and the
+// row/run frames, feeds every frame-shaped stdout line to the turn collector
+// (plain lines join the log sink), services declared-plugin calls (answering
+// each with a res frame before reading on) and source fetches (the script asks
+// with a fetch frame WHEN its own pacing says so; the engine performs the
+// conditional GET and answers with a source frame before reading on), and
+// classifies the ending. A send failure is not an ending of its own -- the
+// process is gone, and its exit reports through the session's exited channel.
+// On process exit the scanner's already-delivered lines are drained first, so
+// a one-shot pipeline that answers its frames and exits cleanly still ends in
+// done, not death.
+func driveTurn(ctx context.Context, ses *residentSession, turn int64, fetchSource func(context.Context) *sourceFrame, feed []pg.FeedRow, writes dispatch.WriteSet, plugins *resolvedPlugins, rec frameRecorder, logs io.Writer) turnResult {
 	var callSet dispatch.CallSet
 	var caller pluginCaller
 	if plugins != nil {
 		callSet, caller = plugins.calls, plugins.caller
 	}
 	col := dispatch.NewTurnCollector(turn, writes, callSet)
+	if fetchSource != nil {
+		col.AllowFetch()
+	}
 
 	sendRecorded := func(line string) bool {
 		if rec != nil {
@@ -250,16 +260,46 @@ func driveTurn(ctx context.Context, ses *residentSession, turn int64, feed []pg.
 		calls = append(calls, recCall)
 	}
 
+	// serviceFetch answers one fetch frame: the engine performs the conditional
+	// GET now and delivers the source frame. A dead process's drained fetch is
+	// never fetched -- no network for a pipeline that can no longer receive the
+	// answer.
+	serviceFetch := func(dead bool) {
+		if !dead && fetchSource != nil {
+			if frame := fetchSource(ctx); frame != nil {
+				if rec != nil {
+					rec.EngineFrame(frame.summary)
+				}
+				_ = ses.send(frame.line)
+			}
+		}
+		col.FetchDelivered()
+	}
+
 	feedLine := func(line string, dead bool) (turnResult, bool) {
+		// A stdout line not shaped like a frame is an application log line, not
+		// a violation: plain prints log, like any console program. It joins the
+		// stderr sink (leveled and stamped at capture); frames keep their
+		// discipline -- a line opening '{' must parse.
+		if trimmed := strings.TrimSpace(line); trimmed == "" || trimmed[0] != '{' {
+			if logs != nil && trimmed != "" {
+				_, _ = logs.Write([]byte(line + "\n"))
+			}
+			return turnResult{}, false
+		}
 		if rec != nil {
 			rec.PipelineFrame(line)
 		}
-		end, call, terminal, err := col.Feed(line)
+		end, call, fetch, terminal, err := col.Feed(line)
 		if err != nil {
 			return turnResult{kind: turnViolated, violation: err, rows: col.Rows(), calls: calls}, true
 		}
 		if call != nil {
 			serviceCall(call, dead)
+			return turnResult{}, false
+		}
+		if fetch {
+			serviceFetch(dead)
 			return turnResult{}, false
 		}
 		if !terminal {

@@ -62,4 +62,4 @@ while read -r line; do
 done
 ```
 
-Python speakers: see the catalog samples (`iris catalog show quake-monitor`) — the embedded starter pack's `quake_feed/main.py` and `quake_report/main.py` under `internal/catalog/packs/quake-monitor/`.
+Python speakers: see the catalog samples (`iris catalog show quake-monitor`) — the public iris-catalog starter pack's `quake_feed/main.py` and `quake_report/main.py` (configure the catalog at setup, or set `catalogs` in iris.toml).

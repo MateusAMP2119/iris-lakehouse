@@ -97,15 +97,16 @@ func TestLoadHistoryCollects(t *testing.T) {
 }
 
 // TestLoadHistoryAbsenceAndLockstep proves the absence doctrine and the
-// lockstep push: a failed probe advances the tick with absent slots, an entity
-// whose run ended keeps taking absent slots (never a fabricated zero), and all
-// live series stay end-aligned.
+// lockstep push: a probed tick records an idle entity as a real zero, a failed
+// probe advances the tick with absent slots everywhere, and all live series
+// stay end-aligned.
 func TestLoadHistoryAbsenceAndLockstep(t *testing.T) {
 	t.Run("load-history-absence", func(t *testing.T) {
 		runs, probe := loadTestFixture()
 		h := psTestLoads(runs, probe)
 
-		// The run ends: the lane and pipeline series take absent slots.
+		// The run ends while the host still answers: the lane and pipeline
+		// series take real zeros -- nothing ran, so nothing burned.
 		h.runs = fakeRunReader{}
 		h.sample(context.Background())
 		doc := h.snapshot()
@@ -113,8 +114,8 @@ func TestLoadHistoryAbsenceAndLockstep(t *testing.T) {
 		for _, s := range doc.Series {
 			byKey[s.Key] = s
 		}
-		if s := byKey["pipeline:load"]; len(s.CPU) != 2 || s.CPU[0] != 50 || s.CPU[1] != api.PsHistoryNoSample {
-			t.Fatalf("pipeline series after the run ended = %+v, want [50, no-sample]", s.CPU)
+		if s := byKey["pipeline:load"]; len(s.CPU) != 2 || s.CPU[0] != 50 || s.CPU[1] != 0 {
+			t.Fatalf("pipeline series after the run ended = %+v, want [50, 0]", s.CPU)
 		}
 		if s := byKey["engine"]; len(s.CPU) != 2 || s.CPU[1] != 52.0 {
 			t.Fatalf("engine series = %+v, want two live slots", s.CPU)
@@ -140,6 +141,34 @@ func TestLoadHistoryAbsenceAndLockstep(t *testing.T) {
 	})
 }
 
+// TestLoadSeriesDead proves the retirement rule zero-filling depends on: a
+// series holding no positive sample anywhere is dead however it recorded its
+// idleness (absent slots, real zeros, or a mix), and one positive sample
+// anywhere -- fine ring, coarse ring, or the partial bucket -- keeps it alive.
+func TestLoadSeriesDead(t *testing.T) {
+	absent := float64(api.PsHistoryNoSample)
+	cases := []struct {
+		name string
+		s    loadSeries
+		want bool
+	}{
+		{"all absent", loadSeries{cpu: []float64{absent, absent}, rss: []int64{0, 0}, bucketCPU: absent}, true},
+		{"all zero", loadSeries{cpu: []float64{0, 0}, rss: []int64{0, 0}, bucketCPU: absent}, true},
+		{"zeros and absence mixed", loadSeries{cpu: []float64{absent, 0}, rss: []int64{0, 0}, bucketCPU: absent}, true},
+		{"live fine slot", loadSeries{cpu: []float64{0, 3.5}, rss: []int64{0, 0}, bucketCPU: absent}, false},
+		{"resident but idle", loadSeries{cpu: []float64{0, 0}, rss: []int64{0, 1 << 20}, bucketCPU: absent}, false},
+		{"live coarse slot", loadSeries{coarseCPU: []float64{9}, coarseRSS: []int64{0}, bucketCPU: absent}, false},
+		{"live partial bucket", loadSeries{bucketCPU: 1.5}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.s.dead(); got != tc.want {
+				t.Errorf("dead() = %v, want %v for %+v", got, tc.want, tc.s)
+			}
+		})
+	}
+}
+
 // TestLoadHistoryPersistsSeals proves the persistence path: a full bucket's
 // seal writes one row per live series (values for the sampled, NULL-shaped
 // absence for the unsampled), nothing writes between seals, and the retention
@@ -148,7 +177,7 @@ func TestLoadHistoryPersistsSeals(t *testing.T) {
 	t.Run("load-history-persists", func(t *testing.T) {
 		runs, probe := loadTestFixture()
 		p := &fakeLoadPersister{}
-		h := newLoadHistory(runs, func() int { return 200 }, p, nil)
+		h := newLoadHistory(runs, func() int { return 200 }, p, nil, nil)
 		h.probe = probe
 		h.pid = 100
 
@@ -204,7 +233,7 @@ func TestLoadHistorySeedsFromPersisted(t *testing.T) {
 			{Series: "engine", Bucket: now - 3*loadBucketSeconds, Sampled: false},
 			{Series: "pipeline:load", Bucket: now - 3*loadBucketSeconds, CPUMax: 70, RSSMax: 2 << 20, Sampled: true},
 		}}
-		h := newLoadHistory(fakeRunReader{}, nil, p, nil)
+		h := newLoadHistory(fakeRunReader{}, nil, p, nil, nil)
 		h.probe = fakeProbe{}
 		h.seed(context.Background())
 
@@ -234,7 +263,7 @@ func TestLoadHistorySeedsFromPersisted(t *testing.T) {
 
 	t.Run("load-history-seed-failure-stays-blank", func(t *testing.T) {
 		p := &fakeLoadPersister{err: errors.New("data database down")}
-		h := newLoadHistory(fakeRunReader{}, nil, p, nil)
+		h := newLoadHistory(fakeRunReader{}, nil, p, nil, nil)
 		h.probe = fakeProbe{}
 		h.seed(context.Background())
 		h.mu.Lock()

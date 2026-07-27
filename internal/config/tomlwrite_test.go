@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -19,7 +20,8 @@ func TestUpsertTOMLFileCreates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat written file: %v", err)
 	}
-	if got := st.Mode().Perm(); got != 0o600 {
+	// Windows has no POSIX file modes; the owner-only contract is unix-only.
+	if got := st.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
 		t.Errorf("file mode = %o, want 600", got)
 	}
 
@@ -95,7 +97,8 @@ func TestUpsertTOMLFilePreserves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if got := st.Mode().Perm(); got != 0o600 {
+	// Windows has no POSIX file modes; the owner-only contract is unix-only.
+	if got := st.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
 		t.Errorf("file mode after upsert = %o, want 600 (tightened from 644)", got)
 	}
 }
@@ -126,5 +129,82 @@ func TestUpsertTOMLFileRejectsBadKey(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err == nil {
 		t.Error("a rejected upsert still wrote the file")
+	}
+}
+
+// TestUpsertTOMLLists proves string-list keys (catalogs) create, rewrite, and
+// round-trip through ParseTOML while preserving unowned lines.
+func TestUpsertTOMLLists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	prior := strings.Join([]string{
+		"# engine home",
+		`socket = "/tmp/iris.sock"`,
+		`catalogs = ["https://old/catalog.json"]`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(prior), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	want := []string{
+		"https://raw.githubusercontent.com/MateusAMP2119/iris-catalog/main/catalog.json",
+		"https://private.example/catalog.json",
+	}
+	if err := UpsertTOML(path, nil, map[string][]string{"catalogs": want}); err != nil {
+		t.Fatalf("UpsertTOML lists: %v", err)
+	}
+
+	data, err := os.ReadFile(path) //nolint:gosec // G304: test reads its own TempDir file.
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "# engine home") || !strings.Contains(content, `socket = "/tmp/iris.sock"`) {
+		t.Errorf("preserved lines lost:\n%s", content)
+	}
+	if strings.Contains(content, "https://old/catalog.json") {
+		t.Errorf("stale catalogs URL still present:\n%s", content)
+	}
+	if got := strings.Count(content, "catalogs ="); got != 1 {
+		t.Errorf("catalogs lines = %d, want 1:\n%s", got, content)
+	}
+
+	res, err := LoadTOMLFile(path)
+	if err != nil {
+		t.Fatalf("LoadTOMLFile: %v", err)
+	}
+	if res.Layer.Catalogs == nil {
+		t.Fatal("Layer.Catalogs is nil after list upsert")
+	}
+	if len(*res.Layer.Catalogs) != len(want) {
+		t.Fatalf("Catalogs = %#v, want %#v", *res.Layer.Catalogs, want)
+	}
+	for i := range want {
+		if (*res.Layer.Catalogs)[i] != want[i] {
+			t.Errorf("Catalogs[%d] = %q, want %q", i, (*res.Layer.Catalogs)[i], want[i])
+		}
+	}
+}
+
+// TestUpsertTOMLEmptyList proves catalogs = [] round-trips as an empty slice.
+func TestUpsertTOMLEmptyList(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	if err := UpsertTOML(path, nil, map[string][]string{"catalogs": {}}); err != nil {
+		t.Fatalf("UpsertTOML empty list: %v", err)
+	}
+	res, err := LoadTOMLFile(path)
+	if err != nil {
+		t.Fatalf("LoadTOMLFile: %v", err)
+	}
+	if res.Layer.Catalogs == nil || len(*res.Layer.Catalogs) != 0 {
+		t.Errorf("Catalogs = %#v, want empty non-nil slice", res.Layer.Catalogs)
+	}
+}
+
+// TestUpsertTOMLRejectsStringAndListSameKey proves a key cannot be both.
+func TestUpsertTOMLRejectsStringAndListSameKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	err := UpsertTOML(path, map[string]string{"catalogs": "x"}, map[string][]string{"catalogs": {"y"}})
+	if err == nil {
+		t.Fatal("UpsertTOML accepted the same key as string and list")
 	}
 }

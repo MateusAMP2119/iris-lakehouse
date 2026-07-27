@@ -147,7 +147,7 @@ func runLogMeta(logs *RunLogWriter, runID string) *api.PsRunLog {
 	}
 	if last, ok := lastCaptureLine(f, info.Size()); ok {
 		if meta.Framed {
-			if rendered, keep := renderCaptureLine(last, ""); keep {
+			if rendered, keep := renderCaptureLine(last, "", ""); keep {
 				meta.LastLine = rendered
 			}
 		} else {

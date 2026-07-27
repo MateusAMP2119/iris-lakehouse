@@ -46,6 +46,12 @@ CREATE TABLE IF NOT EXISTS lanes (
     UNIQUE (lane, pos)
 );
 
+CREATE TABLE IF NOT EXISTS declaration_heads (
+    path text,
+    checksum text NOT NULL,
+    PRIMARY KEY (path)
+);
+
 CREATE TABLE IF NOT EXISTS artifacts (
     hash text,
     pipeline text NOT NULL,
@@ -113,6 +119,14 @@ CREATE TABLE IF NOT EXISTS run_plugin_calls (
     PRIMARY KEY (run_id, seq),
     FOREIGN KEY (run_id) REFERENCES runs (id),
     CHECK (outcome IN ('ok', 'err'))
+);
+
+CREATE TABLE IF NOT EXISTS run_times (
+    run_id bigint,
+    started_at text,
+    finished_at text,
+    PRIMARY KEY (run_id),
+    FOREIGN KEY (run_id) REFERENCES runs (id)
 );
 
 CREATE TABLE IF NOT EXISTS dead_letters (

@@ -15,9 +15,10 @@ import (
 )
 
 // This file is the daemon's leader-side catalog plane (#217): POST /catalog/install
-// resolves a pack (embedded only at this stage), preflights it against the registry
-// and the workspace schemas, materializes it into the leader's own workspace, and
-// optionally runs the declare sequence through the control orchestrator.
+// resolves a pack from configured remote catalogs, preflights it against the
+// registry and the workspace schemas, materializes it into the leader's own
+// workspace, and optionally runs the declare sequence through the control
+// orchestrator.
 
 // catalogPlane is the daemon's api.CatalogHandler: a stable handle delegating to the live orchestrator while leading.
 type catalogPlane struct {
@@ -68,14 +69,23 @@ type applyFunc func(ctx context.Context, req api.ControlRequest) (api.ControlRes
 type catalogOrchestrator struct {
 	workspace string
 	registry  store.RegistryReader
-	resolver  catalog.Resolver
+	resolver  resolverFn
 	apply     applyFunc
 	engine    string // engine version the requires gate compares against (buildinfo, injectable in tests)
 	logger    *slog.Logger
 }
 
+// resolverFn snapshots the live catalog source set into a resolver; planes
+// call it per request so a source added at runtime resolves without a restart.
+type resolverFn func() catalog.Resolver
+
+// fixedResolver wraps a static resolver as a resolverFn (tests, unwired paths).
+func fixedResolver(r catalog.Resolver) resolverFn {
+	return func() catalog.Resolver { return r }
+}
+
 // newCatalogOrchestrator builds the leader's catalog orchestrator over its workspace, the registry reader, the pack resolver, and the apply seam.
-func newCatalogOrchestrator(workspace string, registry store.RegistryReader, resolver catalog.Resolver, apply applyFunc, logger *slog.Logger) *catalogOrchestrator {
+func newCatalogOrchestrator(workspace string, registry store.RegistryReader, resolver resolverFn, apply applyFunc, logger *slog.Logger) *catalogOrchestrator {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -84,7 +94,7 @@ func newCatalogOrchestrator(workspace string, registry store.RegistryReader, res
 
 // installPack resolves the pack, gates on requires, preflights, materializes, and (with req.Apply) runs the declare sequence in the derived order.
 func (o *catalogOrchestrator) installPack(ctx context.Context, req api.CatalogInstallRequest) (api.CatalogInstallResult, error) {
-	p, ok, err := o.resolver.Resolve(ctx, req.Pack)
+	p, ok, err := o.resolver().Resolve(ctx, req.Pack)
 	if err != nil {
 		return api.CatalogInstallResult{}, fmt.Errorf("catalog install: %w", err)
 	}

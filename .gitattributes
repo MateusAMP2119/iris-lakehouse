@@ -1,0 +1,4 @@
+# Check out every text file with LF on all platforms. Golden tests compare
+# bytes against checked-in artifacts, so a Windows checkout under
+# core.autocrlf=true must not rewrite them (or any source) to CRLF.
+* text=auto eol=lf

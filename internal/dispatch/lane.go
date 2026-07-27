@@ -42,6 +42,11 @@ type Lane struct {
 	Name string
 	// Pipelines are the registered members to start, in walk order.
 	Pipelines []string
+	// Cares are the pipeline names whose causes wake this lane: its members plus
+	// their upstreams (a cross-lane dependent watches its upstream's name). Empty
+	// means "care about everything" -- every labeled cause wakes the lane -- so a
+	// walk built without care-sets never misses a change.
+	Cares []string
 }
 
 // BuildWalk constructs the per-lane runnable walk from the persisted lanes rows

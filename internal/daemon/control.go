@@ -142,7 +142,12 @@ type controlOrchestrator struct {
 	// -- the shape-test compositions.
 	submit    dispatch.Submitter
 	roleCreds store.RoleCredentialReader
-	logger    *slog.Logger
+	// sourcesForget, when set, drops a destroyed pipeline's remembered source
+	// state (validators, health) from the on-demand fetcher; a re-registered
+	// pipeline starts fresh. A URL change needs no hook -- the fetcher resets
+	// state itself when the declared URL differs at the next fetch.
+	sourcesForget func(pipeline string)
+	logger        *slog.Logger
 }
 
 // newControlOrchestrator builds the leader's control orchestrator over its workspace
@@ -287,6 +292,10 @@ func (o *controlOrchestrator) destroy(ctx context.Context, req api.ControlReques
 			if err := o.destroyer.DestroyPipeline(ctx, decl.Pipeline.Name); err != nil {
 				return api.ControlResult{}, err
 			}
+			o.forgetHead(ctx, target)
+			if o.sourcesForget != nil {
+				o.sourcesForget(decl.Pipeline.Name)
+			}
 		}
 		return api.ControlResult{Kind: decl.Kind.String(), Target: decl.Pipeline.Name, DryRun: req.DryRun}, nil
 	case declare.KindComposer:
@@ -301,6 +310,7 @@ func (o *controlOrchestrator) destroy(ctx context.Context, req api.ControlReques
 			if err := o.destroyer.DestroyComposer(ctx, decl.Composer.Lane, members); err != nil {
 				return api.ControlResult{}, err
 			}
+			o.forgetHead(ctx, target)
 		}
 		return api.ControlResult{Kind: decl.Kind.String(), Target: decl.Composer.Lane, DryRun: req.DryRun}, nil
 	default:

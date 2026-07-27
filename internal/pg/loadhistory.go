@@ -30,6 +30,14 @@ const loadHistoryDDL = `CREATE TABLE IF NOT EXISTS ` + LoadHistoryName + ` (
     PRIMARY KEY (node, series, bucket)
 );`
 
+// loadHistoryRowsColumnDDL adds the captured-row column to a table created
+// before the rows series existed. Nullable, so a bucket sealed without a
+// journal reading persists as absence in the schema itself, exactly as an
+// unsampled load bucket does. ADD COLUMN IF NOT EXISTS is idempotent, so it
+// rides the same create-if-missing ensure every daemon start runs -- the
+// no-migration-framework route.
+const loadHistoryRowsColumnDDL = `ALTER TABLE ` + LoadHistoryName + ` ADD COLUMN IF NOT EXISTS rows_sum bigint;`
+
 // loadHistoryBucketIndexDDL indexes the bucket column alone, the prune's scan.
 const loadHistoryBucketIndexDDL = `CREATE INDEX IF NOT EXISTS load_history_bucket ON ` + LoadHistoryName + ` (bucket);`
 
@@ -38,7 +46,7 @@ const loadHistoryBucketIndexDDL = `CREATE INDEX IF NOT EXISTS load_history_bucke
 // daemon can call it at every start; a dropped table self-heals at the next
 // call.
 func EnsureLoadHistory(ctx context.Context, db DB) error {
-	for _, stmt := range []string{CaptureSchemaDDL(), loadHistoryDDL, loadHistoryBucketIndexDDL} {
+	for _, stmt := range []string{CaptureSchemaDDL(), loadHistoryDDL, loadHistoryRowsColumnDDL, loadHistoryBucketIndexDDL} {
 		if err := db.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("pg: ensure load history: %w", err)
 		}
@@ -60,8 +68,15 @@ type LoadBucket struct {
 	CPUMax float64
 	// RSSMax is the bucket's maximum sampled resident memory in bytes.
 	RSSMax int64
-	// Sampled reports whether the bucket saw any sample.
+	// Sampled reports whether the bucket saw any load sample.
 	Sampled bool
+	// RowsSum is the bucket's captured-row total: the SUM of its ticks, not
+	// their maximum. Rows are additive; load is not.
+	RowsSum int64
+	// RowsSampled reports whether the bucket saw any journal reading. False
+	// persists (and reads back) as NULL -- a bucket the journal never answered
+	// for is absent, not zero.
+	RowsSampled bool
 }
 
 // WriteLoadBuckets persists one seal's buckets for node in a single
@@ -83,9 +98,13 @@ func (c *Client) WriteLoadBuckets(ctx context.Context, node string, buckets []Lo
 		if b.Sampled {
 			cpu, rss = &b.CPUMax, &b.RSSMax
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO `+LoadHistoryName+` (node, series, bucket, cpu_max, rss_max)
-VALUES ($1, $2, $3, $4, $5) ON CONFLICT (node, series, bucket) DO NOTHING`,
-			node, b.Series, b.Bucket, cpu, rss); err != nil {
+		var rowsSum *int64
+		if b.RowsSampled {
+			rowsSum = &b.RowsSum
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO `+LoadHistoryName+` (node, series, bucket, cpu_max, rss_max, rows_sum)
+VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (node, series, bucket) DO NOTHING`,
+			node, b.Series, b.Bucket, cpu, rss, rowsSum); err != nil {
 			return fmt.Errorf("pg: write load bucket %s/%s: %w", node, b.Series, err)
 		}
 	}
@@ -99,7 +118,7 @@ VALUES ($1, $2, $3, $4, $5) ON CONFLICT (node, series, bucket) DO NOTHING`,
 // (unix seconds), in bucket order -- the seeding read the daemon replays into
 // its coarse rings at start.
 func (c *Client) ReadLoadHistory(ctx context.Context, node string, since int64) ([]LoadBucket, error) {
-	rows, err := c.pool.Query(ctx, `SELECT series, bucket, cpu_max, rss_max FROM `+LoadHistoryName+`
+	rows, err := c.pool.Query(ctx, `SELECT series, bucket, cpu_max, rss_max, rows_sum FROM `+LoadHistoryName+`
 WHERE node = $1 AND bucket >= $2 ORDER BY bucket, series`, node, since)
 	if err != nil {
 		return nil, fmt.Errorf("pg: read load history: %w", err)
@@ -109,8 +128,8 @@ WHERE node = $1 AND bucket >= $2 ORDER BY bucket, series`, node, since)
 	for rows.Next() {
 		var b LoadBucket
 		var cpu *float64
-		var rss *int64
-		if err := rows.Scan(&b.Series, &b.Bucket, &cpu, &rss); err != nil {
+		var rss, rowsSum *int64
+		if err := rows.Scan(&b.Series, &b.Bucket, &cpu, &rss, &rowsSum); err != nil {
 			return nil, fmt.Errorf("pg: scan load bucket: %w", err)
 		}
 		if cpu != nil {
@@ -118,6 +137,9 @@ WHERE node = $1 AND bucket >= $2 ORDER BY bucket, series`, node, since)
 		}
 		if rss != nil {
 			b.RSSMax = *rss
+		}
+		if rowsSum != nil {
+			b.RowsSum, b.RowsSampled = *rowsSum, true
 		}
 		out = append(out, b)
 	}

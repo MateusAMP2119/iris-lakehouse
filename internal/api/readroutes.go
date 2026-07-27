@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 )
 
 // This file is the E14 read-route surface: the runs collection with its
@@ -65,11 +66,19 @@ type DeadImpactHandler interface {
 // frames and stamps marked, a legacy raw capture byte-for-byte.
 type LogsOptions struct {
 	// Stream filters a framed capture to one stream: "log" (the pipeline's
-	// stderr lines) or "frames" (the protocol transcript). Empty keeps all.
+	// application-log lines -- stderr plus plain stdout prints) or "frames"
+	// (the protocol transcript). Empty keeps all.
 	Stream string
 	// Format selects the wire rendering: "tagged" streams the framed file
 	// verbatim (the TUI parses the tags itself). Empty naturalizes.
 	Format string
+	// Level is the minimum application-log level served (debug, info, warn,
+	// error); empty keeps every log line.
+	Level string
+	// TailBytes serves only the capture's last N bytes (trimmed to whole
+	// lines), so a follower polling a growing file reads O(N) per poll, not
+	// the whole file. Zero serves everything.
+	TailBytes int64
 }
 
 // RunLogsHandler serves GET /runs/{id}/logs: the run's captured output,
@@ -259,7 +268,10 @@ func (m *mux) serveRunTrace(w http.ResponseWriter, r *http.Request, id string) {
 // serveRunLogs handles GET /runs/{id}/logs: the run's captured output,
 // streamed as plain text -- raw process output, never a JSON envelope. The
 // optional ?stream=log|frames filters a framed capture; ?format=tagged streams
-// the framed file verbatim (mutually exclusive with a stream filter). An
+// the framed file verbatim (mutually exclusive with a stream filter);
+// ?level=<debug|info|warn|error> serves only application-log lines at or above
+// that level; ?tailbytes=N serves only the capture's last N bytes, trimmed to
+// whole lines. An
 // unwired reader is a 500 internal fault; a run with no captured output is an
 // operation failure naming why.
 func (m *mux) serveRunLogs(w http.ResponseWriter, r *http.Request, id string) {
@@ -267,10 +279,20 @@ func (m *mux) serveRunLogs(w http.ResponseWriter, r *http.Request, id string) {
 		WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET "+r.URL.Path+" only")
 		return
 	}
-	opts := LogsOptions{Stream: r.URL.Query().Get("stream"), Format: r.URL.Query().Get("format")}
+	opts := LogsOptions{Stream: r.URL.Query().Get("stream"), Format: r.URL.Query().Get("format"), Level: r.URL.Query().Get("level")}
+	if tb := r.URL.Query().Get("tailbytes"); tb != "" {
+		n, err := strconv.ParseInt(tb, 10, 64)
+		if err != nil || n < 0 {
+			WriteError(w, http.StatusBadRequest, "bad_param", "tailbytes must be a non-negative integer")
+			return
+		}
+		opts.TailBytes = n
+	}
 	for k := range r.URL.Query() {
-		if k != "stream" && k != "format" {
-			WriteError(w, http.StatusBadRequest, CodeBadRequest, "unknown parameter "+k+"; run logs accepts stream and format")
+		switch k {
+		case "stream", "format", "level", "tailbytes":
+		default:
+			WriteError(w, http.StatusBadRequest, CodeBadRequest, "unknown parameter "+k+"; run logs accepts stream, format, level, and tailbytes")
 			return
 		}
 	}

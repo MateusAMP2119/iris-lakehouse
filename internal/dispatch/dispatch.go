@@ -26,11 +26,13 @@ import (
 // (a deposed leader, for instance, whose dispatcher shut down).
 var ErrDispatcherStopped = errors.New("dispatch: dispatcher stopped")
 
-// request is one unit of work handed to the dispatcher goroutine: the write closure
-// and the channel its result returns on.
+// request is one unit of work handed to the dispatcher goroutine: the write closure,
+// the pipeline names it touches (labeling the watermark bump; empty = global), and
+// the channel its result returns on.
 type request struct {
-	fn   func(*store.Writer) error
-	resp chan error
+	fn      func(*store.Writer) error
+	touched []string
+	resp    chan error
 }
 
 // Dispatcher serializes every meta write onto one goroutine that owns the single
@@ -95,9 +97,12 @@ func (d *Dispatcher) loop(ctx context.Context) {
 			// A successful write is an engine-visible cause: bump the watermark
 			// BEFORE answering the submitter, so by the time a caller observes its
 			// mutation done, any lane parked on the prior sequence is already
-			// eligible (no lost-wake window between reply and bump).
+			// eligible (no lost-wake window between reply and bump). The bump
+			// carries the submitter's touched names; an untagged write is a
+			// global cause, waking everything -- over-waking is safe, a missed
+			// wake is not.
 			if err == nil && d.events != nil {
-				d.events.Bump()
+				d.events.Bump(req.touched...)
 			}
 			req.resp <- err
 		}
@@ -108,10 +113,12 @@ func (d *Dispatcher) loop(ctx context.Context) {
 // its result, blocking until the write completes (or ctx is cancelled, or the
 // dispatcher stops). Because every meta write goes through here, they are
 // serialized onto the one goroutine: there is no second path to the Writer.
-func (d *Dispatcher) Submit(ctx context.Context, fn func(*store.Writer) error) error {
+// touched names the pipelines the write concerns, labeling the watermark bump so
+// only lanes caring about them wake; an untagged submit is a global cause.
+func (d *Dispatcher) Submit(ctx context.Context, fn func(*store.Writer) error, touched ...string) error {
 	resp := make(chan error, 1)
 	select {
-	case d.reqs <- request{fn: fn, resp: resp}:
+	case d.reqs <- request{fn: fn, touched: touched, resp: resp}:
 	case <-d.done:
 		return ErrDispatcherStopped
 	case <-ctx.Done():

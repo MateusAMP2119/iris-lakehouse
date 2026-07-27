@@ -23,7 +23,7 @@ type CatalogPack struct {
 	Requires string `json:"requires,omitempty"`
 	// SHA256 is the pack tarball digest (remote sources only).
 	SHA256 string `json:"sha256,omitempty"`
-	// Source names where the pack resolves from (embedded, or a catalog URL).
+	// Source names where the pack resolves from (a catalog index URL).
 	Source string `json:"source"`
 	// Shadowed marks a pack hidden by a same-named earlier source.
 	Shadowed bool `json:"shadowed,omitempty"`
@@ -41,7 +41,7 @@ type CatalogPack struct {
 
 // CatalogListResult is the GET /catalog payload: packs plus advisory source warnings.
 type CatalogListResult struct {
-	// Packs are the visible packs across every source, embedded first.
+	// Packs are the visible packs across every configured catalog source, earliest first.
 	Packs []CatalogPack `json:"packs"`
 	// Warnings name catalog sources that failed to resolve (the overlay banners them).
 	Warnings []string `json:"warnings,omitempty"`

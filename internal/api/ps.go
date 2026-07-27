@@ -32,6 +32,10 @@ type PsPayload struct {
 	// Residents are the leader's live resident workers' turn counters (#206):
 	// quiet-loop visibility held in memory, no rows. Present on the leader only.
 	Residents []PsResident `json:"residents,omitempty"`
+	// Sources are the declared sources' operator-visible health: a failing
+	// external feed shows here (and in the daemon log) even while its turns
+	// stay quiet. Present on the leader only, and only once a source fetched.
+	Sources []SourceHealth `json:"sources,omitempty"`
 	// SampleTick is the daemon load collector's monotonic sample counter: it
 	// advances once per collector sample, so a poller can tell a fresh load
 	// reading from a repeat of the last one. Zero before the first sample (or
@@ -41,6 +45,115 @@ type PsPayload struct {
 	// ?history=1. It is daemon memory, not persistence: it survives any number
 	// of client restarts and dies with the daemon.
 	History *PsHistory `json:"history,omitempty"`
+	// Retention is the run-history retention readout: the configured keep
+	// count and each pipeline's kept run-id range.
+	Retention *PsRetention `json:"retention,omitempty"`
+	// PipelineTimes are the per-pipeline observed-duration aggregates (#238
+	// phase 2): rendered strings and quantized strip levels only, so no
+	// numeric duration rides the wire. Absent until a pipeline records a
+	// timed terminal run.
+	PipelineTimes []PsPipelineTime `json:"pipeline_times,omitempty"`
+	// Dispatch is the leader's live dispatch readout: which lanes are parked on
+	// the watermark, what wakes them, and what each pipeline's gate last
+	// decided. Present on the leader only -- a standby dispatches nothing, so
+	// it reports nothing rather than an empty claim.
+	Dispatch *PsDispatch `json:"dispatch,omitempty"`
+}
+
+// PsDispatch is the leader's live dispatch readout: the lane loop's own account of
+// why each pipeline is or is not running. It is the clockless answer to "when does
+// this run again" -- iris has no schedule, it has causes, so the readout names the
+// causes a lane waits on rather than a next-fire time. Every field is leader-term
+// runtime state (dispatch.DispatchState), never a stored row, so it is empty on a
+// fresh leader until the loop's first reconcile.
+type PsDispatch struct {
+	// Lanes are the walk's lanes and their live loop state, ordered by lane.
+	Lanes []PsDispatchLane `json:"lanes,omitempty"`
+	// Pipelines are the per-pipeline gate resolutions, ordered by pipeline.
+	Pipelines []PsDispatchPipeline `json:"pipelines,omitempty"`
+}
+
+// Dispatch lane states. A lane is passing (a pass in flight), parked (waiting on a
+// cause it consumes), or eligible (about to pass at the next reconcile).
+const (
+	DispatchPassing  = "passing"
+	DispatchParked   = "parked"
+	DispatchEligible = "eligible"
+)
+
+// PsDispatchLane is one lane's live loop state.
+type PsDispatchLane struct {
+	// Lane is the lane's name.
+	Lane string `json:"lane"`
+	// Members are the lane's pipelines in composer order: the serial walk order
+	// a pass follows, member N+1 starting only once member N is terminal.
+	Members []string `json:"members,omitempty"`
+	// Cares are the pipeline names whose causes wake this lane -- its members
+	// plus their upstreams. Empty means the lane wakes on any labeled cause.
+	Cares []string `json:"cares,omitempty"`
+	// State is the lane's disposition: passing, parked, or eligible.
+	State string `json:"state"`
+	// Passes counts the lane's completed passes this leadership term. A count of
+	// passes, never a rate: no clock divides it.
+	Passes int64 `json:"passes,omitempty"`
+}
+
+// Gate resolutions, as the last pass decided them.
+const (
+	DispatchGateOpen     = "open"
+	DispatchGateClosed   = "closed"
+	DispatchGatePoisoned = "poisoned"
+	DispatchGateUngated  = "ungated"
+)
+
+// PsDispatchPipeline is one pipeline's dispatch position and gate resolution: where
+// it sits in its lane's serial walk and what the gate said at its last turn.
+type PsDispatchPipeline struct {
+	// Pipeline is the pipeline the row describes.
+	Pipeline string `json:"pipeline"`
+	// Lane is the lane walking it; empty when no live lane names it.
+	Lane string `json:"lane,omitempty"`
+	// Pos is the pipeline's 1-based position in its lane's composer order, and
+	// Members the lane's member count -- together, "member 2 of 3".
+	Pos     int `json:"pos,omitempty"`
+	Members int `json:"members,omitempty"`
+	// Gate is the last turn's resolution: open, closed, poisoned, or ungated.
+	// Empty when the pipeline has not reached a turn this term.
+	Gate string `json:"gate,omitempty"`
+	// Edges is the per-edge gate ledger in edge order, empty when ungated.
+	Edges []PsDispatchEdge `json:"edges,omitempty"`
+}
+
+// PsDispatchEdge is one depends_on edge's verdict from the last gate evaluation.
+type PsDispatchEdge struct {
+	// Upstream is the upstream pipeline's name.
+	Upstream string `json:"upstream"`
+	// Verdict is the edge's disposition: pending, open, up_to_date, or poisoned.
+	Verdict string `json:"verdict"`
+	// LatestRunID is the upstream run the verdict resolved against, as a string
+	// id; empty when the upstream has never run.
+	LatestRunID string `json:"latest_run_id,omitempty"`
+}
+
+// PsPipelineTime is one pipeline's observed-duration aggregate block: every
+// field is a rendered display string or a quantized level — measurement of
+// the past, never scheduling input.
+type PsPipelineTime struct {
+	// Pipeline is the aggregated pipeline.
+	Pipeline string `json:"pipeline"`
+	// Runs counts the timed terminal runs aggregated here.
+	Runs int `json:"runs"`
+	// Last is the newest timed run's rendered duration.
+	Last string `json:"last,omitempty"`
+	// Avg is the rendered mean duration.
+	Avg string `json:"avg,omitempty"`
+	// P50 is the rendered median duration.
+	P50 string `json:"p50,omitempty"`
+	// Max is the rendered maximum duration.
+	Max string `json:"max,omitempty"`
+	// Levels are the per-run durations quantized 1..8 against Max, oldest
+	// first — the TIME strip's bars.
+	Levels []int `json:"levels,omitempty"`
 }
 
 // PsHistory is the daemon-held load history under ?history=1: one series per
@@ -82,6 +195,15 @@ type PsSeries struct {
 	CoarseCPU []float64 `json:"coarse_cpu"`
 	// CoarseRSS is the coarse grid's resident-memory history: per-bucket maxima.
 	CoarseRSS []int64 `json:"coarse_rss"`
+	// Rows is the fine grid's captured-row history: the journal rows counted
+	// in each tick's id delta (PsHistoryNoSample when the journal was unread).
+	// A successful read counting nothing is a real zero, not absence.
+	Rows []int64 `json:"rows,omitempty"`
+	// CoarseRows is the coarse grid's captured-row history: each slot the SUM
+	// of its bucket's fine deltas. Rows are additive -- unlike CPU and RSS,
+	// whose coarse slots carry the bucket MAXIMUM. A maximum here would
+	// understate a bucket by its tick count.
+	CoarseRows []int64 `json:"coarse_rows,omitempty"`
 }
 
 // PsResident is one pipeline's turn readout under the turn protocol (#206): how
@@ -104,6 +226,24 @@ type PsLoad struct {
 	CPUPercent float64 `json:"cpu_percent"`
 	// RSSBytes is the sampled resident set size in bytes.
 	RSSBytes int64 `json:"rss_bytes"`
+}
+
+// SourceHealth is one declared source's operator-visible state.
+type SourceHealth struct {
+	// Pipeline is the declaring pipeline.
+	Pipeline string `json:"pipeline"`
+	// URL is the declared source URL.
+	URL string `json:"url"`
+	// Status is the last answer's HTTP status (0 before any answer).
+	Status int `json:"status,omitempty"`
+	// Error is the last attempt's failure text; empty when healthy.
+	Error string `json:"error,omitempty"`
+	// ConsecutiveFails counts the unbroken failure streak; 0 when healthy.
+	ConsecutiveFails int `json:"consecutive_fails,omitempty"`
+	// FreshFor is the origin's own declared freshness lifetime for the last
+	// answer (bounded by the engine's cache limits) -- the re-check pace comes
+	// from HTTP, never from an iris schedule.
+	FreshFor string `json:"fresh_for,omitempty"`
 }
 
 // PsEngine is the engine block of the ps readout: identity, leadership role,
@@ -130,6 +270,29 @@ type PsEngine struct {
 	Load *PsLoad `json:"load"`
 }
 
+// PsRetention is the engine's run-history retention readout: the configured
+// keep count and each pipeline's kept run-id range. Ids, never timestamps --
+// retention in iris is count-based and clockless, so the floor is an identity.
+type PsRetention struct {
+	// Retain is the configured per-pipeline keep count.
+	Retain int64 `json:"retain"`
+	// Pipelines are the per-pipeline kept ranges, ordered by pipeline.
+	Pipelines []PsPipelineRetention `json:"pipelines,omitempty"`
+}
+
+// PsPipelineRetention is one pipeline's kept run history: how many run rows
+// survive and the id floor and ceiling they span.
+type PsPipelineRetention struct {
+	// Pipeline is the pipeline the range belongs to.
+	Pipeline string `json:"pipeline"`
+	// Runs is how many run rows meta still holds for it.
+	Runs int `json:"runs"`
+	// OldestRunID is the id floor of the kept range.
+	OldestRunID string `json:"oldest_run_id"`
+	// NewestRunID is the id ceiling of the kept range.
+	NewestRunID string `json:"newest_run_id"`
+}
+
 // PsRun is one run row of the ps readout.
 type PsRun struct {
 	// ID is the run's meta id.
@@ -140,6 +303,9 @@ type PsRun struct {
 	Lane string `json:"lane,omitempty"`
 	// State is the run's lifecycle state.
 	State string `json:"state"`
+	// Cause is why the run was minted (runs.cause): manual, loop, replay, or
+	// propagated -- the run table's TRIGGER column. Empty when unrecorded.
+	Cause string `json:"cause,omitempty"`
 	// ExitCode is the subprocess exit code, present on terminal runs only.
 	ExitCode *int `json:"exit_code,omitempty"`
 	// Load is the run's process group's sampled host load, present only on a
@@ -148,6 +314,14 @@ type PsRun struct {
 	// Log is the run's captured-output metadata, present only when the
 	// answering node holds the run's capture file.
 	Log *PsRunLog `json:"log,omitempty"`
+	// Elapsed is a running run's observed age, rendered engine-side
+	// ("2m14s") — display only, never a computable timestamp (#238 phase 2,
+	// the PsEngine.Uptime stance). Empty when unknowable.
+	Elapsed string `json:"elapsed,omitempty"`
+	// Duration is a terminal run's observed span, rendered engine-side; a
+	// sub-second run renders milliseconds ("40ms"). Empty when either stamp
+	// is absent.
+	Duration string `json:"duration,omitempty"`
 }
 
 // PsRunLog is one run's captured-output metadata on the ps readout: where the

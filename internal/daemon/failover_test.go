@@ -478,7 +478,7 @@ func TestFailoverNoResumeDestructive(t *testing.T) {
 // submitFunc adapts a func to dispatch.Submitter for tests.
 type submitFunc func(ctx context.Context, fn func(*store.Writer) error) error
 
-func (f submitFunc) Submit(ctx context.Context, fn func(*store.Writer) error) error {
+func (f submitFunc) Submit(ctx context.Context, fn func(*store.Writer) error, _ ...string) error {
 	return f(ctx, fn)
 }
 

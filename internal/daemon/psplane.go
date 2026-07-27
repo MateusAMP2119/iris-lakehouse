@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/buildinfo"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/config"
+	"github.com/MateusAMP2119/iris-lakehouse/internal/dispatch"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/store"
 )
 
@@ -47,11 +49,18 @@ type RunSnapshotReader interface {
 // load collector (which owns the host probing and the managed-postmaster
 // summing the plane's readout reports).
 type psPlane struct {
+	retain   int64
 	role     api.RoleReporter
 	runs     RunSnapshotReader
 	loads    *loadHistory
-	counters *turnCounters // resident turn tallies (#206); nil renders none
-	runLogs  *RunLogWriter // local capture files for the per-run log metadata; nil renders none
+	counters *turnCounters  // resident turn tallies (#206); nil renders none
+	runLogs  *RunLogWriter  // local capture files for the per-run log metadata; nil renders none
+	sources  *sourceWatcher // declared-source health; nil renders none
+	// dispatch and passes are the leader's live lane-loop state and per-lane pass
+	// counts. Both are leader-held runtime memory: on a standby they are empty (it
+	// dispatches nothing), so the readout omits the dispatch block entirely.
+	dispatch *dispatch.State
+	passes   *dispatch.PassCounter
 	logger   *slog.Logger
 	pid      int
 	started  time.Time
@@ -67,16 +76,20 @@ var _ api.PsHandler = (*psPlane)(nil)
 // history). The plane records its own pid at construction and counts uptime
 // from it: the plane is built at daemon start, so its age is the daemon's. A
 // nil logger discards output.
-func NewPsPlane(role api.RoleReporter, runs RunSnapshotReader, loads *loadHistory, counters *turnCounters, runLogs *RunLogWriter, logger *slog.Logger) api.PsHandler {
+func NewPsPlane(role api.RoleReporter, runs RunSnapshotReader, loads *loadHistory, counters *turnCounters, runLogs *RunLogWriter, sources *sourceWatcher, dispatchState *dispatch.State, passes *dispatch.PassCounter, retain int64, logger *slog.Logger) api.PsHandler {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return &psPlane{
 		role:     role,
+		retain:   retain,
 		runs:     runs,
 		loads:    loads,
 		counters: counters,
+		sources:  sources,
 		runLogs:  runLogs,
+		dispatch: dispatchState,
+		passes:   passes,
 		logger:   logger,
 		pid:      os.Getpid(),
 		started:  time.Now(),
@@ -153,6 +166,16 @@ func (p *psPlane) Ps(ctx context.Context, all, history bool) (api.PsPayload, err
 			Pipeline: run.Pipeline,
 			Lane:     run.Lane,
 			State:    string(run.State),
+			Cause:    string(run.Cause),
+		}
+		// Observed run times (#238 phase 2): rendered here, second- (or
+		// millisecond-) truncated, so the wire never carries a computable
+		// timestamp — the renderUptime stance, per run.
+		if run.State == store.RunRunning && run.ElapsedMillis != nil {
+			row.Elapsed = renderRunSpan(*run.ElapsedMillis)
+		}
+		if (run.State == store.RunSucceeded || run.State == store.RunDeadLettered) && run.DurationMillis != nil {
+			row.Duration = renderRunSpan(*run.DurationMillis)
 		}
 		// The reader coalesces a missing exit code to zero; only a terminal run
 		// carries a real one on the wire.
@@ -167,10 +190,91 @@ func (p *psPlane) Ps(ctx context.Context, all, history bool) (api.PsPayload, err
 		rows = append(rows, row)
 	}
 	payload := api.PsPayload{Engine: engine, Runs: rows, Residents: p.counters.snapshot(), SampleTick: tick}
+	payload.PipelineTimes = pipelineTimes(runs)
+	payload.Retention = pipelineRetention(runs, p.retain)
+	if p.sources != nil {
+		payload.Sources = p.sources.health()
+	}
 	if history {
 		payload.History = p.loads.snapshot()
 	}
+	payload.Dispatch = dispatchReadout(p.dispatch, p.passes)
 	return payload, nil
+}
+
+// dispatchReadout composes the live dispatch block from the leader's lane-loop
+// state and pass counts. It returns nil -- the block absent from the wire -- when no
+// state is wired or the loop has not reconciled, which is exactly the standby case:
+// a node that dispatches nothing reports nothing rather than an empty claim.
+func dispatchReadout(state *dispatch.State, passes *dispatch.PassCounter) *api.PsDispatch {
+	lanes := state.Lanes()
+	if len(lanes) == 0 {
+		return nil
+	}
+	counts := map[string]int64{}
+	if passes != nil {
+		counts = passes.Counts()
+	}
+	out := &api.PsDispatch{Lanes: make([]api.PsDispatchLane, 0, len(lanes))}
+	// position indexes each pipeline's place in its lane's serial walk, so the
+	// per-pipeline rows can answer "member 2 of 3" without re-reading the walk.
+	type slot struct {
+		lane     string
+		pos, len int
+	}
+	position := map[string]slot{}
+	for _, l := range lanes {
+		out.Lanes = append(out.Lanes, api.PsDispatchLane{
+			Lane:    l.Lane,
+			Members: l.Members,
+			Cares:   l.Cares,
+			State:   laneState(l),
+			Passes:  counts[l.Lane],
+		})
+		for i, m := range l.Members {
+			position[m] = slot{lane: l.Lane, pos: i + 1, len: len(l.Members)}
+		}
+	}
+
+	// Every walked member gets a row, whether or not it has reached a turn yet:
+	// the pane must be able to place a pipeline in its lane before the first pass
+	// gates it. Gate fields stay empty until a turn resolves one.
+	gates := map[string]dispatch.PipelineGate{}
+	for _, g := range state.Gates() {
+		gates[g.Pipeline] = g
+	}
+	for _, l := range lanes {
+		for _, m := range l.Members {
+			slot := position[m]
+			row := api.PsDispatchPipeline{Pipeline: m, Lane: slot.lane, Pos: slot.pos, Members: slot.len}
+			if g, ok := gates[m]; ok {
+				row.Gate = g.Decision
+				for _, e := range g.Edges {
+					edge := api.PsDispatchEdge{Upstream: e.Upstream, Verdict: e.Verdict.String()}
+					if e.LatestRunID != 0 {
+						edge.LatestRunID = strconv.FormatInt(e.LatestRunID, 10)
+					}
+					row.Edges = append(row.Edges, edge)
+				}
+			}
+			out.Pipelines = append(out.Pipelines, row)
+		}
+	}
+	sort.Slice(out.Pipelines, func(a, b int) bool { return out.Pipelines[a].Pipeline < out.Pipelines[b].Pipeline })
+	return out
+}
+
+// laneState names a lane's disposition for the wire. Passing wins over parked: a
+// lane whose pass is in flight is working, whatever the watermark says.
+func laneState(l dispatch.LaneDispatch) string {
+	switch {
+	case l.Passing:
+		return api.DispatchPassing
+	case l.Parked:
+		return api.DispatchParked
+	default:
+		return api.DispatchEligible
+	}
 }
 
 // sumTrees sums the host sample over the engine's process trees: every process
@@ -219,4 +323,123 @@ func renderUptime(d time.Duration) string {
 		d = 0
 	}
 	return d.Truncate(time.Second).String()
+}
+
+// renderRunSpan renders an observed run span for display: second-truncated
+// once it reaches a second, milliseconds below (a 40ms run's duration is its
+// only honest cost signal — #238). Display only, like renderUptime.
+func renderRunSpan(ms int64) string {
+	if ms < 0 {
+		ms = 0
+	}
+	d := time.Duration(ms) * time.Millisecond
+	if d < time.Second {
+		return d.Truncate(time.Millisecond).String()
+	}
+	return d.Truncate(time.Second).String()
+}
+
+// pipelineRetention folds the run snapshot into the retention readout: the
+// configured keep count and each pipeline's surviving run-id range. Pure over
+// the snapshot, so it is table-testable without a database. Ids, never
+// timestamps: prune is count-based, so the floor is the oldest id meta still
+// holds, not a moment.
+func pipelineRetention(runs []store.Run, retain int64) *api.PsRetention {
+	if len(runs) == 0 {
+		return nil
+	}
+	type span struct {
+		oldest, newest string
+		count          int
+	}
+	byPipe := map[string]*span{}
+	var order []string
+	for _, r := range runs { // ascending id, the reader's order
+		s := byPipe[r.Pipeline]
+		if s == nil {
+			s = &span{oldest: r.ID}
+			byPipe[r.Pipeline] = s
+			order = append(order, r.Pipeline)
+		}
+		s.newest = r.ID
+		s.count++
+	}
+	sort.Strings(order)
+	out := &api.PsRetention{Retain: retain}
+	for _, name := range order {
+		s := byPipe[name]
+		out.Pipelines = append(out.Pipelines, api.PsPipelineRetention{
+			Pipeline: name, Runs: s.count, OldestRunID: s.oldest, NewestRunID: s.newest,
+		})
+	}
+	return out
+}
+
+// pipelineTimes aggregates observed durations per pipeline (#238 phase 2):
+// last / avg / p50 / max as rendered strings plus the newest-last quantized
+// per-run levels the TIME strip draws. Aggregation happens engine-side so the
+// wire ships no numeric durations a client could feed back as scheduling
+// input; the levels are 1..8 against the pipeline's own maximum.
+func pipelineTimes(runs []store.Run) []api.PsPipelineTime {
+	type acc struct {
+		durs []int64 // ascending run order (reader order)
+	}
+	byPipe := map[string]*acc{}
+	var order []string
+	for _, run := range runs {
+		if run.DurationMillis == nil {
+			continue
+		}
+		a := byPipe[run.Pipeline]
+		if a == nil {
+			a = &acc{}
+			byPipe[run.Pipeline] = a
+			order = append(order, run.Pipeline)
+		}
+		a.durs = append(a.durs, *run.DurationMillis)
+	}
+	sort.Strings(order)
+	out := make([]api.PsPipelineTime, 0, len(order))
+	for _, name := range order {
+		durs := byPipe[name].durs
+		maxMs, sum := int64(0), int64(0)
+		for _, d := range durs {
+			sum += d
+			if d > maxMs {
+				maxMs = d
+			}
+		}
+		sorted := append([]int64(nil), durs...)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+		levels := make([]int, len(durs))
+		for i, d := range durs {
+			levels[i] = quantizeLevel(d, maxMs)
+		}
+		out = append(out, api.PsPipelineTime{
+			Pipeline: name,
+			Runs:     len(durs),
+			Last:     renderRunSpan(durs[len(durs)-1]),
+			Avg:      renderRunSpan(sum / int64(len(durs))),
+			P50:      renderRunSpan(sorted[len(sorted)/2]),
+			Max:      renderRunSpan(maxMs),
+			Levels:   levels,
+		})
+	}
+	return out
+}
+
+// quantizeLevel maps one duration onto the 1..8 strip ramp against the
+// pipeline's maximum (1 floor so every recorded run stays visible).
+func quantizeLevel(ms, maxMs int64) int {
+	if maxMs <= 0 {
+		return 1
+	}
+	l := int((ms*8 + maxMs - 1) / maxMs)
+	if l < 1 {
+		l = 1
+	}
+	if l > 8 {
+		l = 8
+	}
+	return l
 }

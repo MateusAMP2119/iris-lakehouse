@@ -71,7 +71,7 @@ func (f *retentionReaderFake) ArtifactHashes(context.Context, string) ([]string,
 // statements the prune submitted.
 type recorderSubmitter struct{ rec *storetest.WriteRecorder }
 
-func (s recorderSubmitter) Submit(_ context.Context, fn func(*store.Writer) error) error {
+func (s recorderSubmitter) Submit(_ context.Context, fn func(*store.Writer) error, _ ...string) error {
 	return fn(store.NewWriter(s.rec))
 }
 

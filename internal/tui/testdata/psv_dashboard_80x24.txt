@@ -1,24 +1,24 @@
- ENGINE dev · LEADER · pid 42 · up 2h13m
-╭─ LANES ────────────────╮╭─ PIPELINES · ingest ───────────────────────────────╮
-│ ▾ ingest         1r·1q ││                                                    │
-│   51.0% 24.0MiB      ▓ ││ PIPELINE     LATEST   Q  R  CPU    MEM             │
-│   ● extract         1q ││ extract      queued   1  0  -      -               │
-│   ● hello_iris         ││ hello_iris   -        0  0  -      -               │
-│   ● load_orders    run ││ load_orders  running  0  1  51.0%  24.0MiB         │
-│                        ││                                                    │
-│ ▸ reporting      0r·0q ││                                                    │
-│   - -                  ││                                                    │
-│                        ││                                                    │
-│ ▸ solo           0r·0q ││                                                    │
-│   - -                  ││                                                    │
-│                        ││                                                    │
-│                        ││                                                    │
-│                        ││                                                    │
-│                        ││                                                    │
-│                        ││                                                    │
-│                        ││                                                    │
-│                        ││                                                    │
-│                        ││                                                    │
-│                        ││                                                    │
-╰────────────────────────╯╰────────────────────────────────────────────────────╯
- tab panes · ↑↓ move · ⏎ unfold · / search · : cmd · h hi  remote 10.0.0.5:7433
+ │ [IRIS]   dev   LEADER  up 2h13m  pid 42                                    │
+
+ │ [CATALOG]              │  │ [PIPELINE]                             extract │
+ │ / type to filter       │  │ OUTPUT                                         │
+ │ ing1r·1q · 3 pipelines │  │ no captured writes yet                         │
+ │ ● extract           1q │  │                                                │
+ │ ○ hello_iris           │  │ DISPATCH                                       │
+ │ ● load_orders      run │  │ state                                  passing │
+ │ reporting        0r·0q │  │ gate                            runs each pass │
+ │ ○ monthly              │  │ lane                           ingest · 1 of 3 │
+ │ solo             0r·0q │  │ passes                                      47 │
+ │ ○ solo                 │  │ wakes on    extract · hello_iris · load_orders │
+ │                        │  │                                                │
+ │                        │  │   RUN  WROTE  OP  STATE   ELAPSED              │
+ │                        │  │   12   -      -   queued  -                    │
+ │                        │  │                                                │
+ │                        │  │                                                │
+ │                        │  │                                                │
+ │                        │  │                                                │
+ │                        │  │                                                │
+ │ LANE · inlast 14:31:07 │  │                                                │
+ │ demo.orders      +1187 │  │                                                │
+ │ CPU    ░▒▓▓▓     51.0% │  │                                                │
+ │ MEM    ░████   24.0MiB │  │                                       c cancel │

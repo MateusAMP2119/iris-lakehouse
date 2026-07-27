@@ -42,7 +42,7 @@ func intp(c int) *int { return &c }
 // managed postmaster (pid 200) so the load summing is assertable, and drives
 // exactly one sample tick.
 func psTestLoads(runs RunSnapshotReader, probe loadProber) *loadHistory {
-	h := newLoadHistory(runs, func() int { return 200 }, nil, nil)
+	h := newLoadHistory(runs, func() int { return 200 }, nil, nil, nil)
 	h.probe = probe
 	h.pid = 100
 	h.sample(context.Background())
@@ -51,7 +51,7 @@ func psTestLoads(runs RunSnapshotReader, probe loadProber) *loadHistory {
 
 // psTestPlane builds a plane over the fakes and a once-ticked collector.
 func psTestPlane(runs RunSnapshotReader, probe loadProber, role api.RoleReporter) *psPlane {
-	p := NewPsPlane(role, runs, psTestLoads(runs, probe), nil, nil, nil).(*psPlane)
+	p := NewPsPlane(role, runs, psTestLoads(runs, probe), nil, nil, nil, nil, nil, 1000, nil).(*psPlane)
 	p.pid = 100
 	return p
 }
@@ -190,13 +190,55 @@ func TestPsPlaneComposesReadout(t *testing.T) {
 	})
 
 	t.Run("a nil collector reads as never sampled", func(t *testing.T) {
-		p := NewPsPlane(leaderRoleState(), fakeRunReader{runs: runs}, nil, nil, nil, nil).(*psPlane)
+		p := NewPsPlane(leaderRoleState(), fakeRunReader{runs: runs}, nil, nil, nil, nil, nil, nil, 1000, nil).(*psPlane)
 		got, err := p.Ps(context.Background(), false, true)
 		if err != nil {
 			t.Fatalf("Ps: %v", err)
 		}
 		if got.SampleTick != 0 || got.Engine.Load != nil || got.History != nil {
 			t.Errorf("nil-collector payload = tick %d load %+v history %+v, want all absent", got.SampleTick, got.Engine.Load, got.History)
+		}
+	})
+}
+
+// TestPipelineRetention proves the retention fold: per-pipeline kept counts
+// and the id floor and ceiling of what meta still holds, ordered by pipeline.
+// The readout is ids and counts only -- prune is count-based and clockless, so
+// a timestamp here would be an invention.
+func TestPipelineRetention(t *testing.T) {
+	t.Run("pipeline-retention", func(t *testing.T) {
+		runs := []store.Run{ // ascending id, the reader's order
+			{ID: "2", Pipeline: "solo"},
+			{ID: "6", Pipeline: "load_orders"},
+			{ID: "9", Pipeline: "load_orders"},
+			{ID: "12", Pipeline: "extract"},
+			{ID: "14", Pipeline: "load_orders"},
+		}
+		got := pipelineRetention(runs, 1000)
+		if got == nil {
+			t.Fatal("a non-empty snapshot must yield a retention readout")
+		}
+		if got.Retain != 1000 {
+			t.Errorf("retain = %d, want the configured 1000", got.Retain)
+		}
+		want := []api.PsPipelineRetention{
+			{Pipeline: "extract", Runs: 1, OldestRunID: "12", NewestRunID: "12"},
+			{Pipeline: "load_orders", Runs: 3, OldestRunID: "6", NewestRunID: "14"},
+			{Pipeline: "solo", Runs: 1, OldestRunID: "2", NewestRunID: "2"},
+		}
+		if len(got.Pipelines) != len(want) {
+			t.Fatalf("pipelines = %+v, want %+v", got.Pipelines, want)
+		}
+		for i, w := range want {
+			if got.Pipelines[i] != w {
+				t.Errorf("row %d = %+v, want %+v", i, got.Pipelines[i], w)
+			}
+		}
+	})
+
+	t.Run("an empty snapshot reports absence, not a zeroed readout", func(t *testing.T) {
+		if got := pipelineRetention(nil, 1000); got != nil {
+			t.Errorf("retention = %+v, want nil for an empty snapshot", got)
 		}
 	})
 }
