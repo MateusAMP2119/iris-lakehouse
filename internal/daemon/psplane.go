@@ -15,6 +15,7 @@ import (
 	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/buildinfo"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/config"
+	"github.com/MateusAMP2119/iris-lakehouse/internal/dispatch"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/store"
 )
 
@@ -55,6 +56,11 @@ type psPlane struct {
 	counters *turnCounters  // resident turn tallies (#206); nil renders none
 	runLogs  *RunLogWriter  // local capture files for the per-run log metadata; nil renders none
 	sources  *sourceWatcher // declared-source health; nil renders none
+	// dispatch and passes are the leader's live lane-loop state and per-lane pass
+	// counts. Both are leader-held runtime memory: on a standby they are empty (it
+	// dispatches nothing), so the readout omits the dispatch block entirely.
+	dispatch *dispatch.State
+	passes   *dispatch.PassCounter
 	logger   *slog.Logger
 	pid      int
 	started  time.Time
@@ -70,7 +76,7 @@ var _ api.PsHandler = (*psPlane)(nil)
 // history). The plane records its own pid at construction and counts uptime
 // from it: the plane is built at daemon start, so its age is the daemon's. A
 // nil logger discards output.
-func NewPsPlane(role api.RoleReporter, runs RunSnapshotReader, loads *loadHistory, counters *turnCounters, runLogs *RunLogWriter, sources *sourceWatcher, retain int64, logger *slog.Logger) api.PsHandler {
+func NewPsPlane(role api.RoleReporter, runs RunSnapshotReader, loads *loadHistory, counters *turnCounters, runLogs *RunLogWriter, sources *sourceWatcher, dispatchState *dispatch.State, passes *dispatch.PassCounter, retain int64, logger *slog.Logger) api.PsHandler {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -82,6 +88,8 @@ func NewPsPlane(role api.RoleReporter, runs RunSnapshotReader, loads *loadHistor
 		counters: counters,
 		sources:  sources,
 		runLogs:  runLogs,
+		dispatch: dispatchState,
+		passes:   passes,
 		logger:   logger,
 		pid:      os.Getpid(),
 		started:  time.Now(),
@@ -190,7 +198,83 @@ func (p *psPlane) Ps(ctx context.Context, all, history bool) (api.PsPayload, err
 	if history {
 		payload.History = p.loads.snapshot()
 	}
+	payload.Dispatch = dispatchReadout(p.dispatch, p.passes)
 	return payload, nil
+}
+
+// dispatchReadout composes the live dispatch block from the leader's lane-loop
+// state and pass counts. It returns nil -- the block absent from the wire -- when no
+// state is wired or the loop has not reconciled, which is exactly the standby case:
+// a node that dispatches nothing reports nothing rather than an empty claim.
+func dispatchReadout(state *dispatch.State, passes *dispatch.PassCounter) *api.PsDispatch {
+	lanes := state.Lanes()
+	if len(lanes) == 0 {
+		return nil
+	}
+	counts := map[string]int64{}
+	if passes != nil {
+		counts = passes.Counts()
+	}
+	out := &api.PsDispatch{Lanes: make([]api.PsDispatchLane, 0, len(lanes))}
+	// position indexes each pipeline's place in its lane's serial walk, so the
+	// per-pipeline rows can answer "member 2 of 3" without re-reading the walk.
+	type slot struct {
+		lane     string
+		pos, len int
+	}
+	position := map[string]slot{}
+	for _, l := range lanes {
+		out.Lanes = append(out.Lanes, api.PsDispatchLane{
+			Lane:    l.Lane,
+			Members: l.Members,
+			Cares:   l.Cares,
+			State:   laneState(l),
+			Passes:  counts[l.Lane],
+		})
+		for i, m := range l.Members {
+			position[m] = slot{lane: l.Lane, pos: i + 1, len: len(l.Members)}
+		}
+	}
+
+	// Every walked member gets a row, whether or not it has reached a turn yet:
+	// the pane must be able to place a pipeline in its lane before the first pass
+	// gates it. Gate fields stay empty until a turn resolves one.
+	gates := map[string]dispatch.PipelineGate{}
+	for _, g := range state.Gates() {
+		gates[g.Pipeline] = g
+	}
+	for _, l := range lanes {
+		for _, m := range l.Members {
+			slot := position[m]
+			row := api.PsDispatchPipeline{Pipeline: m, Lane: slot.lane, Pos: slot.pos, Members: slot.len}
+			if g, ok := gates[m]; ok {
+				row.Gate = g.Decision
+				for _, e := range g.Edges {
+					edge := api.PsDispatchEdge{Upstream: e.Upstream, Verdict: e.Verdict.String()}
+					if e.LatestRunID != 0 {
+						edge.LatestRunID = strconv.FormatInt(e.LatestRunID, 10)
+					}
+					row.Edges = append(row.Edges, edge)
+				}
+			}
+			out.Pipelines = append(out.Pipelines, row)
+		}
+	}
+	sort.Slice(out.Pipelines, func(a, b int) bool { return out.Pipelines[a].Pipeline < out.Pipelines[b].Pipeline })
+	return out
+}
+
+// laneState names a lane's disposition for the wire. Passing wins over parked: a
+// lane whose pass is in flight is working, whatever the watermark says.
+func laneState(l dispatch.LaneDispatch) string {
+	switch {
+	case l.Passing:
+		return api.DispatchPassing
+	case l.Parked:
+		return api.DispatchParked
+	default:
+		return api.DispatchEligible
+	}
 }
 
 // sumTrees sums the host sample over the engine's process trees: every process

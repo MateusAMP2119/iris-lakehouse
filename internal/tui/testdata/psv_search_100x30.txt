@@ -6,8 +6,16 @@
  │ ● load_orders      run │  │ rows captur       2391                                             │
  │                        │  │ journal id        8110     RUN  WROTE  OP   STATE      ELAPSED     │
  │                        │  │                            14   +1187  ins  running    2m14s       │
- │                        │  │ LOAD                       9    +1204  ins  succeeded  3m2s        │
- │                        │  │ cpu    ░▒▓▓▓     51.0%     6    -      -    ✖ dead     1m34s       │
+ │                        │  │ DISPATCH                   9    +1204  ins  succeeded  3m2s        │
+ │                        │  │ state          passing     6    -      -    ✖ dead     1m34s       │
+ │                        │  │ gate              open                                             │
+ │                        │  │   extract         open                                             │
+ │                        │  │ lane   ingest · 3 of 3                                             │
+ │                        │  │ passes              47                                             │
+ │                        │  │ wakes on   3 pipelines                                             │
+ │                        │  │                                                                    │
+ │                        │  │ LOAD                                                               │
+ │                        │  │ cpu    ░▒▓▓▓     51.0%                                             │
  │                        │  │ mem    ░████   24.0MiB                                             │
  │                        │  │ time █▅       3m2s max                                             │
  │                        │  │                                                                    │
@@ -16,15 +24,7 @@
  │                        │  │ placed_a   timestamptz                                             │
  │                        │  │ customer          text                                             │
  │                        │  │ total    numeric(12,2)                                             │
- │                        │  │ currency    varchar(3)                                             │
- │                        │  │ +2 more                                                            │
- │                        │  │                                                                    │
- │                        │  │ OPS                                                                │
- │                        │  │ undo open         1187                                             │
- │                        │  │ promoted          1204                                             │
- │                        │  │ ins 2391                                                           │
- │                        │  │                                                                    │
- │ LANE · inlast 14:31:07 │  │ RETENTION                                                          │
- │ demo.orders      +1187 │  │ oldest kept      run 6                                             │
- │ CPU    ░▒▓▓▓     51.0% │  │ runs kept     3 / 1000                                             │
+ │ LANE · inlast 14:31:07 │  │ currency    varchar(3)                                             │
+ │ demo.orders      +1187 │  │ +2 more                                                            │
+ │ CPU    ░▒▓▓▓     51.0% │  │                                                                    │
  │ MEM    ░████   24.0MiB │  │                                                           c cancel │

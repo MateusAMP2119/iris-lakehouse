@@ -102,6 +102,15 @@ func TestPsFrameGoldens(t *testing.T) {
 			golden.Assert(t, []byte(framePlain(m, 150, 40)), "testdata/psv_table_150x40.txt")
 		})
 
+		t.Run("parked pipeline 150x40", func(t *testing.T) {
+			// The other half of the DISPATCH block: a lane parked on the
+			// watermark, its member's gate closed on an up-to-date upstream.
+			m := psvSeeded(target)
+			m.selectLane("reporting")
+			m.selPipeline = "monthly"
+			golden.Assert(t, []byte(framePlain(m, 150, 40)), "testdata/psv_parked_150x40.txt")
+		})
+
 		t.Run("lane shape 150x40", func(t *testing.T) {
 			m := psvSeeded(target)
 			m.selectLane("ingest")

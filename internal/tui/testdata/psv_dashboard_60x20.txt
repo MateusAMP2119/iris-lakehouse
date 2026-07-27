@@ -4,11 +4,11 @@
  │ OUTPUT                                                 │
  │ no captured writes yet                                 │
  │                                                        │
- │ LOAD                                                   │
- │ cpu                                               0.0% │
- │ mem                                                 0B │
- │ time  no timed run yet                                 │
- │                                                        │
+ │ DISPATCH                                               │
+ │ state                                          passing │
+ │ gate                                    runs each pass │
+ │ lane                                   ingest · 1 of 3 │
+ │ passes                                              47 │
  │                                                        │
  │   RUN  WROTE  OP  STATE   ELAPSED  TRIGGER             │
  │   12   -      -   queued  -        manual              │

@@ -193,6 +193,11 @@ type Candidate struct {
 	// unwired.
 	passCounter *dispatch.PassCounter
 
+	// dispatchState is the leader-held live lane-loop state behind the ps readout's
+	// dispatch block. Reset on each term beside the pass counter: a deposed term's
+	// park view describes lanes this leader is not walking. Nil leaves it unwired.
+	dispatchState *dispatch.State
+
 	// Endpoint-apply wiring, installed on winning leadership and cleared on demotion
 	// so POST /endpoint/apply reaches the single meta writer and the shared serving
 	// registry only while leading. The registry is process-long (shared with the
@@ -496,6 +501,15 @@ func WithPassCounter(pc *dispatch.PassCounter) CandidateOption {
 	return func(c *Candidate) { c.passCounter = pc }
 }
 
+// WithDispatchState wires the leader-held live dispatch state the ps readout's
+// dispatch block reads: the candidate resets it on winning a term, so a readout
+// never reports a previous term's park view. The lane loop's build composes the
+// state into the loop (dispatch.WithState); this option owns only the term
+// reset. A nil state is ignored.
+func WithDispatchState(ds *dispatch.State) CandidateOption {
+	return func(c *Candidate) { c.dispatchState = ds }
+}
+
 // WithEndpointPlane wires the leader-side endpoint-apply plane: on winning
 // leadership the candidate builds the endpoint applier over the single dispatcher
 // (the sole meta writer), the process-long serving registry, and the data-database
@@ -664,6 +678,9 @@ func (c *Candidate) lead(ctx context.Context) (demoted bool, err error) {
 	if c.passCounter != nil {
 		c.passCounter.Reset()
 	}
+	// Likewise the live dispatch view: a fresh term walks its own lanes, so the
+	// previous term's park state is cleared before any reconcile publishes.
+	c.dispatchState.Reset()
 
 	d := dispatch.New(c.writeConn)
 	// This term's meta-change watermark: the dispatcher bumps it on every

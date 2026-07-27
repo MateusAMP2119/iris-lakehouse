@@ -221,6 +221,12 @@ type Loop struct {
 	// influences dispatch.
 	onPass func(PassReport)
 
+	// state, when set, is the leader's live dispatch state (dispatchstate.go): the
+	// loop publishes each reconcile's lane park/pass view into it and records every
+	// member's gate resolution as the pass evaluates it. Read-only observability --
+	// it never influences dispatch, and a nil state records nothing.
+	state *State
+
 	// background, when set, runs beside the loop for its lifetime: spawned by
 	// Run, cancelled with its ctx, and JOINED before Run returns, so a demoted
 	// leader never leaves the previous term's companion racing the next one's.
@@ -250,6 +256,13 @@ func WithOnPass(hook func(PassReport)) LoopOption {
 // Absent it, every walk lane re-spawns at each pass boundary.
 func WithEvents(e *Events) LoopOption {
 	return func(l *Loop) { l.events = e }
+}
+
+// WithState sets the live dispatch state the loop publishes its lane
+// park/pass view and per-member gate resolutions into. It is observability only:
+// absent it (or nil), the loop records nothing and behaves identically.
+func WithState(s *State) LoopOption {
+	return func(l *Loop) { l.state = s }
 }
 
 // WithBackground sets a companion the loop runs for its lifetime: Run spawns
@@ -308,6 +321,11 @@ func (l *Loop) runLanePass(ctx context.Context, lane Lane) (PassReport, error) {
 		if err != nil {
 			return report, fmt.Errorf("dispatch: lane %q gate %q: %w", lane.Name, pipeline, err)
 		}
+		// Record what the gate said before acting on it: the readout answers
+		// "why is this not running?" with the pass's own verdict, so it costs no
+		// gate query of its own. A failed evaluation records nothing -- the last
+		// good verdict is more honest than a blank.
+		l.state.RecordGate(pipeline, d)
 		switch {
 		case d.Poisoned:
 			// An awaited upstream dead-lettered: no run starts, and the member is
@@ -467,6 +485,10 @@ func (l *Loop) Run(ctx context.Context) error {
 		// pass finishes. A parked lane (watermark unchanged since its last pass
 		// started) is skipped without a gate query or a run.
 		walkNames := make(map[string]bool, len(lanes))
+		// parked records which lanes this reconcile skipped on the watermark, for
+		// the observability publish below. It is written only where the loop
+		// already decided; it never participates in the decision.
+		parked := make(map[string]bool, len(lanes))
 		for _, lane := range lanes {
 			walkNames[lane.Name] = true
 			if _, ok := running[lane.Name]; ok {
@@ -489,6 +511,7 @@ func (l *Loop) Run(ctx context.Context) error {
 				// parks -- only a dead-letter does (the gate's no-retry brake).
 				cur := l.events.CareSeq(lane.Cares)
 				if seq, passed := lastSeq[lane.Name]; passed && seq == cur && !quietRerun[lane.Name] {
+					parked[lane.Name] = true
 					continue // parked: no cause this lane consumes since its last pass started
 				}
 				delete(quietRerun, lane.Name)
@@ -505,6 +528,11 @@ func (l *Loop) Run(ctx context.Context) error {
 				delete(quietRerun, name)
 			}
 		}
+		// Publish this reconcile's lane view: the walk the loop just acted on,
+		// each lane marked with what the loop decided about it. Observability
+		// only -- it reads the same locals the decisions above wrote, so it can
+		// never disagree with them, and a nil state makes it a no-op.
+		l.publishLanes(lanes, running, parked)
 
 		// No lane running: idle. Block until the watermark advances (a cause landed)
 		// or shutdown -- nothing else, no timer (clock doctrine: events initiate
@@ -537,6 +565,28 @@ func (l *Loop) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+}
+
+// publishLanes records the reconcile's lane view into the live dispatch state: each
+// walk lane with its composer-ordered members, its care set, and whether the loop
+// left it passing or parked. A lane that is neither is eligible and about to pass.
+// It is a no-op without a state wired.
+func (l *Loop) publishLanes(lanes []Lane, running map[string][]string, parked map[string]bool) {
+	if l.state == nil {
+		return
+	}
+	view := make([]LaneDispatch, 0, len(lanes))
+	for _, lane := range lanes {
+		_, passing := running[lane.Name]
+		view = append(view, LaneDispatch{
+			Lane:    lane.Name,
+			Members: lane.Pipelines,
+			Cares:   lane.Cares,
+			Passing: passing,
+			Parked:  parked[lane.Name],
+		})
+	}
+	l.state.ObserveLanes(view)
 }
 
 // spawnLanePass launches one lane's pass on its own goroutine (one goroutine per lane)

@@ -53,6 +53,86 @@ type PsPayload struct {
 	// numeric duration rides the wire. Absent until a pipeline records a
 	// timed terminal run.
 	PipelineTimes []PsPipelineTime `json:"pipeline_times,omitempty"`
+	// Dispatch is the leader's live dispatch readout: which lanes are parked on
+	// the watermark, what wakes them, and what each pipeline's gate last
+	// decided. Present on the leader only -- a standby dispatches nothing, so
+	// it reports nothing rather than an empty claim.
+	Dispatch *PsDispatch `json:"dispatch,omitempty"`
+}
+
+// PsDispatch is the leader's live dispatch readout: the lane loop's own account of
+// why each pipeline is or is not running. It is the clockless answer to "when does
+// this run again" -- iris has no schedule, it has causes, so the readout names the
+// causes a lane waits on rather than a next-fire time. Every field is leader-term
+// runtime state (dispatch.DispatchState), never a stored row, so it is empty on a
+// fresh leader until the loop's first reconcile.
+type PsDispatch struct {
+	// Lanes are the walk's lanes and their live loop state, ordered by lane.
+	Lanes []PsDispatchLane `json:"lanes,omitempty"`
+	// Pipelines are the per-pipeline gate resolutions, ordered by pipeline.
+	Pipelines []PsDispatchPipeline `json:"pipelines,omitempty"`
+}
+
+// Dispatch lane states. A lane is passing (a pass in flight), parked (waiting on a
+// cause it consumes), or eligible (about to pass at the next reconcile).
+const (
+	DispatchPassing  = "passing"
+	DispatchParked   = "parked"
+	DispatchEligible = "eligible"
+)
+
+// PsDispatchLane is one lane's live loop state.
+type PsDispatchLane struct {
+	// Lane is the lane's name.
+	Lane string `json:"lane"`
+	// Members are the lane's pipelines in composer order: the serial walk order
+	// a pass follows, member N+1 starting only once member N is terminal.
+	Members []string `json:"members,omitempty"`
+	// Cares are the pipeline names whose causes wake this lane -- its members
+	// plus their upstreams. Empty means the lane wakes on any labeled cause.
+	Cares []string `json:"cares,omitempty"`
+	// State is the lane's disposition: passing, parked, or eligible.
+	State string `json:"state"`
+	// Passes counts the lane's completed passes this leadership term. A count of
+	// passes, never a rate: no clock divides it.
+	Passes int64 `json:"passes,omitempty"`
+}
+
+// Gate resolutions, as the last pass decided them.
+const (
+	DispatchGateOpen     = "open"
+	DispatchGateClosed   = "closed"
+	DispatchGatePoisoned = "poisoned"
+	DispatchGateUngated  = "ungated"
+)
+
+// PsDispatchPipeline is one pipeline's dispatch position and gate resolution: where
+// it sits in its lane's serial walk and what the gate said at its last turn.
+type PsDispatchPipeline struct {
+	// Pipeline is the pipeline the row describes.
+	Pipeline string `json:"pipeline"`
+	// Lane is the lane walking it; empty when no live lane names it.
+	Lane string `json:"lane,omitempty"`
+	// Pos is the pipeline's 1-based position in its lane's composer order, and
+	// Members the lane's member count -- together, "member 2 of 3".
+	Pos     int `json:"pos,omitempty"`
+	Members int `json:"members,omitempty"`
+	// Gate is the last turn's resolution: open, closed, poisoned, or ungated.
+	// Empty when the pipeline has not reached a turn this term.
+	Gate string `json:"gate,omitempty"`
+	// Edges is the per-edge gate ledger in edge order, empty when ungated.
+	Edges []PsDispatchEdge `json:"edges,omitempty"`
+}
+
+// PsDispatchEdge is one depends_on edge's verdict from the last gate evaluation.
+type PsDispatchEdge struct {
+	// Upstream is the upstream pipeline's name.
+	Upstream string `json:"upstream"`
+	// Verdict is the edge's disposition: pending, open, up_to_date, or poisoned.
+	Verdict string `json:"verdict"`
+	// LatestRunID is the upstream run the verdict resolved against, as a string
+	// id; empty when the upstream has never run.
+	LatestRunID string `json:"latest_run_id,omitempty"`
 }
 
 // PsPipelineTime is one pipeline's observed-duration aggregate block: every

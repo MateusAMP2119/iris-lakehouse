@@ -263,6 +263,10 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	residents := newResidentRuns()
 	lanes := newLanePlane(logger, inflight, residents, client.ManualReader())
 	passCounter := dispatch.NewPassCounter()
+	// The live dispatch state: the lane loop publishes its park/pass view and its
+	// gate verdicts here, and the ps plane reads them. Leader-held runtime memory
+	// like the pass counter beside it, reset on each leadership term.
+	dispatchState := dispatch.NewState()
 
 	// The ps plane serves GET /ps (and `iris ps`) on any node: the run snapshot
 	// over the reader pool composed with the live leadership role and the load
@@ -295,7 +299,7 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	turnTally := newTurnCounters()
 	runLogs := NewRunLogWriter(s)
 	sources := newSourceWatcher(logger)
-	psp := NewPsPlane(role, client.Reader(), loads, turnTally, runLogs, sources, s.Retain, logger)
+	psp := NewPsPlane(role, client.Reader(), loads, turnTally, runLogs, sources, dispatchState, passCounter, s.Retain, logger)
 
 	// The dead-letter plane serves GET /dead_letters/{run}/impact (the blast readout
 	// `iris deadletter show` renders) on any node from the reader pool, and POST
@@ -379,7 +383,7 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 		turnTally.reset() // a new leadership term starts a fresh turn account
 		return newLaneLoop(submit, inflight, residents, workspace, pluginsRoot, pluginServicesReg, client.RegistryReader(), client.ManualReader(),
 			client.QueuedManualReader(), events,
-			exec.NewOSRunner(), data, data, objects, turnTally, passCounter,
+			exec.NewOSRunner(), data, data, objects, turnTally, passCounter, dispatchState,
 			client.RetentionReader(), s.Retain, runLogs, sources, logger)
 	}
 
@@ -400,6 +404,7 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 		WithGrantDrift(client.DataPATGrantsReader()),
 		WithRunLogs(runLogs),
 		WithPassCounter(passCounter),
+		WithDispatchState(dispatchState),
 		WithDeadletterPlane(deadletters),
 		WithInflightKiller(inflight),
 		WithFreshSessions(freshLeaderSession(ctx, client, logger)),

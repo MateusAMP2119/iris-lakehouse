@@ -4,11 +4,11 @@
  │ / type to filter       │  │ OUTPUT                   ROWS / POLL · LIVE                        │
  │ ing1r·1q · 3 pipelines │  │ no captured writes yet   no captured writes observed yet           │
  │ ● extract           1q │  │                                                                    │
- │ ○ hello_iris           │  │ LOAD                       RUN  WROTE  OP  STATE   ELAPSED         │
- │ ● load_orders      run │  │ cpu               0.0%     12   -      -   queued  -               │
- │ reporting        0r·0q │  │ mem                 0B                                             │
- │ ○ monthly              │  │ time  no timed run yet                                             │
- │ LANE · inlast 14:31:07 │  │                                                                    │
- │ demo.orders      +1187 │  │ SCHEMA                                                             │
- │ CPU    ░▒▓▓▓     51.0% │  │ no declared shape                                                  │
+ │ ○ hello_iris           │  │ DISPATCH                   RUN  WROTE  OP  STATE   ELAPSED         │
+ │ ● load_orders      run │  │ state          passing     12   -      -   queued  -               │
+ │ reporting        0r·0q │  │ gate    runs each pass                                             │
+ │ ○ monthly              │  │ lane   ingest · 1 of 3                                             │
+ │ LANE · inlast 14:31:07 │  │ passes              47                                             │
+ │ demo.orders      +1187 │  │ wakes on   3 pipelines                                             │
+ │ CPU    ░▒▓▓▓     51.0% │  │                                                                    │
  │ MEM    ░████   24.0MiB │  │                                                           c cancel │

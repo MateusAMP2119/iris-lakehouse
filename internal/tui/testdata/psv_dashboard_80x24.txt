@@ -4,12 +4,12 @@
  │ / type to filter       │  │ OUTPUT                                         │
  │ ing1r·1q · 3 pipelines │  │ no captured writes yet                         │
  │ ● extract           1q │  │                                                │
- │ ○ hello_iris           │  │ LOAD                                           │
- │ ● load_orders      run │  │ cpu                                       0.0% │
- │ reporting        0r·0q │  │ mem                                         0B │
- │ ○ monthly              │  │ time  no timed run yet                         │
- │ solo             0r·0q │  │                                                │
- │ ○ solo                 │  │                                                │
+ │ ○ hello_iris           │  │ DISPATCH                                       │
+ │ ● load_orders      run │  │ state                                  passing │
+ │ reporting        0r·0q │  │ gate                            runs each pass │
+ │ ○ monthly              │  │ lane                           ingest · 1 of 3 │
+ │ solo             0r·0q │  │ passes                                      47 │
+ │ ○ solo                 │  │ wakes on    extract · hello_iris · load_orders │
  │                        │  │                                                │
  │                        │  │   RUN  WROTE  OP  STATE   ELAPSED              │
  │                        │  │   12   -      -   queued  -                    │

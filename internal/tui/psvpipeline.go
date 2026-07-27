@@ -323,12 +323,162 @@ func renderSpecRetention(b *screenBuf, m *psModel, sc specScope, x, y, w, maxH i
 	return 3
 }
 
-// renderSpecColumn stacks the four spec blocks down the left column within
-// the height budget, parted by one blank row. Blocks shed from the bottom:
-// OUTPUT always renders, RETENTION is the first to go.
+// dispatchOf is the pipeline's live dispatch row and its lane's, from the ps
+// readout's dispatch block. Both are nil when the answering node is a standby
+// (it dispatches nothing) or the leader has not reconciled yet -- absence, never
+// a fabricated "idle".
+func (m *psModel) dispatchOf(pipeline string) (*api.PsDispatchPipeline, *api.PsDispatchLane) {
+	d := m.snap.Ps.Dispatch
+	if d == nil || pipeline == "" {
+		return nil, nil
+	}
+	var row *api.PsDispatchPipeline
+	for i := range d.Pipelines {
+		if d.Pipelines[i].Pipeline == pipeline {
+			row = &d.Pipelines[i]
+			break
+		}
+	}
+	if row == nil {
+		return nil, nil
+	}
+	for i := range d.Lanes {
+		if d.Lanes[i].Lane == row.Lane {
+			return row, &d.Lanes[i]
+		}
+	}
+	return row, nil
+}
+
+// dispatchStateSGR colours a lane's disposition: passing is live, parked recedes,
+// eligible is about to move.
+func dispatchStateSGR(state string) string {
+	switch state {
+	case api.DispatchPassing:
+		return ansiGreen
+	case api.DispatchParked:
+		return ansiDim
+	default:
+		return ansiCyan
+	}
+}
+
+// verdictSGR colours one gate edge's verdict: a poisoned edge is the only alarm,
+// an open one is the only good news, and the waiting states recede.
+func verdictSGR(verdict string) string {
+	switch verdict {
+	case "poisoned":
+		return ansiRed
+	case "open":
+		return ansiGreen
+	default:
+		return ansiDim
+	}
+}
+
+// gateLine renders a gate resolution for the block's summary row. An ungated
+// pipeline is the doctrine's own answer to "when does this run": nothing gates it,
+// so every pass runs it -- said plainly rather than as the bare word "ungated".
+func gateLine(gate string) (string, string) {
+	switch gate {
+	case api.DispatchGateUngated:
+		return "runs each pass", ansiDim
+	case api.DispatchGateOpen:
+		return "open", ansiGreen
+	case api.DispatchGatePoisoned:
+		return "poisoned", ansiRed
+	case api.DispatchGateClosed:
+		return "closed", ansiDim
+	default:
+		return "", ""
+	}
+}
+
+// wakeText names the causes that unpark a lane: the care set spelled out when it
+// fits the column, counted when it does not. A lane with an empty care set wakes on
+// anything -- the walk built without care-sets -- which is a real answer, not a gap.
+func wakeText(cares []string, w int) string {
+	if len(cares) == 0 {
+		return "any cause"
+	}
+	joined := strings.Join(cares, " · ")
+	if len([]rune(joined)) <= w {
+		return joined
+	}
+	return fmt.Sprintf("%d pipelines", len(cares))
+}
+
+// renderSpecDispatch paints the DISPATCH block: why this pipeline is or is not
+// running, in the dispatcher's own vocabulary. Iris has no schedule -- no cron, no
+// next-fire time, no backoff -- so the block never answers "when"; it answers what
+// the lane is doing (passing, parked on the watermark, eligible), what its gate last
+// decided, which upstreams it is still waiting on, and which causes would wake it.
+//
+// It renders only under a pipeline scope and only from a leader's readout: a standby
+// answers /ps without a dispatch block, and the block disappears rather than
+// claiming an idle engine.
+func renderSpecDispatch(b *screenBuf, m *psModel, sc specScope, x, y, w, maxH int) int {
+	if maxH < 2 || sc.pipeline == "" {
+		return 0
+	}
+	row, lane := m.dispatchOf(sc.pipeline)
+	if row == nil {
+		return 0
+	}
+	specHead(b, x, y, w, "DISPATCH", "")
+	n := 1
+	// The lane's disposition first: it is the answer to the question the block
+	// exists for, and the only row that never sheds.
+	state, stateSGR := api.DispatchEligible, ansiCyan
+	if lane != nil {
+		state, stateSGR = lane.State, dispatchStateSGR(lane.State)
+	}
+	specRow(b, x, y+n, w, 10, "state", state, stateSGR)
+	n++
+
+	// The gate, then the per-edge ledger behind it: a closed gate is only
+	// actionable once you can see which upstream it is waiting on.
+	if val, sgr := gateLine(row.Gate); val != "" && n < maxH {
+		specRow(b, x, y+n, w, specFieldW(w, "gate"), "gate", val, sgr)
+		n++
+	}
+	for _, e := range row.Edges {
+		if n >= maxH {
+			break
+		}
+		specRow(b, x, y+n, w, 10, "  "+e.Upstream, e.Verdict, verdictSGR(e.Verdict))
+		n++
+	}
+
+	// Position in the lane's serial walk: member N of M is why a pipeline whose
+	// own gate is open can still be waiting -- the member ahead of it is running.
+	if n < maxH && row.Lane != "" {
+		pos := row.Lane
+		if row.Members > 1 {
+			pos = fmt.Sprintf("%s · %d of %d", row.Lane, row.Pos, row.Members)
+		}
+		specRow(b, x, y+n, w, specFieldW(w, "lane"), "lane", pos, ansiDim)
+		n++
+	}
+	if n < maxH && lane != nil && lane.Passes > 0 {
+		specRow(b, x, y+n, w, 10, "passes", fmt.Sprintf("%d", lane.Passes), ansiDim)
+		n++
+	}
+	if n < maxH && lane != nil {
+		specRow(b, x, y+n, w, specFieldW(w, "wakes on"), "wakes on", wakeText(lane.Cares, specFieldW(w, "wakes on")), ansiDim)
+		n++
+	}
+	return n
+}
+
+// renderSpecColumn stacks the spec blocks down the left column within the height
+// budget, parted by one blank row. Blocks shed from the bottom: OUTPUT always
+// renders, RETENTION is the first to go. DISPATCH sits directly under OUTPUT --
+// "why is this not running" outranks how much it costs or what shape it writes.
 func renderSpecColumn(b *screenBuf, m *psModel, sc specScope, x, y, w, h int) {
 	row := renderSpecOutput(b, m, sc, x, y, w)
 	blocks := []func(int, int) int{
+		func(yy, budget int) int { return renderSpecDispatch(b, m, sc, x, yy, w, budget) },
 		func(yy, budget int) int { return renderSpecLoad(b, m, sc, x, yy, w, budget) },
 		func(yy, budget int) int { return renderSpecSchema(b, m, sc, x, yy, w, budget) },
 		func(yy, budget int) int { return renderSpecOps(b, m, sc, x, yy, w, budget) },

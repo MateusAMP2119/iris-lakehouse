@@ -6,8 +6,16 @@
  │ ● load_orders                 run │  │ rows captured             2391                                                                            │
  │                                   │  │ journal id                8110     RUN  WROTE  OP   STATE      ELAPSED  JOURNAL      TRIGGER              │
  │                                   │  │                                    14   +1187  ins  running    2m14s    7921 → 8110  loop                 │
- │                                   │  │ LOAD                               9    +1204  ins  succeeded  3m2s     6800 → 7920  loop                 │
- │                                   │  │ cpu            ░▒▓▓▓     51.0%     6    -      -    ✖ dead     1m34s    -            replay               │
+ │                                   │  │ DISPATCH                           9    +1204  ins  succeeded  3m2s     6800 → 7920  loop                 │
+ │                                   │  │ state                  passing     6    -      -    ✖ dead     1m34s    -            replay               │
+ │                                   │  │ gate                      open                                                                            │
+ │                                   │  │   extract                 open                                                                            │
+ │                                   │  │ lane           ingest · 3 of 3                                                                            │
+ │                                   │  │ passes                      47                                                                            │
+ │                                   │  │ wakes on           3 pipelines                                                                            │
+ │                                   │  │                                                                                                           │
+ │                                   │  │ LOAD                                                                                                      │
+ │                                   │  │ cpu            ░▒▓▓▓     51.0%                                                                            │
  │                                   │  │ mem            ░████   24.0MiB                                                                            │
  │                                   │  │ time █▅               3m2s max                                                                            │
  │                                   │  │                                                                                                           │
@@ -26,15 +34,7 @@
  │                                   │  │                                                                                                           │
  │                                   │  │ RETENTION                                                                                                 │
  │                                   │  │ oldest kept              run 6                                                                            │
- │                                   │  │ runs kept             3 / 1000                                                                            │
- │                                   │  │ pack                orders-etl                                                                            │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │                                   │  │                                                                                                           │
- │ LANE · ingest       last 14:31:07 │  │                                                                                                           │
- │ demo.orders                 +1187 │  │                                                                                                           │
+ │ LANE · ingest       last 14:31:07 │  │ runs kept             3 / 1000                                                                            │
+ │ demo.orders                 +1187 │  │ pack                orders-etl                                                                            │
  │ CPU               ░▒▓▓▓     51.0% │  │                                                                                                           │
  │ MEM               ░████   24.0MiB │  │                                                                                                  c cancel │

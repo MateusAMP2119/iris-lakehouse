@@ -4,25 +4,25 @@
  │ / type to filter       │  │ OUTPUT                   ROWS / POLL · LIVE                        │
  │ ing1r·1q · 3 pipelines │  │ no captured writes yet   no captured writes observed yet           │
  │ ● extract           1q │  │                                                                    │
- │ ○ hello_iris           │  │ LOAD                       RUN  WROTE  OP  STATE   ELAPSED         │
- │ ● load_orders      run │  │ cpu               0.0%     12   -      -   queued  -               │
- │ reporting        0r·0q │  │ mem                 0B                                             │
- │ ○ monthly              │  │ time  no timed run yet                                             │
- │ solo             0r·0q │  │                                                                    │
- │ ○ solo                 │  │ SCHEMA                                                             │
+ │ ○ hello_iris           │  │ DISPATCH                   RUN  WROTE  OP  STATE   ELAPSED         │
+ │ ● load_orders      run │  │ state          passing     12   -      -   queued  -               │
+ │ reporting        0r·0q │  │ gate    runs each pass                                             │
+ │ ○ monthly              │  │ lane   ingest · 1 of 3                                             │
+ │ solo             0r·0q │  │ passes              47                                             │
+ │ ○ solo                 │  │ wakes on   3 pipelines                                             │
+ │                        │  │                                                                    │
+ │                        │  │ LOAD                                                               │
+ │                        │  │ cpu               0.0%                                             │
+ │                        │  │ mem                 0B                                             │
+ │                        │  │ time  no timed run yet                                             │
+ │                        │  │                                                                    │
+ │                        │  │ SCHEMA                                                             │
  │                        │  │ no declared shape                                                  │
  │                        │  │                                                                    │
  │                        │  │ RETENTION                                                          │
  │                        │  │ oldest kept     run 12                                             │
  │                        │  │ runs kept     1 / 1000                                             │
  │                        │  │ pack        orders-etl                                             │
- │                        │  │                                                                    │
- │                        │  │                                                                    │
- │                        │  │                                                                    │
- │                        │  │                                                                    │
- │                        │  │                                                                    │
- │                        │  │                                                                    │
- │                        │  │                                                                    │
  │                        │  │                                                                    │
  │ LANE · inlast 14:31:07 │  │                                                                    │
  │ demo.orders      +1187 │  │                                                                    │

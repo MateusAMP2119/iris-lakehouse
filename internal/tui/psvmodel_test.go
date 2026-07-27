@@ -29,6 +29,25 @@ func psvFixture() Snapshot {
 			{Pipeline: "load_orders", Runs: 2, Last: "1m34s", Avg: "2m18s", P50: "1m34s", Max: "3m2s", Levels: []int{8, 5}},
 			{Pipeline: "solo", Runs: 1, Last: "40ms", Avg: "40ms", P50: "40ms", Max: "40ms", Levels: []int{8}},
 		},
+		// The leader's live dispatch view: a lane mid-pass whose dependent member
+		// is gated on it, a parked lane, and an ungated root -- the three shapes
+		// the DISPATCH block has to render.
+		Dispatch: &api.PsDispatch{
+			Lanes: []api.PsDispatchLane{
+				{Lane: "ingest", Members: []string{"extract", "hello_iris", "load_orders"},
+					Cares: []string{"extract", "hello_iris", "load_orders"}, State: api.DispatchPassing, Passes: 47},
+				{Lane: "reporting", Members: []string{"monthly"}, Cares: []string{"monthly", "load_orders"},
+					State: api.DispatchParked, Passes: 3},
+			},
+			Pipelines: []api.PsDispatchPipeline{
+				{Pipeline: "extract", Lane: "ingest", Pos: 1, Members: 3, Gate: api.DispatchGateUngated},
+				{Pipeline: "hello_iris", Lane: "ingest", Pos: 2, Members: 3, Gate: api.DispatchGateUngated},
+				{Pipeline: "load_orders", Lane: "ingest", Pos: 3, Members: 3, Gate: api.DispatchGateOpen,
+					Edges: []api.PsDispatchEdge{{Upstream: "extract", Verdict: "open", LatestRunID: "12"}}},
+				{Pipeline: "monthly", Lane: "reporting", Pos: 1, Members: 1, Gate: api.DispatchGateClosed,
+					Edges: []api.PsDispatchEdge{{Upstream: "load_orders", Verdict: "up_to_date", LatestRunID: "9"}}},
+			},
+		},
 	},
 		Journal: foldJournal(nil, api.JournalActivity{Watermark: 8110, Groups: []api.JournalActivityGroup{
 			{RunID: 9, Pipeline: "load_orders", Schema: "demo", Table: "orders", Op: "insert",

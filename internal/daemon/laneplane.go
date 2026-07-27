@@ -200,6 +200,7 @@ func newLaneLoop(
 	objects *store.ObjectStore,
 	counters *turnCounters,
 	passCounter *dispatch.PassCounter,
+	dispatchState *dispatch.State,
 	retention store.RetentionReader,
 	retain int64,
 	runLogs *RunLogWriter,
@@ -257,6 +258,9 @@ func newLaneLoop(
 	}
 	if events != nil {
 		opts = append(opts, dispatch.WithEvents(events))
+	}
+	if dispatchState != nil {
+		opts = append(opts, dispatch.WithState(dispatchState))
 	}
 	return dispatch.NewLoop(walk, gate, runnerSeam, logger, opts...)
 }

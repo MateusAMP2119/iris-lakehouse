@@ -6,21 +6,21 @@
  │ ● │   search · Fuzzy-find lanes, pi… │ │                                                   │   │
  │ ○ │   history · Toggle day-deep loa… │ │ Opens the catalog overlay over the dashboard:     │   │
  │ ● │   cancel · Cancel the run under… │ │ pack list on the left, README and tree on the     │   │
- │ re│   help · Keyboard reference      │ │ right. Install and apply without leaving iris ps. │   │
- │ ○ │   q · Quit iris ps               │i│                                                   │   │
+ │ re│   help · Keyboard reference      │n│ right. Install and apply without leaving iris ps. │   │
+ │ ○ │   q · Quit iris ps               │e│                                                   │   │
  │ so│                                  │ │ Usage  :catalog                                   │   │
  │ ○ │                                  │ │ Keys   :catalog                                   │   │
- │   │                                  │d│ Group  navigate                                   │   │
+ │   │                                  │ │ Group  navigate                                   │   │
+ │   │                                  │ │                                                   │   │
+ │   │                                  │ │                                                   │   │
+ │   │                                  │ │                                                   │   │
+ │   │                                  │i│                                                   │   │
+ │   │                                  │ │                                                   │   │
+ │   │                                  │ │                                                   │   │
+ │   │                                  │d│                                                   │   │
  │   │                                  │ │                                                   │   │
  │   │                                  │ │                                                   │   │
  │   │                                  │t│                                                   │   │
- │   │                                  │ │                                                   │   │
- │   │                                  │ │                                                   │   │
- │   │                                  │ │                                                   │   │
- │   │                                  │ │                                                   │   │
- │   │                                  │ │                                                   │   │
- │   │                                  │ │                                                   │   │
- │   │                                  │ │                                                   │   │
  │   └──────────────────────────────────┘ └───────────────────────────────────────────────────┘   │
  │   ┌────────────────────────────────────────────────────────────────────────────────────────┐   │
  │ LA│ :█                                                                  tab · ↑↓ · ⏎ · esc │   │
