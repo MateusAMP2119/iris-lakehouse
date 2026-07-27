@@ -27,6 +27,7 @@ type psKeyMap struct {
 	Up      bkey.Binding
 	Down    bkey.Binding
 	Enter   bkey.Binding
+	Forward bkey.Binding
 	Back    bkey.Binding
 	Tab     bkey.Binding
 	Search  bkey.Binding
@@ -42,8 +43,9 @@ func newPsKeyMap() psKeyMap {
 	return psKeyMap{
 		Up:      bkey.NewBinding(bkey.WithKeys("up", "k"), bkey.WithHelp("↑/k", "move up")),
 		Down:    bkey.NewBinding(bkey.WithKeys("down", "j"), bkey.WithHelp("↓/j", "move down")),
-		Enter:   bkey.NewBinding(bkey.WithKeys("enter", "right"), bkey.WithHelp("⏎/→", "unfold / drill")),
-		Back:    bkey.NewBinding(bkey.WithKeys("left"), bkey.WithHelp("←", "ascend")),
+		Enter:   bkey.NewBinding(bkey.WithKeys("enter"), bkey.WithHelp("⏎", "drill")),
+		Forward: bkey.NewBinding(bkey.WithKeys("right"), bkey.WithHelp("→", "pane right")),
+		Back:    bkey.NewBinding(bkey.WithKeys("left"), bkey.WithHelp("←", "pane left / ascend")),
 		Tab:     bkey.NewBinding(bkey.WithKeys("tab"), bkey.WithHelp("tab", "cycle panes")),
 		Search:  bkey.NewBinding(bkey.WithKeys("/"), bkey.WithHelp("/", "search")),
 		Command: bkey.NewBinding(bkey.WithKeys(":"), bkey.WithHelp(":", "commands")),
@@ -57,13 +59,13 @@ func newPsKeyMap() psKeyMap {
 
 // ShortHelp implements help.KeyMap for the compact footer strip.
 func (k psKeyMap) ShortHelp() []bkey.Binding {
-	return []bkey.Binding{k.Tab, k.Up, k.Down, k.Enter, k.Search, k.Command, k.Help, k.Quit}
+	return []bkey.Binding{k.Tab, k.Up, k.Down, k.Enter, k.Forward, k.Search, k.Command, k.Help, k.Quit}
 }
 
 // FullHelp implements help.KeyMap for the expanded help columns.
 func (k psKeyMap) FullHelp() [][]bkey.Binding {
 	return [][]bkey.Binding{
-		{k.Up, k.Down, k.Enter, k.Back, k.Tab},
+		{k.Up, k.Down, k.Enter, k.Forward, k.Back, k.Tab},
 		{k.Search, k.Command, k.Help, k.History},
 		{k.All, k.Cancel, k.Quit},
 	}

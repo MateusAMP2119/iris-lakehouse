@@ -483,7 +483,7 @@ func TestPsFrameStyling(t *testing.T) {
 			}
 		})
 
-		t.Run("detail pane is one hairline card, marked and subjected", func(t *testing.T) {
+		t.Run("the detail pane is two hairline panes, marked and subjected", func(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
 			m.selectTable("ingest", "demo.orders")
 			// Row indices are kept aligned with the frame's, so a short row
@@ -503,15 +503,64 @@ func TestPsFrameStyling(t *testing.T) {
 			}
 			// The mark names the kind of surface; the subject names the instance.
 			if n := strings.Count(joined, "[TABLE]"); n != 1 {
-				t.Errorf("detail draws %d TABLE cards, want 1", n)
+				t.Errorf("detail draws %d TABLE marks, want 1", n)
+			}
+			if n := strings.Count(joined, "[EXECUTIONS]"); n != 1 {
+				t.Errorf("detail draws %d EXECUTIONS marks, want 1", n)
 			}
 			title := pane[psHeaderH+psHeaderGap]
+			// The subject rides the spec pane's title row, not the run table's.
 			if !strings.Contains(title, "demo.orders") {
 				t.Errorf("title row carries no subject: %q", title)
 			}
-			// No internal vertical divider: the columns are held apart by air.
-			if row := pane[psHeaderH+psHeaderGap+2]; strings.Count(row, "│") != 2 {
-				t.Errorf("a content row must carry the two pipes only: %q", row)
+			// Two panes, so four pipes: neither draws an internal divider.
+			if row := pane[psHeaderH+psHeaderGap+2]; strings.Count(row, "│") != 4 {
+				t.Errorf("a content row must carry the two panes' pipes only: %q", row)
+			}
+		})
+
+		t.Run("the two detail panes light one at a time", func(t *testing.T) {
+			paneX := psFrameMarginX + 37 + psPaneGap
+			for _, tt := range []struct {
+				name       string
+				pane       psPane
+				lit, unlit func(paneSplit) int
+			}{
+				{
+					name: "spec pane holds the focus", pane: psPaneStats,
+					lit:   func(p paneSplit) int { return p.lx },
+					unlit: func(p paneSplit) int { return p.rx },
+				},
+				{
+					name: "runs pane holds the focus", pane: psPaneRuns,
+					lit:   func(p paneSplit) int { return p.rx },
+					unlit: func(p paneSplit) int { return p.lx },
+				},
+			} {
+				t.Run(tt.name, func(t *testing.T) {
+					m := newPsModel(psvFixture(), "")
+					// The run stop exists only once a frame reported the split.
+					renderPsFrame(m, 150, 40, false)
+					m.pane = tt.pane
+					b := renderPsFrame(m, 150, 40, false)
+					p := splitDetail(paneX, b.w-psFrameMarginX-paneX)
+					if !p.split {
+						t.Fatal("150 columns must split the detail pane")
+					}
+					// The pipe below the title row carries the pane's own chrome.
+					y := psHeaderH + psHeaderGap + 1
+					pipe := func(x int) string { return b.cells[y*b.w+x].sgr }
+					if got := pipe(tt.lit(p)); !strings.Contains(got, ansiMagenta) {
+						t.Errorf("focused pane chrome = %q, want the accent", got)
+					}
+					// Two lit panes would say the focus is in two places.
+					if got := pipe(tt.unlit(p)); strings.Contains(got, ansiMagenta) {
+						t.Errorf("unfocused pane chrome = %q, want the receding border", got)
+					}
+					if got := pipe(tt.unlit(p)); !strings.Contains(got, ansiBorder) {
+						t.Errorf("unfocused pane chrome = %q, want the border colour", got)
+					}
+				})
 			}
 		})
 
@@ -540,18 +589,27 @@ func TestPsFrameStyling(t *testing.T) {
 			if got := cell(paneX+2, top).sgr; !strings.Contains(got, ansiBold) {
 				t.Errorf("mark sgr = %q, want the wordmark's bold ramp", got)
 			}
-			// The bottom rule spans the pane in one colour. hairBox fills every
-			// blank with chrome so the rule keeps its hue across the gaps; a
-			// blit reaching this row would replace those cells wholesale and
-			// leave the rule with nothing underneath -- exactly ansiURule and
-			// no chrome, which is the seam this pins shut.
-			for x := paneX; x < b.w-psFrameMarginX; x++ {
-				c := cell(x, b.h-1)
-				if !strings.HasPrefix(c.sgr, ansiURule) {
-					t.Fatalf("bottom rule breaks at column %d: sgr %q", x, c.sgr)
+			// Each pane's bottom rule spans it in one colour: hairBox fills the
+			// blanks with chrome, so a blit reaching this row (ansiURule and
+			// nothing under it) is the seam this pins shut. The gap is bare.
+			p := splitDetail(paneX, b.w-psFrameMarginX-paneX)
+			if !p.split {
+				t.Fatal("150 columns must split the detail pane")
+			}
+			for _, card := range [][2]int{{p.lx, p.lw}, {p.rx, p.rw}} {
+				for x := card[0]; x < card[0]+card[1]; x++ {
+					c := cell(x, b.h-1)
+					if !strings.HasPrefix(c.sgr, ansiURule) {
+						t.Fatalf("bottom rule breaks at column %d: sgr %q", x, c.sgr)
+					}
+					if c.sgr == ansiURule {
+						t.Fatalf("bottom rule has no chrome under it at column %d -- a blit reached the gutter", x)
+					}
 				}
-				if c.sgr == ansiURule {
-					t.Fatalf("bottom rule has no chrome under it at column %d -- a blit reached the gutter", x)
+			}
+			for x := p.lx + p.lw; x < p.rx; x++ {
+				if got := cell(x, b.h-1).sgr; got != "" {
+					t.Errorf("the gap between the panes is painted at column %d: sgr %q", x, got)
 				}
 			}
 		})
@@ -560,20 +618,19 @@ func TestPsFrameStyling(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
 			b := renderPsFrame(m, 150, 40, false)
 			paneX := psFrameMarginX + 37 + psPaneGap
-			p := splitPane(paneX+2, 150-2*psFrameMarginX-37-psPaneGap-4)
+			p := splitDetail(paneX, 150-psFrameMarginX-paneX)
 			if !p.split {
 				t.Fatal("150 columns must split the detail pane")
 			}
 			headY := psHeaderH + psHeaderGap + 1 // OUTPUT, the first spec head
-			for x := p.lx; x < p.lx+p.lw; x++ {
+			for x := p.lx + 2; x < p.lx+p.lw-2; x++ {
 				if got := b.cells[headY*b.w+x].sgr; !strings.HasPrefix(got, ansiURule) {
 					t.Fatalf("section head not ruled at column %d: sgr %q", x, got)
 				}
 			}
-			// The rule is the spec column's, not the pane's: the gutter cell
-			// just left of the wide column must be clear of it.
-			if got := b.cells[headY*b.w+p.rx-1].sgr; strings.HasPrefix(got, ansiURule) {
-				t.Errorf("section rule leaked into the gutter: sgr %q", got)
+			// The rule is the spec column's: the runs pane must be clear of it.
+			if got := b.cells[headY*b.w+p.rx+2].sgr; strings.HasPrefix(got, ansiURule) {
+				t.Errorf("section rule leaked into the executions card: sgr %q", got)
 			}
 		})
 

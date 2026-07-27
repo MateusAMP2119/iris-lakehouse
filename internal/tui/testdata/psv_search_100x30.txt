@@ -1,30 +1,30 @@
  │ [IRIS]   dev   LEADER  up 2h13m  pid 42   CPU          ░░░░░   3.2%  MEM  126.0MiB  1r  1q  0✖ │
 
- │ [CATALOG]              │  │ [PIPELINE]                                             load_orders │
- │ / ord█        6 hidden │  │ OUTPUT                     RUN  WROTE  OP   STATE      ELAPSED     │
- │ ing1r·1q · 3 pipelines │  │ table      demo.orders     14   +1187  ins  running    2m14s       │
- │ ● load_orders      run │  │ rows captur       2391     9    +1204  ins  succeeded  3m2s        │
- │                        │  │ journal id        8110     6    -      -    ✖ dead     1m34s       │
- │                        │  │                                                                    │
- │                        │  │ DISPATCH                                                           │
- │                        │  │ state          passing                                             │
- │                        │  │ gate              open                                             │
- │                        │  │   extract         open                                             │
- │                        │  │ lane   ingest · 3 of 3                                             │
- │                        │  │ passes              47                                             │
- │                        │  │ wakes on   3 pipelines                                             │
- │                        │  │                                                                    │
- │                        │  │ LOAD                                                               │
- │                        │  │ cpu    ░▒▓▓▓     51.0%                                             │
- │                        │  │ mem    ░████   24.0MiB                                             │
- │                        │  │ time █▅       3m2s max                                             │
- │                        │  │                                                                    │
- │                        │  │ SCHEMA        · 7 cols                                             │
- │                        │  │ · id            bigint                                             │
- │                        │  │ placed_a   timestamptz                                             │
- │                        │  │ customer          text                                             │
- │                        │  │ total    numeric(12,2)                                             │
- │ LANE · inlast 14:31:07 │  │ currency    varchar(3)                                             │
- │ demo.orders      +1187 │  │ +2 more                                                            │
- │ CPU    ░▒▓▓▓     51.0% │  │                                                                    │
- │ MEM    ░████   24.0MiB │  │                                                           c cancel │
+ │ [CATALOG]              │  │ [PIPELINE] load_orders │  │ [EXECUTIONS]                           │
+ │ / ord█        6 hidden │  │ OUTPUT                 │  │   RUN  WROTE  OP   STATE      ELAPSED  │
+ │ ing1r·1q · 3 pipelines │  │ table      demo.orders │  │   14   +1187  ins  running    2m14s    │
+ │ ● load_orders      run │  │ rows captur       2391 │  │   9    +1204  ins  succeeded  3m2s     │
+ │                        │  │ journal id        8110 │  │   6    -      -    ✖ dead     1m34s    │
+ │                        │  │                        │  │                                        │
+ │                        │  │ DISPATCH               │  │                                        │
+ │                        │  │ state          passing │  │                                        │
+ │                        │  │ gate              open │  │                                        │
+ │                        │  │   extract         open │  │                                        │
+ │                        │  │ lane   ingest · 3 of 3 │  │                                        │
+ │                        │  │ passes              47 │  │                                        │
+ │                        │  │ wakes on   3 pipelines │  │                                        │
+ │                        │  │                        │  │                                        │
+ │                        │  │ LOAD                   │  │                                        │
+ │                        │  │ cpu    ░▒▓▓▓     51.0% │  │                                        │
+ │                        │  │ mem    ░████   24.0MiB │  │                                        │
+ │                        │  │ time █▅       3m2s max │  │                                        │
+ │                        │  │                        │  │                                        │
+ │                        │  │ SCHEMA        · 7 cols │  │                                        │
+ │                        │  │ · id            bigint │  │                                        │
+ │                        │  │ placed_a   timestamptz │  │                                        │
+ │                        │  │ customer          text │  │                                        │
+ │                        │  │ total    numeric(12,2) │  │                                        │
+ │ LANE · inlast 14:31:07 │  │ currency    varchar(3) │  │                                        │
+ │ demo.orders      +1187 │  │ +2 more                │  │                                        │
+ │ CPU    ░▒▓▓▓     51.0% │  │                        │  │                                        │
+ │ MEM    ░████   24.0MiB │  │                 → runs │  │                               c cancel │

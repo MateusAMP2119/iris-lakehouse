@@ -21,10 +21,12 @@ import (
 // psPane names one of the dashboard's focusable panes.
 type psPane int
 
-// The focusable panes, in tab order.
+// The focusable panes, in tab order. psPaneRuns is a stop only while the
+// detail pane is wide enough to split the run table out of it.
 const (
 	psPaneLanes psPane = iota
 	psPaneStats
+	psPaneRuns
 )
 
 // psRingCap bounds every fine load-history ring, comfortably past the widest
@@ -109,9 +111,14 @@ type psModel struct {
 	// The table pane's cursor, keyed by row identity so a re-poll that
 	// reorders rows keeps the cursor on the same entity. tblPipeline cursors
 	// the pipelines table (lane row selected), tblRun the runs table
-	// (pipeline row selected).
+	// (pipeline row selected), tblOutput the OUTPUT list of tables it writes.
 	tblPipeline string
 	tblRun      string
+	tblOutput   string
+
+	// detailSplit is the last frame's geometry, reported back by the renderer
+	// as click regions are: true while the run table is a pane of its own.
+	detailSplit bool
 
 	confirmCancel bool // y/N cancel confirm armed over the run under the cursor
 	confirmBulk   bool // y/N bulk-cancel confirm armed over the marked pipelines
@@ -716,6 +723,42 @@ func (m *psModel) clampTable() {
 	m.tblPipeline = clampKey(m.tblPipeline, m.pipelineKeys())
 }
 
+// outputKeys lists the tables the selected pipeline writes, busiest first.
+func (m *psModel) outputKeys() []string {
+	tables := pipelineTables(m.snap, m.selPipeline)
+	keys := make([]string, len(tables))
+	for i, t := range tables {
+		keys[i] = t.name
+	}
+	return keys
+}
+
+// outputTable is the table under the OUTPUT cursor, snapped to a live row on
+// read ("" when the pipeline has written none), so it needs no clamp.
+func (m *psModel) outputTable() string { return clampKey(m.tblOutput, m.outputKeys()) }
+
+// detailFocused reports the focus sitting on either of the detail panes.
+func (m *psModel) detailFocused() bool {
+	return m.pane == psPaneStats || m.pane == psPaneRuns
+}
+
+// focusRuns focuses the run table's pane, or the one pane that carries it.
+func (m *psModel) focusRuns() {
+	m.pane = psPaneStats
+	if m.detailSplit {
+		m.pane = psPaneRuns
+	}
+}
+
+// setDetailSplit records the geometry the frame drew, taking the focus off a
+// run pane it no longer draws.
+func (m *psModel) setDetailSplit(split bool) {
+	m.detailSplit = split
+	if !split && m.pane == psPaneRuns {
+		m.pane = psPaneStats
+	}
+}
+
 // pipelineKeys lists the pipelines table's row identities in display order.
 func (m *psModel) pipelineKeys() []string {
 	rows := derivePipelines(m.snap, m.selLane)
@@ -850,8 +893,10 @@ func (m *psModel) update(k psKey) (cancelRuns []string) {
 		m.move(-1)
 	case psKeyDown:
 		m.move(1)
-	case psKeyEnter, psKeyRight:
+	case psKeyEnter:
 		m.enter()
+	case psKeyRight:
+		m.forward()
 	case psKeyLeft:
 		m.back()
 	}
@@ -901,7 +946,7 @@ func (m *psModel) toggleMarkPipeline() {
 	switch m.pane {
 	case psPaneLanes:
 		name = m.selPipeline
-	case psPaneStats:
+	case psPaneStats, psPaneRuns:
 		// Scoped to one pipeline, that is the row; otherwise the pipelines
 		// table's cursor.
 		name = m.selPipeline
@@ -931,13 +976,16 @@ func (m *psModel) togglePipeMark(name string) {
 	}
 }
 
-// cyclePane advances the pane focus: catalog, detail, around.
+// cyclePane advances the focus: catalog, spec, run table when split, around.
 func (m *psModel) cyclePane() {
-	if m.pane == psPaneLanes {
+	switch {
+	case m.pane == psPaneLanes:
 		m.pane = psPaneStats
-		return
+	case m.pane == psPaneStats && m.detailSplit:
+		m.pane = psPaneRuns
+	default:
+		m.pane = psPaneLanes
 	}
-	m.pane = psPaneLanes
 }
 
 // updateRune routes a printable keypress outside the overlay.
@@ -990,8 +1038,8 @@ func (m *psModel) updateRune(r rune) {
 			m.confirmBulk = true
 			return
 		}
-		// Cancel acts on the run under the detail pane's table cursor.
-		if m.pane == psPaneStats && m.selPipeline != "" {
+		// Cancel acts on the run under the cursor, from either detail pane.
+		if m.detailFocused() && m.selPipeline != "" {
 			if run, ok := findRun(m.snap, m.cancelTarget()); ok && run.State == "running" {
 				m.confirmCancel = true
 			}
@@ -999,16 +1047,24 @@ func (m *psModel) updateRune(r rune) {
 	}
 }
 
-// move shifts the focused pane's cursor.
+// move shifts the focused pane's cursor over the list that pane scopes to, or
+// over the runs when one pane holds both lists.
 func (m *psModel) move(delta int) {
 	switch m.pane {
 	case psPaneLanes:
 		m.moveTree(delta)
+	case psPaneRuns:
+		m.tblRun = moveSel(m.tblRun, m.runKeys(), delta)
 	case psPaneStats:
-		if m.selPipeline != "" {
-			m.tblRun = moveSel(m.tblRun, m.runKeys(), delta)
-		} else {
+		switch {
+		case m.selPipeline == "" && m.selTable == "":
 			m.tblPipeline = moveSel(m.tblPipeline, m.pipelineKeys(), delta)
+		case !m.detailSplit:
+			m.tblRun = moveSel(m.tblRun, m.runKeys(), delta)
+		case m.selTable != "":
+			m.selTable = moveSel(m.selTable, m.laneTables()[m.selLane], delta)
+		default:
+			m.tblOutput = moveSel(m.tblOutput, m.outputKeys(), delta)
 		}
 	}
 }
@@ -1079,11 +1135,8 @@ func (m *psModel) selectTree(row psTreeRow) {
 	m.clampTable()
 }
 
-// enter acts on the focused pane's selection (Enter / right arrow): a catalog
-// pipeline row hands focus to its detail pane, and a pipelines-table row
-// drills the rail cursor onto that pipeline. A run row has no destination --
-// the table cursor already is the selection (nothing folds, so a lane row
-// needs no Enter action beyond being selected).
+// enter drills the focused pane's selection: the rail into its detail pane, a
+// pipelines-table row onto that pipeline. A run row has nowhere to drill.
 func (m *psModel) enter() {
 	switch m.pane {
 	case psPaneLanes:
@@ -1093,24 +1146,34 @@ func (m *psModel) enter() {
 		m.pane = psPaneStats
 		m.clampTable()
 	case psPaneStats:
-		if m.selPipeline == "" {
+		if m.selPipeline == "" && m.selTable == "" {
 			if m.tblPipeline == "" {
 				return
 			}
 			// Drill: the catalog selection descends to the pipeline row.
 			m.selectTree(psTreeRow{lane: m.selLane, pipeline: m.tblPipeline})
-			return
 		}
 	}
 }
 
-// back retreats the focused pane's selection (left arrow): an open TABLE view
-// closes back to its pipeline, and the statistics pane hands focus to the rail.
-// Lane rows are not cursor stops, so there is no row to climb to.
+// forward moves the focus one pane right, and drills like enter when there is
+// no pane to the right.
+func (m *psModel) forward() {
+	if m.pane == psPaneStats && m.detailSplit {
+		m.pane = psPaneRuns
+		return
+	}
+	m.enter()
+}
+
+// back retreats left: the run pane to the spec pane, an open TABLE view to its
+// pipeline, the spec pane to the rail.
 func (m *psModel) back() {
 	switch m.pane {
 	case psPaneLanes:
 		m.selTable = ""
+	case psPaneRuns:
+		m.pane = psPaneStats
 	case psPaneStats:
 		if m.selTable != "" {
 			m.selTable = ""

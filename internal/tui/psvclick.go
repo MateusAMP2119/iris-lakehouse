@@ -77,11 +77,13 @@ func (m *psModel) clickOn(r psClick) {
 		m.pane = psPaneLanes
 		m.selectTable(r.lane, r.name)
 	case psClickTableRow:
-		m.pane = psPaneStats
-		if m.selPipeline != "" {
-			m.tblRun = r.name // the cursor is the selection; there is nowhere to drill
+		if m.selPipeline != "" || m.selTable != "" {
+			// A run row: the cursor is the selection, so the click only focuses.
+			m.focusRuns()
+			m.tblRun = r.name
 			return
 		}
+		m.pane = psPaneStats
 		if m.tblPipeline == r.name {
 			m.enter() // second click drills into the pipeline
 			return

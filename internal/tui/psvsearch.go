@@ -110,7 +110,7 @@ func (m *psModel) jumpTo(h psHit) {
 	case psHitRun:
 		m.selectTree(psTreeRow{lane: h.lane, pipeline: h.pipeline})
 		m.tblRun = h.runID
-		m.pane = psPaneStats
+		m.focusRuns()
 	}
 }
 
