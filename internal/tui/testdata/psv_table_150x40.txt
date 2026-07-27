@@ -4,7 +4,7 @@
  │ / type to filter                  │  │ OUTPUT                           ROWS / 1MIN · 7m                       2391 now · 1204 peak · 2427 in 7m │
  │ ingest        1r·1q · 3 pipelines │  │ table              demo.orders                                                                    ░░██░ ░ │
  │ ● extract                      1q │  │ rows captured             2391                                                                            │
- │ ○ hello_iris                      │  │ watermark                 8110     RUN  WROTE  OP   STATE      ELAPSED  JOURNAL      TRIGGER              │
+ │ ○ hello_iris                      │  │ journal id                8110     RUN  WROTE  OP   STATE      ELAPSED  JOURNAL      TRIGGER              │
  │ ● load_orders                 run │  │                                    14   +1187  ins  running    2m14s    7921 → 8110  loop                 │
  │ reporting                   0r·0q │  │ LOAD                               9    +1204  ins  succeeded  3m2s     6800 → 7920  loop                 │
  │ ○ monthly                         │  │ cpu            ░▒▓▓▓     51.0%                                                                            │

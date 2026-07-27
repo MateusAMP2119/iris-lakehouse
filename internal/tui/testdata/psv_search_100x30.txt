@@ -4,7 +4,7 @@
  │ / ord█        6 hidden │  │ OUTPUT                   ROWS / 1MIN · 7m                          │
  │ ing1r·1q · 3 pipelines │  │ table      demo.orders                                     ░░██░ ░ │
  │ ● load_orders      run │  │ rows captur       2391                                             │
- │                        │  │ watermark         8110     RUN  WROTE  OP   STATE      ELAPSED     │
+ │                        │  │ journal id        8110     RUN  WROTE  OP   STATE      ELAPSED     │
  │                        │  │                            14   +1187  ins  running    2m14s       │
  │                        │  │ LOAD                       9    +1204  ins  succeeded  3m2s        │
  │                        │  │ cpu    ░▒▓▓▓     51.0%     6    -      -    ✖ dead     1m34s       │

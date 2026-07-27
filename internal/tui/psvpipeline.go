@@ -152,18 +152,18 @@ func tableSpecScope(m *psModel) specScope {
 }
 
 // renderSpecOutput paints the OUTPUT block: the written table, the rows the
-// journal captured into it, and its watermark. It never sheds -- a detail
-// pane that cannot name its table is not a detail pane.
+// journal captured into it, and the highest journal id it has reached. It
+// never sheds -- a detail pane that cannot name its table is not a detail pane.
 func renderSpecOutput(b *screenBuf, m *psModel, sc specScope, x, y, w int) int {
 	specHead(b, x, y, w, "OUTPUT", "")
 	if sc.table == "" {
 		b.text(x, y+1, ansiDim, clipCells("no captured writes yet", w))
 		return 2
 	}
-	rows, watermark, _, _ := m.snap.Journal.tableTotals(sc.table)
+	rows, journalID, _, _ := m.snap.Journal.tableTotals(sc.table)
 	specRow(b, x, y+1, w, specFieldW(w, "table"), "table", sc.table, "")
 	specRow(b, x, y+2, w, 10, "rows captured", fmt.Sprintf("%d", rows), "")
-	specRow(b, x, y+3, w, 10, "watermark", fmt.Sprintf("%d", watermark), ansiDim)
+	specRow(b, x, y+3, w, 10, "journal id", fmt.Sprintf("%d", journalID), ansiDim)
 	// Clicking the table name is the doorway to the TABLE shape.
 	m.addClick(psClick{x: x, y: y + 1, w: w, kind: psClickRailTable, lane: m.selLane, name: sc.table})
 	return 4
