@@ -146,11 +146,8 @@ type psModel struct {
 	// double-counts). coarse holds the same keys' coarse (per-bucket-maximum)
 	// history, a day deep, refreshed only on a history re-seed -- exactly its
 	// own cadence. lastTick is the newest absorbed collector tick.
-	rings  map[string]*psRing
-	coarse map[string]*psRing
-	// rowRings holds the same keys' captured-row history in the coarse grid's
-	// buckets, refreshed only on a history re-seed like coarse.
-	rowRings map[string]*psRowRing
+	rings    map[string]*psRing
+	coarse   map[string]*psRing
 	lastTick uint64
 
 	spin   int          // spinner phase, advanced by the event loop while catalog work is in flight
@@ -166,12 +163,11 @@ type psModel struct {
 // focused, the first lane selected and unfolded.
 func newPsModel(first Snapshot, target string) *psModel {
 	m := &psModel{
-		pane:     psPaneLanes,
-		rings:    map[string]*psRing{},
-		coarse:   map[string]*psRing{},
-		rowRings: map[string]*psRowRing{},
-		snap:     first,
-		target:   target,
+		pane:   psPaneLanes,
+		rings:  map[string]*psRing{},
+		coarse: map[string]*psRing{},
+		snap:   first,
+		target: target,
 	}
 	m.absorbRings()
 	m.clampTree()
@@ -578,29 +574,7 @@ func (m *psModel) reseedRings(h *api.PsHistory) {
 		if held := m.coarse[key]; held == nil || len(coarse.cpu) >= len(held.cpu) {
 			m.coarse[key] = coarse
 		}
-		rows := &psRowRing{
-			buckets:       append([]int64(nil), s.CoarseRows...),
-			bucketSeconds: h.CoarseIntervalSeconds,
-		}
-		if held := m.rowRings[key]; held == nil || len(rows.buckets) >= len(held.buckets) {
-			m.rowRings[key] = rows
-		}
 	}
-}
-
-// psRowRing is one entity's captured-row history, newest last, in the coarse
-// grid's buckets. It is deliberately NOT a psRing: psNoSample means absence
-// there, while a bucket that counted no rows here is a real zero -- a quiet
-// hour, not an unknowable one. Sharing the type would make every strip helper
-// lie about which is which.
-type psRowRing struct {
-	// buckets are the per-bucket captured-row sums, api.PsHistoryNoSample for
-	// a bucket the journal was never read for.
-	buckets []int64
-	// bucketSeconds is one bucket's span, so a reader can say how much time
-	// the ring covers without consulting a history document that rides only
-	// one poll in psHistoryRefreshPolls.
-	bucketSeconds int
 }
 
 // ringKeyFor maps a wire history series key onto the model's ring key.

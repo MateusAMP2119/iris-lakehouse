@@ -64,11 +64,5 @@ func TestJournalReadsAreNilSafe(t *testing.T) {
 		if got := j.tableNames(); got != nil {
 			t.Errorf("tableNames = %v, want nil", got)
 		}
-		if got := j.rateOf("demo.orders"); got != nil {
-			t.Errorf("rateOf = %v, want nil", got)
-		}
-		if got := j.latestRate("demo.orders"); got != 0 {
-			t.Errorf("latestRate = %v, want 0", got)
-		}
 	})
 }

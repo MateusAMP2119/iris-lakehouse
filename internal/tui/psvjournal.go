@@ -45,13 +45,7 @@ type psJournal struct {
 	Tables map[string]psTableWrites
 	// ByRun is keyed run id, then "schema.table".
 	ByRun map[string]map[string]psRunWrites
-	// Rate is each table's per-poll delta history ("schema.table" keyed),
-	// newest last, capped — the WRITE RATE strip's samples.
-	Rate map[string][]float64
 }
-
-// psRateCap bounds each table's per-poll delta history.
-const psRateCap = 90
 
 // fetchJournalActivity reads the write-activity aggregate above sinceID.
 func (c *Client) fetchJournalActivity(ctx context.Context, sinceID int64) (api.JournalActivity, error) {
@@ -73,21 +67,17 @@ func (c *Client) fetchJournalActivity(ctx context.Context, sinceID int64) (api.J
 }
 
 // foldJournal folds one activity delta into the accumulated state. A nil prev
-// starts fresh; the returned state is prev mutated (the poller owns it). Every
-// known table pushes one rate sample per fold — zero when untouched — so the
-// strips keep an honest time axis at the poll cadence.
+// starts fresh; the returned state is prev mutated (the poller owns it).
 func foldJournal(prev *psJournal, act api.JournalActivity) *psJournal {
 	j := prev
 	if j == nil {
 		j = &psJournal{
 			Tables: map[string]psTableWrites{},
 			ByRun:  map[string]map[string]psRunWrites{},
-			Rate:   map[string][]float64{},
 		}
 	}
 	j.Watermark = act.Watermark
 
-	deltaByTable := map[string]int64{}
 	for _, g := range act.Groups {
 		name := g.Schema + "." + g.Table
 		key := name + "|" + g.Op
@@ -121,30 +111,12 @@ func foldJournal(prev *psJournal, act api.JournalActivity) *psJournal {
 		}
 		w.Op = g.Op
 		per[name] = w
-
-		deltaByTable[name] += g.Rows
 	}
 
 	// Undo states move (open -> promoted/wiped) without new rows; the
 	// accumulated split is approximate between full refolds. Honest enough
 	// for the pane; the provenance walk stays the exact record.
-	for name := range j.Rate {
-		j.Rate[name] = pushRate(j.Rate[name], float64(deltaByTable[name]))
-		delete(deltaByTable, name)
-	}
-	for name, d := range deltaByTable {
-		j.Rate[name] = pushRate(j.Rate[name], float64(d))
-	}
 	return j
-}
-
-// pushRate appends one per-poll delta sample, capped.
-func pushRate(hist []float64, v float64) []float64 {
-	hist = append(hist, v)
-	if len(hist) > psRateCap {
-		hist = hist[len(hist)-psRateCap:]
-	}
-	return hist
 }
 
 // tableKeys orders the accumulated table aggregates for display.
@@ -216,23 +188,6 @@ func (j *psJournal) tableTotals(name string) (rows, maxID, undoOpen, undoPromote
 		undoPromoted += t.UndoPromoted
 	}
 	return rows, maxID, undoOpen, undoPromoted
-}
-
-// rateOf is one table's per-poll row-delta history (nil when unobserved).
-func (j *psJournal) rateOf(name string) []float64 {
-	if j == nil {
-		return nil
-	}
-	return j.Rate[name]
-}
-
-// latestRate is the newest per-poll row delta observed for one table.
-func (j *psJournal) latestRate(name string) float64 {
-	rate := j.rateOf(name)
-	if len(rate) == 0 {
-		return 0
-	}
-	return rate[len(rate)-1]
 }
 
 // runWrote sums one run's captured writes across tables.
