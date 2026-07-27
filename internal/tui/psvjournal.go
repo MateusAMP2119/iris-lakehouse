@@ -247,6 +247,16 @@ func (j *psJournal) runWrote(runID string) int64 {
 	return total
 }
 
+// runWrite is one run's captured writes into one table (false when none, or
+// when no activity aggregate has landed yet).
+func (j *psJournal) runWrite(runID, table string) (psRunWrites, bool) {
+	if j == nil {
+		return psRunWrites{}, false
+	}
+	w, ok := j.ByRun[runID][table]
+	return w, ok
+}
+
 // runRange is one run's overall journal id range (0,0 when it wrote nothing).
 func (j *psJournal) runRange(runID string) (minID, maxID int64) {
 	if j == nil {

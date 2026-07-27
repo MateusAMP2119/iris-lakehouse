@@ -650,7 +650,7 @@ func pipelineDetailRuns(m *psModel, sc specScope) []detailRun {
 		if rows := j.runWrote(r.ID); rows != 0 {
 			d.wrote, d.hasRows = rows, true
 		}
-		if w, ok := j.ByRun[r.ID][sc.table]; ok {
+		if w, ok := j.runWrite(r.ID, sc.table); ok {
 			d.op = shortOp(w.Op)
 		}
 		out = append(out, d)
@@ -662,6 +662,9 @@ func pipelineDetailRuns(m *psModel, sc specScope) []detailRun {
 // first, each scoped to its writes into that one table.
 func tableDetailRuns(m *psModel, sc specScope) []detailRun {
 	j := m.snap.Journal
+	if j == nil {
+		return nil
+	}
 	var out []detailRun
 	for id, per := range j.ByRun {
 		w, ok := per[sc.table]
