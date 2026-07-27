@@ -11,21 +11,20 @@ func TestSplitPane(t *testing.T) {
 	t.Run("split-pane", func(t *testing.T) {
 		const ix = 3
 		tests := []struct {
-			name       string
-			iw         int
-			wantSplit  bool
-			wantLW     int
-			wantRW     int
-			wantRuleAt int
+			name      string
+			iw        int
+			wantSplit bool
+			wantLW    int
+			wantRW    int
 		}{
-			{name: "150x40 interior", iw: 105, wantSplit: true, wantLW: 30, wantRW: 72, wantRuleAt: ix + 31},
-			{name: "wide interior clamps the spec column at its ceiling", iw: 95, wantSplit: true, wantLW: 27, wantRW: 65, wantRuleAt: ix + 28},
-			{name: "100x30 interior clamps at the floor", iw: 66, wantSplit: true, wantLW: 22, wantRW: 41, wantRuleAt: ix + 23},
-			{name: "narrowest split", iw: 62, wantSplit: true, wantLW: 22, wantRW: 37, wantRuleAt: ix + 23},
-			{name: "one column short of a split stacks", iw: 61, wantSplit: false, wantLW: 61, wantRW: 61, wantRuleAt: -1},
-			{name: "60x20 interior stacks", iw: 54, wantSplit: false, wantLW: 54, wantRW: 54, wantRuleAt: -1},
-			{name: "80x24 interior stacks", iw: 46, wantSplit: false, wantLW: 46, wantRW: 46, wantRuleAt: -1},
-			{name: "an interior narrower than the spec floor still stacks", iw: 20, wantSplit: false, wantLW: 20, wantRW: 20, wantRuleAt: -1},
+			{name: "150x40 interior", iw: 105, wantSplit: true, wantLW: 30, wantRW: 72},
+			{name: "wide interior clamps the spec column at its ceiling", iw: 95, wantSplit: true, wantLW: 27, wantRW: 65},
+			{name: "100x30 interior clamps at the floor", iw: 66, wantSplit: true, wantLW: 22, wantRW: 41},
+			{name: "narrowest split", iw: 62, wantSplit: true, wantLW: 22, wantRW: 37},
+			{name: "one column short of a split stacks", iw: 61, wantSplit: false, wantLW: 61, wantRW: 61},
+			{name: "60x20 interior stacks", iw: 54, wantSplit: false, wantLW: 54, wantRW: 54},
+			{name: "80x24 interior stacks", iw: 46, wantSplit: false, wantLW: 46, wantRW: 46},
+			{name: "an interior narrower than the spec floor still stacks", iw: 20, wantSplit: false, wantLW: 20, wantRW: 20},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
@@ -33,20 +32,19 @@ func TestSplitPane(t *testing.T) {
 				if got.split != tt.wantSplit {
 					t.Fatalf("split = %v, want %v (%+v)", got.split, tt.wantSplit, got)
 				}
-				if got.lw != tt.wantLW || got.rw != tt.wantRW || got.ruleX != tt.wantRuleAt {
-					t.Errorf("geometry = lw %d rw %d rule %d, want lw %d rw %d rule %d",
-						got.lw, got.rw, got.ruleX, tt.wantLW, tt.wantRW, tt.wantRuleAt)
+				if got.lw != tt.wantLW || got.rw != tt.wantRW {
+					t.Errorf("geometry = lw %d rw %d, want lw %d rw %d", got.lw, got.rw, tt.wantLW, tt.wantRW)
 				}
 				if !got.split {
 					return
 				}
-				// The two columns plus the rule and its spaces must account for
-				// every interior cell, and never overrun it.
+				// The two columns plus the gutter must account for every
+				// interior cell, and never overrun it.
 				if got.lw+3+got.rw != tt.iw {
 					t.Errorf("columns span %d cells, want the whole interior %d", got.lw+3+got.rw, tt.iw)
 				}
-				if got.rx != got.ruleX+2 || got.lx != ix {
-					t.Errorf("column origins = lx %d rule %d rx %d, want lx %d and rx two past the rule", got.lx, got.ruleX, got.rx, ix)
+				if got.rx != ix+got.lw+3 || got.lx != ix {
+					t.Errorf("column origins = lx %d rx %d, want lx %d and rx three past the spec column", got.lx, got.rx, ix)
 				}
 			})
 		}

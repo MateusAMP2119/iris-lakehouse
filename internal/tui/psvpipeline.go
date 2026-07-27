@@ -36,26 +36,26 @@ const (
 )
 
 // paneSplit is the detail pane's resolved column geometry. When split is
-// false the columns stack: lx/lw describe the single column and ruleX is -1.
+// false the columns stack: lx/lw describe the single column.
 type paneSplit struct {
 	lx, lw int // spec column
 	rx, rw int // wide column
-	ruleX  int // the vertical rule, -1 when stacked
 	split  bool
 }
 
 // splitPane resolves the two-column geometry over an interior of width iw
 // starting at column ix. The spec column takes two sevenths, clamped to its
 // floor and ceiling (the rail's clamp idiom); the wide column takes the rest
-// less the rule and its two spaces. Too little left for the run table's core
-// columns and the pane stacks instead.
+// less a three-cell gutter. Nothing is drawn in the gutter -- the rail holds
+// its name from its badge the same way. Too little left for the run table's
+// core columns and the pane stacks instead.
 func splitPane(ix, iw int) paneSplit {
 	lw := min(max(iw*2/7, psSpecMinW), psSpecMaxW)
 	rw := iw - lw - 3
 	if lw+3 >= iw || rw < psRunsCoreW {
-		return paneSplit{lx: ix, lw: iw, rx: ix, rw: iw, ruleX: -1}
+		return paneSplit{lx: ix, lw: iw, rx: ix, rw: iw}
 	}
-	return paneSplit{lx: ix, lw: lw, rx: ix + lw + 3, rw: rw, ruleX: ix + lw + 1, split: true}
+	return paneSplit{lx: ix, lw: lw, rx: ix + lw + 3, rw: rw, split: true}
 }
 
 // runsTier is how many run-table columns a wide column of width w affords:
@@ -72,22 +72,33 @@ func runsTier(w int) int {
 	}
 }
 
-// vrule paints an h-cell vertical divider at (x, y) in border chrome -- the
-// vertical half of rule.
-func (b *screenBuf) vrule(x, y, h int) {
-	for yy := y; yy < y+h; yy++ {
-		b.text(x, yy, ansiBorder, "│")
-	}
-}
-
-// specHead paints one spec section heading: the title dim uppercase, with an
-// optional dim right-aligned count beside it.
+// specHead paints one spec section heading: the title dim uppercase, an
+// optional dim right-aligned count beside it, and the row's own underline --
+// the block delimiter the rail uses, costing no extra row.
 func specHead(b *screenBuf, x, y, w int, title, right string) {
 	b.text(x, y, ansiDim, clipCells(title, w))
 	if right != "" && len([]rune(title))+len([]rune(right))+2 <= w {
 		b.text(x+w-len([]rune(right)), y, ansiDim, right)
 	}
+	b.underlineRow(x, y, w)
 }
+
+// specTypeW is the type column the SCHEMA block's rows share: the widest type
+// among them, so no row re-cuts its neighbours as the list scrolls and no
+// token is clipped (loadValW's rule, over a declared shape).
+func specTypeW(cols []api.ColumnShape) int {
+	w := 0
+	for _, c := range cols {
+		if n := len([]rune(c.Type)); n > w {
+			w = n
+		}
+	}
+	return w
+}
+
+// specFieldW is the value column a labelled spec row leaves after its label:
+// frozen by the label, so a value that grows never re-cuts the label.
+func specFieldW(w int, label string) int { return w - len([]rune(label)) - 2 }
 
 // specRow paints one label/value row: the label left dim, the value right
 // aligned in a valW column so a value that grows a character never shifts its
@@ -150,7 +161,7 @@ func renderSpecOutput(b *screenBuf, m *psModel, sc specScope, x, y, w int) int {
 		return 2
 	}
 	rows, watermark, _, _ := m.snap.Journal.tableTotals(sc.table)
-	specRow(b, x, y+1, w, len([]rune(sc.table)), "table", sc.table, "")
+	specRow(b, x, y+1, w, specFieldW(w, "table"), "table", sc.table, "")
 	specRow(b, x, y+2, w, 10, "rows captured", fmt.Sprintf("%d", rows), "")
 	specRow(b, x, y+3, w, 10, "watermark", fmt.Sprintf("%d", watermark), ansiDim)
 	// Clicking the table name is the doorway to the TABLE shape.
@@ -219,13 +230,14 @@ func renderSpecSchema(b *screenBuf, m *psModel, sc specScope, x, y, w, maxH int)
 	if len(shown) > room {
 		shown = shown[:room-1] // the last row goes to the +N more marker
 	}
+	typeW := specTypeW(shown)
 	row := 0
 	for _, c := range shown {
 		name := c.Name
 		if c.PrimaryKey {
 			name = "· " + name
 		}
-		specRow(b, x, y+1+row, w, len([]rune(c.Type)), name, c.Type, ansiDim)
+		specRow(b, x, y+1+row, w, typeW, name, c.Type, ansiDim)
 		row++
 	}
 	if rest := len(shape.Columns) - len(shown); rest > 0 {
@@ -305,7 +317,7 @@ func renderSpecRetention(b *screenBuf, m *psModel, sc specScope, x, y, w, maxH i
 	// Packs come from the cached listing, which resolves over the network and
 	// so is fetched once rather than polled: an empty cache reads as absence.
 	if packs := m.packsFor(sc.pipeline); len(packs) > 0 {
-		specRow(b, x, y+3, w, len([]rune(packs[0])), "pack", packs[0], ansiDim)
+		specRow(b, x, y+3, w, specFieldW(w, "pack"), "pack", packs[0], ansiDim)
 		return 4
 	}
 	return 3
@@ -369,6 +381,7 @@ func renderRowsBar(b *screenBuf, m *psModel, key, table string, x, y, w int) int
 	if len([]rune(head))+len([]rune(right))+2 <= w {
 		b.text(x+w-len([]rune(right)), y, ansiDim, right)
 	}
+	b.underlineRow(x, y, w) // the wide column's head takes the spec column's rule
 	if peak <= 0 {
 		b.text(x, y+1, ansiDim, clipCells("no captured writes in the window", w))
 		return 2
@@ -395,6 +408,7 @@ func renderRowsBarLive(b *screenBuf, m *psModel, table string, x, y, w int) int 
 	}
 	if len(rate) == 0 || peak == 0 {
 		b.text(x, y, ansiDim, clipCells(head, w))
+		b.underlineRow(x, y, w)
 		b.text(x, y+1, ansiDim, clipCells("no captured writes observed yet", w))
 		return 2
 	}
@@ -403,6 +417,7 @@ func renderRowsBarLive(b *screenBuf, m *psModel, table string, x, y, w int) int 
 	if len([]rune(head))+len([]rune(right))+2 <= w {
 		b.text(x+w-len([]rune(right)), y, ansiDim, right)
 	}
+	b.underlineRow(x, y, w)
 	scaled := make([]float64, len(rate))
 	for i, v := range rate {
 		scaled[i] = v / peak * 100
@@ -597,7 +612,6 @@ func renderDetailPane(b *screenBuf, m *psModel, sc specScope, rows []detailRun, 
 		return
 	}
 
-	b.vrule(p.ruleX, iy, ih)
 	renderSpecColumn(b, m, sc, p.lx, iy, p.lw, ih)
 
 	barH := 0
@@ -616,12 +630,8 @@ func rowRingKey(sc specScope) string {
 	return ""
 }
 
-// detailTitle names the pane's subject, crossed when its newest run
-// dead-lettered.
-func detailTitle(kind, name string, runs []api.PsRun) string {
-	title := kind + " · " + name
-	if len(runs) > 0 && runs[0].State == "dead_lettered" {
-		title = "✖ " + title
-	}
-	return title
+// detailDead reports the pane subject's newest run dead-lettering -- the cross
+// riding beside the title's name.
+func detailDead(runs []api.PsRun) bool {
+	return len(runs) > 0 && runs[0].State == "dead_lettered"
 }

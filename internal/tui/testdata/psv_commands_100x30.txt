@@ -1,6 +1,6 @@
  │ [IRIS]   dev   LEADER  up 2h13m  pid 42   CPU          ░░░░░   3.2%  MEM  126.0MiB  1r  1q  0✖ │
 
- │ [CATALOG]              │  ┌─ PIPELINE · extract ───────────────────────────────────────────────┐
+ │ [CATALOG]              │  │ [PIPELINE]                                                 extract │
  │ / ┌─ COMMANDS ───────────────────────┐ ┌─ ABOUT · catalog ─────────────────────────────────┐   │
  │ in│ ▸ catalog · Browse and install … │d│ Browse and install pipeline packs                 │   │
  │ ● │   search · Fuzzy-find lanes, pi… │ │                                                   │   │
@@ -25,6 +25,6 @@
  │   ┌────────────────────────────────────────────────────────────────────────────────────────┐   │
  │ LA│ :█                                                                  tab · ↑↓ · ⏎ · esc │   │
  │ de└────────────────────────────────────────────────────────────────────────────────────────┘   │
- │ CPU    ░▒▓▓▓     51.0% │  │                        │                                           │
- │ MEM    ░████   24.0MiB │  └────────────────────────────────────────────────────────── c cancel ┘
+ │ CPU    ░▒▓▓▓     51.0% │  │                                                                    │
+ │ MEM    ░████   24.0MiB │  │                                                           c cancel │
   ↑↓ select · tab complete · ⏎ run · esc close

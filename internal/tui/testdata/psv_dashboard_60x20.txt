@@ -1,6 +1,6 @@
  │ [IRIS]   dev   LEADER  up 2h13m  pid 42                │
 
- ┌─ PIPELINE · extract ───────────────────────────────────┐
+ │ [PIPELINE]                                     extract │
  │ OUTPUT                                                 │
  │ no captured writes yet                                 │
  │                                                        │
@@ -17,4 +17,4 @@
  │                                                        │
  │                                                        │
  │                                                        │
- └────────────────────────────────────────────── c cancel ┘
+ │                                               c cancel │

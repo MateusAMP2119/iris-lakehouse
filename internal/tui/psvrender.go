@@ -107,14 +107,6 @@ func paintLaneWash(b *screenBuf, x, y, w int, colorless bool) {
 	b.tintLane(x, y, w)
 }
 
-// rule paints a w-cell horizontal divider at (x, y) in border chrome.
-func (b *screenBuf) rule(x, y, w int) {
-	if w <= 0 {
-		return
-	}
-	b.text(x, y, ansiBorder, strings.Repeat("─", w))
-}
-
 // layerSGR prefixes w cells of row y from x with an SGR, keeping each cell's
 // own paint underneath it.
 func (b *screenBuf) layerSGR(x, y, w int, prefix string) {
@@ -522,6 +514,47 @@ func paneChrome(focused, colorless bool, title string) (borderSGR, titleSGR, t s
 		return ansiMagenta, ansiMagenta, title
 	}
 	return ansiBorder, ansiDim, title
+}
+
+// paneTitle paints a pane's title row: the bracketed mark at x+2 in the
+// wordmark's ramp, flat in titleSGR when the frame is colorless. The row's
+// edges are the caller's deferred ruleRow.
+func paneTitle(b *screenBuf, x, y int, titleSGR, mark string, colorless bool) {
+	if colorless {
+		b.text(x+2, y, titleSGR, mark)
+		return
+	}
+	b.gradText(x+2, y, mark)
+}
+
+// paneSubject right-aligns a pane's subject on its title row: the name in the
+// brand violet, the dead-letter cross riding just before it. Red, not violet --
+// every other cross in the frame is red.
+func paneSubject(b *screenBuf, x, y, w int, name string, dead bool) {
+	if name == "" {
+		return
+	}
+	room := w - 6 - len([]rune(name))
+	if dead {
+		room -= 2
+	}
+	if room < 4 {
+		return // the mark alone; a clipped subject reads worse than none
+	}
+	nx := x + w - 2 - len([]rune(name))
+	b.text(nx, y, ansiMagenta, name)
+	if dead {
+		b.text(nx-2, y, ansiRed, "✖")
+	}
+}
+
+// paneHint right-aligns a dim hint on a pane's bottom row, so it wears the
+// rule the caller defers rather than punching a hole in it.
+func paneHint(b *screenBuf, x, y, w int, hint string) {
+	if hint == "" || len([]rune(hint))+6 > w {
+		return
+	}
+	b.text(x+w-2-len([]rune(hint)), y, ansiDim, hint)
 }
 
 // psIsEmptyWorkspace reports the quiet-engine zero state: nothing registered,

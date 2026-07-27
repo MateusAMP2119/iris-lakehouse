@@ -398,8 +398,13 @@ func TestPsFrameStyling(t *testing.T) {
 			if want := strings.Repeat(" ", psFrameMarginX) + "│"; !strings.HasPrefix(lines[top], want) {
 				t.Errorf("panes must start at row %d, got %q", top, lines[top])
 			}
-			if !strings.Contains(lines[top], "┌") {
-				t.Errorf("row %d carries no pane top edge, got %q", top, lines[top])
+			// Every surface is a hairline card: the pane row carries its two
+			// marks and no box glyph anywhere -- the edges are SGR rules.
+			if !strings.Contains(lines[top], "[CATALOG]") || !strings.Contains(lines[top], "[PIPELINE]") {
+				t.Errorf("row %d carries no pane marks, got %q", top, lines[top])
+			}
+			if strings.ContainsAny(lines[top], "┌┐└┘─") {
+				t.Errorf("row %d carries box glyphs, got %q", top, lines[top])
 			}
 		})
 
@@ -468,6 +473,100 @@ func TestPsFrameStyling(t *testing.T) {
 			// The gradient mark, not the pane title's flat paint.
 			if got := b.cells[top*b.w+psFrameMarginX+2].sgr; !strings.Contains(got, ansiBold) {
 				t.Errorf("title sgr = %q, want the wordmark's bold ramp", got)
+			}
+		})
+
+		t.Run("detail pane is one hairline card, marked and subjected", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			m.selectTable("ingest", "demo.orders")
+			// Row indices are kept aligned with the frame's, so a short row
+			// never slides the title out from under its own index.
+			var pane []string
+			for _, ln := range renderPsFrame(m, 150, 40, false).plainLines() {
+				r := []rune(ln)
+				if len(r) <= 40 {
+					pane = append(pane, "")
+					continue
+				}
+				pane = append(pane, string(r[40:]))
+			}
+			joined := strings.Join(pane, "\n")
+			if strings.ContainsAny(joined, "┌┐└┘─") {
+				t.Errorf("detail edges must be SGR rules, not glyphs:\n%s", joined)
+			}
+			// The mark names the kind of surface; the subject names the instance.
+			if n := strings.Count(joined, "[TABLE]"); n != 1 {
+				t.Errorf("detail draws %d TABLE cards, want 1", n)
+			}
+			title := pane[psHeaderH+psHeaderGap]
+			if !strings.Contains(title, "demo.orders") {
+				t.Errorf("title row carries no subject: %q", title)
+			}
+			// No internal vertical divider: the columns are held apart by air.
+			if row := pane[psHeaderH+psHeaderGap+2]; strings.Count(row, "│") != 2 {
+				t.Errorf("a content row must carry the two pipes only: %q", row)
+			}
+		})
+
+		t.Run("no frame row carries a box glyph", func(t *testing.T) {
+			for _, geo := range []struct{ w, h int }{{150, 40}, {100, 30}, {60, 20}} {
+				m := newPsModel(psvFixture(), "")
+				frame := strings.Join(renderPsFrame(m, geo.w, geo.h, false).plainLines(), "\n")
+				if strings.ContainsAny(frame, "┌┐└┘─") {
+					t.Errorf("%dx%d frame carries box glyphs:\n%s", geo.w, geo.h, frame)
+				}
+			}
+		})
+
+		t.Run("detail pane edges are SGR rules on the rows they bound", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			b := renderPsFrame(m, 150, 40, false)
+			top := psHeaderH + psHeaderGap
+			paneX := psFrameMarginX + 37 + psPaneGap // rail width at 150 cols
+			cell := func(x, y int) psCell { return b.cells[y*b.w+x] }
+			if got := cell(paneX, top).sgr; !strings.HasPrefix(got, ansiHRule) {
+				t.Errorf("title row sgr = %q, want the overline/underline pair", got)
+			}
+			if got := cell(paneX, b.h-1).sgr; !strings.HasPrefix(got, ansiURule) {
+				t.Errorf("bottom row sgr = %q, want an underline", got)
+			}
+			if got := cell(paneX+2, top).sgr; !strings.Contains(got, ansiBold) {
+				t.Errorf("mark sgr = %q, want the wordmark's bold ramp", got)
+			}
+			// The bottom rule spans the pane in one colour. hairBox fills every
+			// blank with chrome so the rule keeps its hue across the gaps; a
+			// blit reaching this row would replace those cells wholesale and
+			// leave the rule with nothing underneath -- exactly ansiURule and
+			// no chrome, which is the seam this pins shut.
+			for x := paneX; x < b.w-psFrameMarginX; x++ {
+				c := cell(x, b.h-1)
+				if !strings.HasPrefix(c.sgr, ansiURule) {
+					t.Fatalf("bottom rule breaks at column %d: sgr %q", x, c.sgr)
+				}
+				if c.sgr == ansiURule {
+					t.Fatalf("bottom rule has no chrome under it at column %d -- a blit reached the gutter", x)
+				}
+			}
+		})
+
+		t.Run("section heads wear the underline, bounded by their column", func(t *testing.T) {
+			m := newPsModel(psvFixture(), "")
+			b := renderPsFrame(m, 150, 40, false)
+			paneX := psFrameMarginX + 37 + psPaneGap
+			p := splitPane(paneX+2, 150-2*psFrameMarginX-37-psPaneGap-4)
+			if !p.split {
+				t.Fatal("150 columns must split the detail pane")
+			}
+			headY := psHeaderH + psHeaderGap + 1 // OUTPUT, the first spec head
+			for x := p.lx; x < p.lx+p.lw; x++ {
+				if got := b.cells[headY*b.w+x].sgr; !strings.HasPrefix(got, ansiURule) {
+					t.Fatalf("section head not ruled at column %d: sgr %q", x, got)
+				}
+			}
+			// The rule is the spec column's, not the pane's: the gutter cell
+			// just left of the wide column must be clear of it.
+			if got := b.cells[headY*b.w+p.rx-1].sgr; strings.HasPrefix(got, ansiURule) {
+				t.Errorf("section rule leaked into the gutter: sgr %q", got)
 			}
 		})
 

@@ -87,13 +87,9 @@ func renderCatalogPane(b *screenBuf, m *psModel, x, y, w, h int, colorless bool)
 	b.hairBox(x, y, w, h, borderSGR)
 	m.addClick(psClick{x: x, y: y, w: w, h: h, kind: psClickPane, pane: psPaneLanes})
 
-	// The title is a row of its own now, wearing the wordmark's ramp; focus
-	// still reads through the chrome colour the pipes and rules carry.
-	if colorless {
-		b.text(x+2, y, titleSGR, title)
-	} else {
-		b.gradText(x+2, y, title)
-	}
+	// The title is a row of its own, wearing the wordmark's ramp; focus still
+	// reads through the chrome colour the pipes and rules carry.
+	paneTitle(b, x, y, titleSGR, title, colorless)
 	defer b.ruleRow(x, y, w)          // the title row's edges, drawn last
 	defer b.underlineRow(x, y+h-1, w) // the rail's bottom edge
 
@@ -351,26 +347,18 @@ func (m *psModel) laneLastCommit(lane string) string {
 	return best.Stamp
 }
 
-// bottomHint splices a right-aligned dim hint into a box's bottom border row.
-func bottomHint(b *screenBuf, x, y, w int, hint string) {
-	if hint == "" || len([]rune(hint))+6 > w {
-		return
-	}
-	b.text(x+w-3-len([]rune(hint)), y, ansiDim, " "+hint+" ")
-}
-
 // statsStripRow paints one labeled heat-strip row with its value right-aligned
 // in a valW-wide column. Like railStripRow the strip's geometry is valW's, not
 // this reading's, so the rows align and the bar holds still as the numbers move.
 func statsStripRow(b *screenBuf, x, y, w, valW int, label string, samples func(int) []float64, val string) {
 	b.text(x+2, y, ansiDim, label)
 	stripX := x + 8
-	stripW := x + w - 3 - valW - 2 - stripX
+	stripW := x + w - 2 - valW - 2 - stripX
 	if stripW < 8 {
 		return
 	}
 	b.renderHeatStrip(stripX, y, stripW, samples(stripW))
-	b.text(x+w-3-len([]rune(val)), y, "", val)
+	b.text(x+w-2-len([]rune(val)), y, "", val)
 }
 
 // psLoadValW floors the load readout column so the common width changes -- a
@@ -424,18 +412,24 @@ func latestRunDelta(s Snapshot, table string) int64 {
 // walk's on-frame doorway.
 func renderTableStats(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 	sc := tableSpecScope(m)
-	borderSGR, titleSGR, title := paneChrome(m.pane == psPaneStats, colorless, detailTitle("TABLE", m.selTable, sc.runs))
-	b.box(x, y, w, h, borderSGR, titleSGR, title)
+	borderSGR, titleSGR, mark := paneChrome(m.pane == psPaneStats, colorless, "[TABLE]")
+	b.hairBox(x, y, w, h, borderSGR)
 	m.addClick(psClick{x: x, y: y, w: w, h: h, kind: psClickPane, pane: psPaneStats})
+	paneTitle(b, x, y, titleSGR, mark, colorless)
+	paneSubject(b, x, y, w, m.selTable, detailDead(sc.runs))
+	// Both edges are the caller's, deferred so every glyph painted below still
+	// takes them -- and so even an early return leaves the card whole.
+	defer b.ruleRow(x, y, w)
+	defer b.underlineRow(x, y+h-1, w)
 	if h < 6 {
 		return
 	}
-	bottomHint(b, x, y+h-1, w, "c cancel · :data provenance for the walk")
 	if m.snap.Journal == nil {
 		b.text(x+2, y+1, ansiDim, clipCells("journal activity unavailable", w-4))
 		return
 	}
 	renderDetailPane(b, m, sc, tableDetailRuns(m, sc), x, y, w, h, colorless)
+	paneHint(b, x, y+h-1, w, "c cancel · :data provenance for the walk")
 }
 
 // pipelineTableRow is one table row of the pipeline statistics pane.
@@ -525,29 +519,38 @@ func opsSplit(j *psJournal, name string) string {
 // retention on the left, the write rate over its run history on the right.
 func renderPipelineStats(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 	sc := pipelineSpecScope(m)
-	borderSGR, titleSGR, title := paneChrome(m.pane == psPaneStats, colorless, detailTitle("PIPELINE", m.selPipeline, sc.runs))
-	b.box(x, y, w, h, borderSGR, titleSGR, title)
+	borderSGR, titleSGR, mark := paneChrome(m.pane == psPaneStats, colorless, "[PIPELINE]")
+	b.hairBox(x, y, w, h, borderSGR)
 	m.addClick(psClick{x: x, y: y, w: w, h: h, kind: psClickPane, pane: psPaneStats})
+	paneTitle(b, x, y, titleSGR, mark, colorless)
+	paneSubject(b, x, y, w, m.selPipeline, detailDead(sc.runs))
+	defer b.ruleRow(x, y, w)
+	defer b.underlineRow(x, y+h-1, w)
 	if h < 6 {
 		return
 	}
-	bottomHint(b, x, y+h-1, w, "c cancel")
 	renderDetailPane(b, m, sc, pipelineDetailRuns(m, sc), x, y, w, h, colorless)
+	paneHint(b, x, y+h-1, w, "c cancel")
 }
 
 // renderLaneStats is the statistics pane's lane shape: lane totals, lane load
 // strips, and the member pipeline table (share-of-lane-time lands with #200).
 func renderLaneStats(b *screenBuf, m *psModel, x, y, w, h int, colorless bool) {
 	name := m.selLane
-	borderSGR, titleSGR, title := paneChrome(m.pane == psPaneStats, colorless, "LANE · "+name)
-	b.box(x, y, w, h, borderSGR, titleSGR, title)
+	borderSGR, titleSGR, mark := paneChrome(m.pane == psPaneStats, colorless, "[LANE]")
+	b.hairBox(x, y, w, h, borderSGR)
 	m.addClick(psClick{x: x, y: y, w: w, h: h, kind: psClickPane, pane: psPaneStats})
+	paneTitle(b, x, y, titleSGR, mark, colorless)
+	paneSubject(b, x, y, w, name, false)
+	defer b.ruleRow(x, y, w)
+	defer b.underlineRow(x, y+h-1, w)
 	if h < 6 || name == "" {
 		if name == "" {
-			b.text(x+3, y+2, ansiDim, "no lane selected")
+			b.text(x+2, y+1, ansiDim, "no lane selected")
 		}
 		return
 	}
+	defer paneHint(b, x, y+h-1, w, "⏎ open · c cancel")
 
 	var lane psLaneRow
 	for _, l := range deriveLanes(m.snap) {
