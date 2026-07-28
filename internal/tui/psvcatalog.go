@@ -26,11 +26,12 @@ const (
 
 // psCatalogReq is one action request the model parks for the loop.
 type psCatalogReq struct {
-	kind  psCatalogReqKind
-	pack  string
-	url   string // the index URL an add-source request carries
-	force bool
-	seq   int // correlation id; the outcome echoes it back
+	kind      psCatalogReqKind
+	pack      string
+	pipelines []string // the pack members to install, nil for the whole pack
+	url       string   // the index URL an add-source request carries
+	force     bool
+	seq       int // correlation id; the outcome echoes it back
 }
 
 // psCatalogMsg is one action outcome the loop absorbs.
@@ -50,11 +51,10 @@ type psCatalogMsg struct {
 // whose index carries no member list still contributes a row naming itself,
 // rather than vanishing from a list it belongs in.
 //
-// Picking stays a pack decision. Install materializes a whole pack, and it has
-// to: a lane composer orders every member of its lane and a member's depends_on
-// can name a sibling, so half a pack is not a thing the engine can apply. The
-// row therefore marks its pack, and its siblings light up with it, which shows
-// that consequence rather than hiding it.
+// Picking is per pipeline. The install request carries the marked members of
+// one pack and the leader takes their closure -- in-pack depends_on, and the
+// rest of any lane a composer orders -- so what lands is always applicable even
+// when the marks were not.
 type psCatalogRow struct {
 	// pipeline is the declared pipeline this row names, "" for a pack that
 	// declares none.
@@ -71,22 +71,30 @@ func (r psCatalogRow) label() string {
 	return r.pack.Name
 }
 
+// key identifies the row in the mark set. It is pack-qualified because two
+// catalogs may ship a pipeline of the same name, and marking one must not mark
+// the other.
+func (r psCatalogRow) key() string {
+	return r.pack.Name + "\x00" + r.pipeline
+}
+
 // psCatalog is one catalog surface's state: the overlay, or the idle card's
 // inline searchable list.
 type psCatalog struct {
-	loading   bool
-	packs     []api.CatalogPack
-	sel       int             // cursor within visible() (the query-filtered list)
-	query     []rune          // inline filter; the overlay never sets it
-	searching bool            // inline: printable keys extend the query
-	busy      string          // in-flight action label, "" when idle
-	banner    string          // inline error or notice
-	pending   int             // seq of the one in-flight request; only its outcome is absorbed
-	marked    map[string]bool // space-marked pack names for a batch apply
-	queue     []string        // remaining packs of the live batch, head in flight
-	done      int             // packs already applied in the live batch
-	addingURL bool            // the add-source URL prompt is open
-	urlInput  []rune          // the prompt's typed URL
+	loading     bool
+	packs       []api.CatalogPack
+	sel         int             // cursor within visible() (the query-filtered list)
+	query       []rune          // inline filter; the overlay never sets it
+	searching   bool            // inline: printable keys extend the query
+	busy        string          // in-flight action label, "" when idle
+	banner      string          // inline error or notice
+	pending     int             // seq of the one in-flight request; only its outcome is absorbed
+	marked      map[string]bool // space-marked pack names for a batch apply
+	queue       []psCatalogPick // remaining picks of the live batch, head in flight
+	done        int             // packs already applied in the live batch
+	appliedRows int             // pipelines the live batch has landed so far
+	addingURL   bool            // the add-source URL prompt is open
+	urlInput    []rune          // the prompt's typed URL
 }
 
 // updateAddSource routes a keypress while the add-source prompt is open:
@@ -119,29 +127,28 @@ func (c *psCatalog) toggleMark() {
 	c.toggleMarkAt(c.sel)
 }
 
-// toggleMarkAt flips the batch mark on the i-th visible row's pack (the ○/●
-// circle's click target). Rows are pipelines and the mark is a pack, so every
-// sibling row of the same pack flips with it.
+// toggleMarkAt flips the batch mark on the i-th visible row (the ○/● circle's
+// click target). One row, one mark: a pipeline picks alone.
 func (c *psCatalog) toggleMarkAt(i int) {
 	vis := c.visible()
 	if i < 0 || i >= len(vis) {
 		return
 	}
-	name := vis[i].pack.Name
+	key := vis[i].key()
 	if c.marked == nil {
 		c.marked = map[string]bool{}
 	}
-	if c.marked[name] {
-		delete(c.marked, name)
+	if c.marked[key] {
+		delete(c.marked, key)
 	} else {
-		c.marked[name] = true
+		c.marked[key] = true
 	}
 	c.banner = ""
 }
 
-// toggleMarkAll marks every pack the visible rows belong to, or clears them all
-// when they are already marked. It follows the filter: with a query typed it is
-// "all of what I am looking at", not "all of the catalog".
+// toggleMarkAll marks every visible row, or clears them all when they are
+// already marked. It follows the filter: with a query typed it is "all of what
+// I am looking at", not "all of the catalog".
 func (c *psCatalog) toggleMarkAll() {
 	vis := c.visible()
 	if len(vis) == 0 {
@@ -150,14 +157,14 @@ func (c *psCatalog) toggleMarkAll() {
 	c.banner = ""
 	allMarked := true
 	for _, r := range vis {
-		if !c.marked[r.pack.Name] {
+		if !c.marked[r.key()] {
 			allMarked = false
 			break
 		}
 	}
 	if allMarked {
 		for _, r := range vis {
-			delete(c.marked, r.pack.Name)
+			delete(c.marked, r.key())
 		}
 		return
 	}
@@ -165,7 +172,7 @@ func (c *psCatalog) toggleMarkAll() {
 		c.marked = map[string]bool{}
 	}
 	for _, r := range vis {
-		c.marked[r.pack.Name] = true
+		c.marked[r.key()] = true
 	}
 }
 
@@ -175,18 +182,94 @@ func (c *psCatalog) working() bool {
 	return c.busy != "" || len(c.queue) > 0
 }
 
-// batch lists the marked packs in catalog order (nil when none marked).
-func (c *psCatalog) batch() []string {
+// psCatalogPick is one pack's share of the marked rows: the pack, and the
+// pipelines picked from it. An empty Pipelines means the pack declares none and
+// was picked whole.
+type psCatalogPick struct {
+	pack      string
+	pipelines []string
+	// members is the pack's whole roster. A whole-pack pick deliberately sends no
+	// pipeline list, so this is the only record of which rows it will clear.
+	members []string
+}
+
+// batch groups the marked rows into one install per pack, in catalog order
+// (nil when none marked). Install is per pack plus a member list, so twenty
+// marks inside one pack are one request, not twenty.
+func (c *psCatalog) batch() []psCatalogPick {
 	if len(c.marked) == 0 {
 		return nil
 	}
-	var out []string
+	var out []psCatalogPick
 	for _, p := range c.packs {
-		if c.marked[p.Name] {
-			out = append(out, p.Name)
+		pick := psCatalogPick{pack: p.Name, members: p.Pipelines}
+		hit := false
+		if len(p.Pipelines) == 0 {
+			hit = c.marked[psCatalogRow{pack: p}.key()]
+		}
+		for _, name := range p.Pipelines {
+			if c.marked[psCatalogRow{pipeline: name, pack: p}.key()] {
+				pick.pipelines = append(pick.pipelines, name)
+				hit = true
+			}
+		}
+		// Every member marked is a whole-pack install: sending the full list
+		// would work, but an empty one is what the API already means by it.
+		if len(pick.pipelines) == len(p.Pipelines) {
+			pick.pipelines = nil
+		}
+		if hit {
+			out = append(out, pick)
 		}
 	}
 	return out
+}
+
+// unmarkInstalled clears the marks for everything one landed install carried and
+// tallies it. The leader reports the members it actually took, which is the
+// requested picks plus their closure; falling back to the pick's own list keeps
+// an older leader (or a whole-pack install, which reports every member) honest.
+func (c *psCatalog) unmarkInstalled(res *api.CatalogInstallResult, pick psCatalogPick) {
+	landed := pick.pipelines
+	if len(landed) == 0 {
+		landed = pick.members // a whole-pack pick clears every row it listed
+	}
+	if res != nil && len(res.Pipelines) > 0 {
+		landed = res.Pipelines
+	}
+	if len(landed) == 0 {
+		// A pack declaring no members: its single row is keyed on the bare pack.
+		delete(c.marked, psCatalogRow{pack: api.CatalogPack{Name: pick.pack}}.key())
+		c.appliedRows++
+		return
+	}
+	for _, name := range landed {
+		key := psCatalogRow{pipeline: name, pack: api.CatalogPack{Name: pick.pack}}.key()
+		if c.marked[key] {
+			delete(c.marked, key)
+		}
+	}
+	c.appliedRows += len(landed)
+}
+
+// markedRows counts the picked rows, which is what the apply affordance shows:
+// an operator marked pipelines and expects that number back, not a pack count.
+func (c *psCatalog) markedRows() int {
+	n := 0
+	for _, p := range c.packs {
+		if len(p.Pipelines) == 0 {
+			if c.marked[psCatalogRow{pack: p}.key()] {
+				n++
+			}
+			continue
+		}
+		for _, name := range p.Pipelines {
+			if c.marked[psCatalogRow{pipeline: name, pack: p}.key()] {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // openCatalog opens the overlay in its loading state and parks the list request.
@@ -452,11 +535,20 @@ func (m *psModel) catalogApply(c *psCatalog) {
 func (m *psModel) parkBatchHead(c *psCatalog) {
 	total := c.done + len(c.queue)
 	next := c.queue[0]
-	c.busy = fmt.Sprintf("applying %s… (%d/%d)", next, c.done+1, total)
+	// Name what is going in: a narrowed pick reads as its pipelines, since the
+	// pack name alone would suggest the whole shelf is landing.
+	what := next.pack
+	switch n := len(next.pipelines); {
+	case n == 1:
+		what = next.pipelines[0]
+	case n > 1:
+		what = fmt.Sprintf("%d of %s", n, next.pack)
+	}
+	c.busy = fmt.Sprintf("applying %s… (%d/%d)", what, c.done+1, total)
 	if c == m.idleCat && !psIsEmptyWorkspace(m) {
 		m.note = c.busy // the inline card is off-frame by now; the footer carries it
 	}
-	m.parkCatalogReqFor(c, psCatalogReq{kind: psCatalogApply, pack: next, force: true})
+	m.parkCatalogReqFor(c, psCatalogReq{kind: psCatalogApply, pack: next.pack, pipelines: next.pipelines, force: true})
 }
 
 // absorbCatalog folds one action outcome into whichever surface owns the
@@ -486,14 +578,21 @@ func (m *psModel) absorbCatalog(cm psCatalogMsg) {
 		if c.sel >= len(c.visible()) {
 			c.sel = 0
 		}
-		// Marks live only as long as their packs stay listed.
+		// Marks live only as long as their row stays listed: a pack dropping out
+		// of the catalog takes its pipelines' marks with it, and so does a pack
+		// that merely stopped declaring one of them.
 		alive := map[string]bool{}
 		for _, p := range c.packs {
-			alive[p.Name] = true
+			if len(p.Pipelines) == 0 {
+				alive[psCatalogRow{pack: p}.key()] = true
+			}
+			for _, name := range p.Pipelines {
+				alive[psCatalogRow{pipeline: name, pack: p}.key()] = true
+			}
 		}
-		for name := range c.marked {
-			if !alive[name] {
-				delete(c.marked, name)
+		for key := range c.marked {
+			if !alive[key] {
+				delete(c.marked, key)
 			}
 		}
 	case psCatalogAddSource:
@@ -510,34 +609,46 @@ func (m *psModel) absorbCatalog(cm psCatalogMsg) {
 		if cm.err != "" {
 			c.banner = cm.err
 			if skipped := len(c.queue) - 1; skipped > 0 {
-				c.banner = fmt.Sprintf("%s · %d marked packs skipped", cm.err, skipped)
+				c.banner = fmt.Sprintf("%s · %d marked pack(s) skipped", cm.err, skipped)
 			}
 			c.queue, c.done = nil, 0
 			return
 		}
-		// A batch head landing: pop it, unmark it, and chain the next request
-		// (the loop drains the park right after this absorb).
+		// A batch head landing: pop it, unmark every row it carried, and chain
+		// the next request (the loop drains the park right after this absorb).
+		// The result's member list is what to clear, not the marks: the leader's
+		// closure may have installed a sibling the operator never picked, and
+		// leaving that one circled would invite a second install of it.
 		if len(c.queue) > 0 {
+			landed := c.queue[0]
 			c.queue = c.queue[1:]
 			c.done++
-			delete(c.marked, cm.res.Pack)
+			c.unmarkInstalled(cm.res, landed)
 			if len(c.queue) > 0 {
 				m.parkBatchHead(c)
 				return
 			}
 		}
-		applied := c.done
-		c.queue, c.done = nil, 0
+		applied, pipelines := c.done, c.appliedRows
+		c.queue, c.done, c.appliedRows = nil, 0, 0
 		// Install-then-apply-then-watch: close the overlay (the inline idle
 		// catalog leaves with the empty workspace itself); the 1s poll shows
 		// the queued and running rows landing in the main frame.
 		if c == m.catalog {
 			m.catalog = nil
 		}
-		if applied > 1 {
+		// One pack names what landed; several just count. A narrowed install says
+		// the pipeline, because that is the thing that was picked.
+		switch decls := len(cm.res.ApplyOrder); {
+		case applied > 1:
 			m.note = fmt.Sprintf("%d packs applied · runs landing", applied)
-		} else {
-			m.note = fmt.Sprintf("pack %s applied (%d declarations) · runs landing", cm.res.Pack, len(cm.res.ApplyOrder))
+		case len(cm.res.Pipelines) == 1:
+			m.note = fmt.Sprintf("%s applied (%d declarations) · runs landing", cm.res.Pipelines[0], decls)
+		case len(cm.res.Pipelines) > 1 && pipelines < len(cm.res.Pipelines):
+			// The leader's closure pulled in more than was picked; say the total.
+			m.note = fmt.Sprintf("%d pipelines from %s applied (%d declarations) · runs landing", len(cm.res.Pipelines), cm.res.Pack, decls)
+		default:
+			m.note = fmt.Sprintf("%s applied (%d declarations) · runs landing", cm.res.Pack, decls)
 		}
 	}
 }

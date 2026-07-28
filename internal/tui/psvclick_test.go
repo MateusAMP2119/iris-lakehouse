@@ -111,7 +111,7 @@ func TestPsClick(t *testing.T) {
 		renderPsFrame(m, 100, 30, false)
 		r := region(m, psClickMarkPack, 1)
 		m.click(r.x, r.y)
-		if !m.idleCat.marked["beta"] {
+		if !m.idleCat.marked[psCatalogRow{pack: api.CatalogPack{Name: "beta"}}.key()] {
 			t.Fatalf("marked = %v, want the clicked circle filled", m.idleCat.marked)
 		}
 		if m.idleCat.sel == 1 {
@@ -169,8 +169,8 @@ func TestPsClick(t *testing.T) {
 		if m.idleCat.busy == "" || m.catalogReq == nil || m.catalogReq.kind != psCatalogApply {
 			t.Fatalf("apply click should start the batch, busy=%q req=%+v", m.idleCat.busy, m.catalogReq)
 		}
-		if got := len(m.idleCat.queue); got != 2 || m.idleCat.queue[0] != "alpha" {
-			t.Fatalf("queue = %v, want both packs with alpha in flight at the head", m.idleCat.queue)
+		if got := len(m.idleCat.queue); got != 2 || m.idleCat.queue[0].pack != "alpha" {
+			t.Fatalf("queue = %+v, want both packs with alpha in flight at the head", m.idleCat.queue)
 		}
 	})
 
@@ -200,7 +200,7 @@ func TestPsClick(t *testing.T) {
 		renderPsFrame(m, 100, 30, false)
 		r := region(m, psClickMarkPack, 0)
 		m.click(r.x, r.y)
-		if !m.catalog.marked["alpha"] {
+		if !m.catalog.marked[psCatalogRow{pack: api.CatalogPack{Name: "alpha"}}.key()] {
 			t.Fatalf("marked = %v, want the overlay circle to fill", m.catalog.marked)
 		}
 		if m.quit {

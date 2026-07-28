@@ -339,7 +339,7 @@ func (c *Client) fetchCatalog(ctx context.Context) psCatalogMsg {
 // installPack POSTs /catalog/install for the batch apply (always install+apply).
 func (c *Client) installPack(ctx context.Context, req psCatalogReq) psCatalogMsg {
 	msg := psCatalogMsg{kind: psCatalogApply}
-	body, _ := json.Marshal(api.CatalogInstallRequest{Pack: req.pack, Apply: true, Force: req.force})
+	body, _ := json.Marshal(api.CatalogInstallRequest{Pack: req.pack, Pipelines: req.pipelines, Apply: true, Force: req.force})
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/catalog/install", bytes.NewReader(body))
 	if err != nil {
 		msg.err = "catalog install: " + err.Error()
