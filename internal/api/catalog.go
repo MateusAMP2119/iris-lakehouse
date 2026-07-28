@@ -16,6 +16,10 @@ import (
 type CatalogInstallRequest struct {
 	// Pack is the pack name the leader resolves against its catalogs.
 	Pack string `json:"pack"`
+	// Pipelines narrows the install to these pack members, empty for the whole
+	// pack. The leader takes their dependency and lane closure with them, so
+	// what lands is always applicable; Result.Pipelines reports what that came to.
+	Pipelines []string `json:"pipelines,omitempty"`
 	// Apply runs the declare sequence in the derived order after materializing.
 	Apply bool `json:"apply,omitempty"`
 	// Force overwrites existing workspace paths instead of refusing.
@@ -26,6 +30,10 @@ type CatalogInstallRequest struct {
 type CatalogInstallResult struct {
 	// Pack is the pack installed.
 	Pack string `json:"pack"`
+	// Pipelines are the pack members this install carried, sorted. For a whole-pack
+	// install that is every member; for a narrowed one it is the requested
+	// pipelines plus the closure that came with them.
+	Pipelines []string `json:"pipelines,omitempty"`
 	// Files are the workspace-relative paths materialized, sorted.
 	Files []string `json:"files"`
 	// ApplyOrder is the derived declare sequence (first member, composer, rest).

@@ -192,34 +192,69 @@ func TestPsCatalogRows(t *testing.T) {
 			}
 		})
 
-		t.Run("marking a pipeline marks its pack, siblings included", func(t *testing.T) {
+		t.Run("marking a pipeline marks it alone, not its siblings", func(t *testing.T) {
 			c := load()
 			c.toggleMarkAt(0) // quake_feed
-			if !c.marked["quake-monitor"] {
-				t.Fatalf("marked = %v, want the pipeline's pack marked", c.marked)
+			vis := c.visible()
+			if !c.marked[vis[0].key()] {
+				t.Fatalf("marked = %v, want quake_feed marked", c.marked)
 			}
-			// The sibling row reads as marked because the mark is the pack's.
-			if vis := c.visible(); !c.marked[vis[1].pack.Name] {
-				t.Error("the sibling pipeline does not read as marked; the pack is the unit")
+			if c.marked[vis[1].key()] {
+				t.Error("the sibling pipeline was marked too; one row is one pick")
 			}
-			if got := c.batch(); len(got) != 1 || got[0] != "quake-monitor" {
-				t.Errorf("batch = %v, want one pack", got)
+			if n := c.markedRows(); n != 1 {
+				t.Errorf("markedRows = %d, want 1", n)
 			}
-			c.toggleMarkAt(1) // the sibling unmarks the same pack
+			c.toggleMarkAt(0)
 			if len(c.marked) != 0 {
-				t.Errorf("marked = %v, want the sibling to unmark the pack", c.marked)
+				t.Errorf("marked = %v, want the second toggle to clear it", c.marked)
 			}
 		})
 
-		t.Run("* takes everything, then clears it", func(t *testing.T) {
+		t.Run("a partial pick sends its pack's member list", func(t *testing.T) {
+			c := load()
+			c.toggleMarkAt(1) // quake_report alone
+			got := c.batch()
+			if len(got) != 1 || got[0].pack != "quake-monitor" {
+				t.Fatalf("batch = %+v, want one quake-monitor install", got)
+			}
+			if len(got[0].pipelines) != 1 || got[0].pipelines[0] != "quake_report" {
+				t.Errorf("pipelines = %v, want just quake_report", got[0].pipelines)
+			}
+		})
+
+		t.Run("every member marked is a whole-pack install", func(t *testing.T) {
+			c := load()
+			c.toggleMarkAt(0)
+			c.toggleMarkAt(1)
+			got := c.batch()
+			if len(got) != 1 || got[0].pack != "quake-monitor" {
+				t.Fatalf("batch = %+v, want one quake-monitor install", got)
+			}
+			if got[0].pipelines != nil {
+				t.Errorf("pipelines = %v, want nil: a full selection is the whole pack", got[0].pipelines)
+			}
+		})
+
+		t.Run("marks across packs become one install each", func(t *testing.T) {
 			c := load()
 			c.toggleMarkAll()
-			if got := c.batch(); len(got) != 2 {
-				t.Fatalf("batch = %v, want both packs marked", got)
+			got := c.batch()
+			if len(got) != 2 {
+				t.Fatalf("batch = %+v, want one install per pack", got)
+			}
+			if got[0].pack != "quake-monitor" || got[0].pipelines != nil {
+				t.Errorf("first = %+v, want quake-monitor whole", got[0])
+			}
+			if got[1].pack != "dlq-demo" || got[1].pipelines != nil {
+				t.Errorf("second = %+v, want dlq-demo whole", got[1])
+			}
+			if n := c.markedRows(); n != 3 {
+				t.Errorf("markedRows = %d, want all three rows", n)
 			}
 			c.toggleMarkAll()
 			if got := c.batch(); len(got) != 0 {
-				t.Errorf("batch = %v, want the second * to clear", got)
+				t.Errorf("batch = %+v, want the second * to clear", got)
 			}
 		})
 
@@ -227,8 +262,26 @@ func TestPsCatalogRows(t *testing.T) {
 			c := load()
 			c.query = []rune("quake")
 			c.toggleMarkAll()
-			if got := c.batch(); len(got) != 1 || got[0] != "quake-monitor" {
-				t.Errorf("batch = %v, want only the filtered pack", got)
+			got := c.batch()
+			if len(got) != 1 || got[0].pack != "quake-monitor" {
+				t.Errorf("batch = %+v, want only the filtered pack", got)
+			}
+		})
+
+		t.Run("a landed install clears the marks it carried, closure included", func(t *testing.T) {
+			c := load()
+			c.toggleMarkAt(1) // quake_report alone
+			pick := c.batch()[0]
+			// The leader pulled in quake_feed as lane closure and says so.
+			c.unmarkInstalled(&api.CatalogInstallResult{
+				Pack:      "quake-monitor",
+				Pipelines: []string{"quake_feed", "quake_report"},
+			}, pick)
+			if len(c.marked) != 0 {
+				t.Errorf("marked = %v, want every landed row cleared", c.marked)
+			}
+			if c.appliedRows != 2 {
+				t.Errorf("appliedRows = %d, want the closure counted", c.appliedRows)
 			}
 		})
 
@@ -263,8 +316,8 @@ func TestPsCatalogBatch(t *testing.T) {
 			m := newPsModel(psvFixture(), "")
 			openLoadedCatalog(m)
 			m.update(key(' '))
-			if !m.catalog.marked["quake-monitor"] {
-				t.Fatalf("marked = %v, want quake-monitor marked", m.catalog.marked)
+			if n := m.catalog.markedRows(); n != 1 {
+				t.Fatalf("marked = %v, want quake_feed alone marked", m.catalog.marked)
 			}
 			m.update(key(' '))
 			if len(m.catalog.marked) != 0 {
@@ -310,7 +363,10 @@ func TestPsCatalogBatch(t *testing.T) {
 			}
 			m.absorbCatalog(psCatalogMsg{kind: psCatalogList, seq: req.seq,
 				packs: []api.CatalogPack{{Name: "quake-monitor"}, {Name: "dlq-demo"}}})
-			m.idleCat.marked = map[string]bool{"quake-monitor": true, "dlq-demo": true}
+			m.idleCat.marked = map[string]bool{
+				psCatalogRow{pack: api.CatalogPack{Name: "quake-monitor"}}.key(): true,
+				psCatalogRow{pack: api.CatalogPack{Name: "dlq-demo"}}.key():      true,
+			}
 			m.catalogApply(m.idleCat)
 			head := m.takeCatalogReq()
 			if head == nil || head.pack != "quake-monitor" {
@@ -352,7 +408,7 @@ func TestPsCatalogBatch(t *testing.T) {
 			req := m.takeCatalogReq()
 			m.absorbCatalog(psCatalogMsg{kind: psCatalogApply, seq: req.seq, err: "catalog install failed: boom"})
 			c := m.catalog
-			if c == nil || !strings.Contains(c.banner, "boom") || !strings.Contains(c.banner, "1 marked packs skipped") {
+			if c == nil || !strings.Contains(c.banner, "boom") || !strings.Contains(c.banner, "1 marked pack(s) skipped") {
 				t.Fatalf("banner = %q, want the failure plus the skipped count", c.banner)
 			}
 			if len(c.queue) != 0 || m.catalogReq != nil {
@@ -367,7 +423,9 @@ func TestPsCatalogBatch(t *testing.T) {
 			m.parkCatalogReqFor(m.catalog, psCatalogReq{kind: psCatalogList})
 			req := m.takeCatalogReq()
 			m.absorbCatalog(psCatalogMsg{kind: psCatalogList, seq: req.seq, packs: []api.CatalogPack{{Name: "dlq-demo"}}})
-			if m.catalog.marked["quake-monitor"] || !m.catalog.marked["dlq-demo"] {
+			gone := psCatalogRow{pipeline: "quake_feed", pack: api.CatalogPack{Name: "quake-monitor"}}.key()
+			kept := psCatalogRow{pack: api.CatalogPack{Name: "dlq-demo"}}.key()
+			if m.catalog.marked[gone] || !m.catalog.marked[kept] {
 				t.Fatalf("marked = %v, want only dlq-demo to survive", m.catalog.marked)
 			}
 		})

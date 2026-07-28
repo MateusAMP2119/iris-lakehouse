@@ -33,6 +33,7 @@ func (a *app) catalogCmd() *cobra.Command {
 	for _, c := range []*cobra.Command{initCmd, install} {
 		c.Flags().Bool("apply", false, "run the declare sequence in the derived order after materializing")
 		c.Flags().Bool("force", false, "overwrite existing workspace paths instead of refusing")
+		c.Flags().StringSlice("pipeline", nil, "install only these pack members (repeatable); their depends_on and lane come with them")
 	}
 	list := &cobra.Command{
 		Use: "list", Short: "List the packs available to install from configured catalogs",
@@ -60,9 +61,10 @@ func (a *app) catalogInstall(starter bool) runE {
 		}
 		apply, _ := cmd.Flags().GetBool("apply")
 		force, _ := cmd.Flags().GetBool("force")
+		pipelines, _ := cmd.Flags().GetStringSlice("pipeline")
 		var res api.CatalogInstallResult
 		if err := a.postDaemonJSON(cmd, "/catalog/install",
-			api.CatalogInstallRequest{Pack: pack, Apply: apply, Force: force}, "catalog install", &res); err != nil {
+			api.CatalogInstallRequest{Pack: pack, Pipelines: pipelines, Apply: apply, Force: force}, "catalog install", &res); err != nil {
 			return err
 		}
 		// Warnings render like declare apply's: top-level beside data under --json, stderr-prefixed otherwise.

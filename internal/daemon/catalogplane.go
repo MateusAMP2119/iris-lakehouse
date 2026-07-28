@@ -106,6 +106,16 @@ func (o *catalogOrchestrator) installPack(ctx context.Context, req api.CatalogIn
 	} else if !satisfied {
 		return api.CatalogInstallResult{}, fmt.Errorf("catalog install: pack %q requires engine %s or newer; this engine is %s", p.Name, p.Requires, o.engine)
 	}
+	// Narrow before anything reads the pack: the order, both preflights, and the
+	// materialize all describe what is actually being installed, not the shelf it
+	// came off.
+	if p, err = p.Subset(req.Pipelines); err != nil {
+		return api.CatalogInstallResult{}, fmt.Errorf("catalog install: %w", err)
+	}
+	taken, err := catalog.PipelineNames(p)
+	if err != nil {
+		return api.CatalogInstallResult{}, err
+	}
 	order, err := catalog.ApplyOrder(p)
 	if err != nil {
 		return api.CatalogInstallResult{}, err
@@ -126,9 +136,9 @@ func (o *catalogOrchestrator) installPack(ctx context.Context, req api.CatalogIn
 	if err != nil {
 		return api.CatalogInstallResult{}, err
 	}
-	res := api.CatalogInstallResult{Pack: p.Name, Files: files, ApplyOrder: order}
+	res := api.CatalogInstallResult{Pack: p.Name, Pipelines: taken, Files: files, ApplyOrder: order}
 	if !req.Apply {
-		o.logger.Info("catalog install: pack materialized", "pack", p.Name, "files", len(files))
+		o.logger.Info("catalog install: pack materialized", "pack", p.Name, "pipelines", len(taken), "files", len(files))
 		return res, nil
 	}
 	if o.apply == nil {

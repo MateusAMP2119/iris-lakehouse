@@ -822,7 +822,7 @@ func renderIdleCatalogBox(b *screenBuf, m *psModel, x, y, w, h int) {
 
 	// Key hint spliced into the list's bottom border, right-aligned. With
 	// circles picked it becomes the clickable apply affordance.
-	if n := len(c.batch()); n > 0 {
+	if n := c.markedRows(); n > 0 {
 		button := fmt.Sprintf("▶ apply %d marked", n)
 		if hx := x + w - 3 - len([]rune(button)); hx > x+2 {
 			b.text(hx, y+h-1, ansiMagenta, " "+button+" ")
@@ -908,7 +908,7 @@ func renderIdleCatalogBox(b *screenBuf, m *psModel, x, y, w, h int) {
 			nameSGR = selBG + "\033[1;38;2;235;235;245m"
 			metaSGR = selBG + "\033[38;2;154;150;174m"
 		}
-		if c.marked[r.pack.Name] {
+		if c.marked[r.key()] {
 			b.text(x+3, ry, ansiMagenta, "●")
 		} else {
 			b.text(x+3, ry, metaSGR, "○")
@@ -1609,7 +1609,7 @@ func renderCatalogOverlay(b *screenBuf, m *psModel) {
 		}
 		row := oy + 1 + (i - top)
 		// Mark circle: ○ unpicked, ● picked; clicking one toggles its pack.
-		if c.marked[r.pack.Name] {
+		if c.marked[r.key()] {
 			b.text(ox+2, row, ansiMagenta, "●")
 		} else {
 			b.text(ox+2, row, ansiDim, "○")
@@ -1683,7 +1683,7 @@ func renderCatalogOverlay(b *screenBuf, m *psModel) {
 	b.box(ox, oy+listH, ow, footH, ansiBorder, ansiDim, "")
 	hint := "␣ pick · * all · ⏎ apply picked · + source · esc close"
 	button := "" // the clickable select-then-apply affordance, when circles are picked
-	if n := len(c.batch()); n > 0 {
+	if n := c.markedRows(); n > 0 {
 		hint = "␣ mark · * all · esc close"
 		button = fmt.Sprintf("▶ apply %d marked", n)
 	}
