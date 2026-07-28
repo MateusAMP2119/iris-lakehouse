@@ -150,7 +150,13 @@ func (f *sourceWatcher) noteAnswer(st *sourceState, resp *http.Response, body []
 	if changed {
 		f.logger.Info("declared source changed", "pipeline", st.pipeline, "bytes", len(body))
 	}
-	return frameAnswer(st.pipeline, st.url, resp.StatusCode, changed, body, sum)
+	// The frame's body must be UTF-8 to survive the protocol's JSON string; the
+	// digest and byte count stay those of the bytes the origin actually served.
+	text, charset := decodeUTF8(body, resp.Header.Get("Content-Type"))
+	if charset != "" {
+		f.logger.Info("declared source transcoded", "pipeline", st.pipeline, "charset", charset)
+	}
+	return frameAnswer(st.pipeline, st.url, resp.StatusCode, changed, text, len(body), sum, charset)
 }
 
 // noteFailure records a failed fetch -- health, the daemon log on power-of-two
@@ -166,12 +172,14 @@ func (f *sourceWatcher) noteFailure(st *sourceState, ferr error, status int) *so
 	if fails&(fails-1) == 0 {
 		f.logger.Warn("declared source fetch failed", "pipeline", st.pipeline, "url", st.url, "err", ferr, "consecutive", fails)
 	}
-	return frameAnswer(st.pipeline, st.url, status, false, nil, [32]byte{})
+	return frameAnswer(st.pipeline, st.url, status, false, nil, 0, [32]byte{}, "")
 }
 
 // frameAnswer renders one fetch's answer: the protocol line and the capture's
-// digest summary.
-func frameAnswer(pipeline, url string, status int, changed bool, body []byte, sum [32]byte) *sourceFrame {
+// digest summary. body is the UTF-8 text the pipeline reads; rawBytes and sum
+// describe the bytes the origin served, and charset names the encoding they were
+// decoded from when they were not UTF-8 already.
+func frameAnswer(pipeline, url string, status int, changed bool, body []byte, rawBytes int, sum [32]byte, charset string) *sourceFrame {
 	line, err := dispatch.EncodeSourceFrame(url, status, changed, body)
 	if err != nil {
 		// Encoding only fails on unmarshalable bytes, which a []byte-to-string
@@ -185,7 +193,8 @@ func frameAnswer(pipeline, url string, status int, changed bool, body []byte, su
 		Changed bool   `json:"changed"`
 		Bytes   int    `json:"bytes"`
 		SHA256  string `json:"sha256"`
-	}{Event: dispatch.TurnEventSource, URL: url, Status: status, Changed: changed, Bytes: len(body), SHA256: hex.EncodeToString(sum[:])})
+		Charset string `json:"charset,omitempty"`
+	}{Event: dispatch.TurnEventSource, URL: url, Status: status, Changed: changed, Bytes: rawBytes, SHA256: hex.EncodeToString(sum[:]), Charset: charset})
 	return &sourceFrame{pipeline: pipeline, line: line, summary: string(summary)}
 }
 
