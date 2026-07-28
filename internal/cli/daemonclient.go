@@ -2,11 +2,15 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
+	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -17,6 +21,22 @@ import (
 // daemonProbeTimeout bounds the reachability probe so a daemon-touching command
 // fails fast (never hangs) when nothing is listening.
 const daemonProbeTimeout = 3 * time.Second
+
+// localDialRetryWindow bounds how long the unix-socket dial waits out a socket
+// that exists but does not accept. A starting daemon unlinks the socket file it
+// finds and binds its own (daemon.PrepareSocketDir), and a stopping one can leave
+// its file behind, so a command issued right after `iris engine start -d` can
+// dial a socket whose listener is mid-handover. Retrying briefly makes that a
+// wait rather than "engine unreachable"; the window only bounds the loop, the
+// outcome is still decided by a dial that connects.
+//
+// The window opens only when a socket file is already at the path: with no socket
+// there is no engine to wait for, so those commands still fail at once and the
+// fail-fast contract on a stopped engine is unchanged.
+const localDialRetryWindow = 500 * time.Millisecond
+
+// localDialRetryBackoff is the pause between dial attempts inside the window.
+const localDialRetryBackoff = 20 * time.Millisecond
 
 // requireDaemon is the reachability gate behind the command surface's remaining
 // unwired verbs: it resolves the configured target and dials it. A refused or
@@ -90,10 +110,56 @@ func (a *app) daemonHTTPClient(s config.Settings) (client *http.Client, base str
 	socket := s.Socket
 	return &http.Client{Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "unix", socket)
+			return dialLocalSocket(ctx, socket)
 		},
 	}}, "http://iris", false
+}
+
+// dialLocalSocket dials the engine's unix control socket, waiting out a socket
+// that is present but not accepting for localDialRetryWindow. A daemon replacing
+// a predecessor unlinks and rebinds the path, so a refused dial on a socket file
+// that exists means "mid-handover", not "no engine" -- the command that lands
+// there should wait rather than report the engine unreachable. With no socket
+// file, or on any other dial fault, the first error is returned unretried.
+func dialLocalSocket(ctx context.Context, socket string) (net.Conn, error) {
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "unix", socket)
+	if err == nil || !retryableDialErr(err) || !socketFilePresent(socket) {
+		return conn, err
+	}
+
+	rctx, cancel := context.WithTimeout(ctx, localDialRetryWindow)
+	defer cancel()
+	for {
+		select {
+		case <-rctx.Done():
+			return nil, err
+		case <-time.After(localDialRetryBackoff):
+		}
+		conn, rerr := d.DialContext(rctx, "unix", socket)
+		if rerr == nil {
+			return conn, nil
+		}
+		if !retryableDialErr(rerr) {
+			return nil, rerr
+		}
+		err = rerr
+	}
+}
+
+// retryableDialErr reports whether a unix-socket dial failure is the kind a
+// daemon handover produces: nothing accepting on a socket file that is there
+// (refused), or the file momentarily unlinked between a stale socket's removal
+// and the new listener's bind (not-exist).
+func retryableDialErr(err error) bool {
+	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, fs.ErrNotExist)
+}
+
+// socketFilePresent reports whether anything exists at the socket path, the
+// signal that there is an engine to wait for at all.
+func socketFilePresent(socket string) bool {
+	_, err := os.Stat(socket)
+	return err == nil
 }
 
 // hostScheme splits a --host value into its transport scheme and host:port. An
