@@ -31,8 +31,10 @@ const maxPackTotalBytes = 64 << 20
 // maxPackFiles bounds a pack's file count (entry-flood guard).
 const maxPackFiles = 512
 
-// indexFetchTimeout bounds one index fetch; the 5-minute HTTPFetch ceiling is for tarballs, and a listing must not hang behind a black-holed catalog.
-const indexFetchTimeout = 15 * time.Second
+// IndexFetchTimeout bounds one index fetch; the 5-minute HTTPFetch ceiling is for tarballs, and a listing must not hang behind a black-holed catalog.
+// It is exported because a client waiting on a daemon-side listing must outlast
+// it: a client that gives up first abandons a healthy engine mid-fetch.
+const IndexFetchTimeout = 15 * time.Second
 
 // HTTPFetch is the production Fetcher: plain GET, timeout, 200-only, size-bounded.
 func HTTPFetch(ctx context.Context, rawURL string) ([]byte, error) {
@@ -96,7 +98,7 @@ func (r Remote) fetch() Fetcher {
 
 // Index fetches and parses the catalog's index, under the short index deadline.
 func (r Remote) Index(ctx context.Context) (Index, error) {
-	ctx, cancel := context.WithTimeout(ctx, indexFetchTimeout)
+	ctx, cancel := context.WithTimeout(ctx, IndexFetchTimeout)
 	defer cancel()
 	data, err := r.fetch()(ctx, r.URL)
 	if err != nil {

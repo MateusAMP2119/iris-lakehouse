@@ -94,8 +94,16 @@ func (a *app) catalogInstall(starter bool) runE {
 	}
 }
 
-// catalogListTimeout bounds the listing read so a wedged daemon fails instead of hanging the verb.
-const catalogListTimeout = 10 * time.Second
+// catalogListTimeout bounds the listing read so a wedged daemon fails instead of
+// hanging the verb. It is derived from the daemon's own per-index fetch ceiling
+// rather than set flat, because it must OUTLAST it: the daemon fetches each
+// catalog index under catalog.IndexFetchTimeout, so a client that gives up first
+// abandons a healthy engine mid-fetch and, having only a transport error to go
+// on, cannot tell that from an engine that never answered. A flat 10s sat below
+// the 15s fetch ceiling and reported a cold catalog fetch -- the first listing
+// after a fresh start, before anything is warm -- as an unreachable engine. The
+// headroom covers the daemon's own dispatch around the fetch.
+const catalogListTimeout = catalog.IndexFetchTimeout + 10*time.Second
 
 // fetchCatalogListing reads GET /catalog. live=false means no engine answered.
 // Catalog egress is daemon-side only: with no engine the CLI does not fetch packs itself.
@@ -113,6 +121,17 @@ func (a *app) fetchCatalogListing(cmd *cobra.Command, op string) (payload catalo
 	}
 	resp, derr := client.Do(req)
 	if derr != nil {
+		// Our own deadline (or a cancelled command) is not an absent engine: the
+		// daemon may be answering right now, just slower than we waited. Reporting
+		// it as unreachable sends the operator to restart a healthy engine, so it
+		// gets its own fault naming the wait.
+		if ctx.Err() != nil {
+			return catalogListPayload{}, true, &fault{
+				code:    exitOpFailed,
+				codeStr: "catalog_timeout",
+				message: fmt.Sprintf("iris catalog %s: the engine did not answer within %s; the catalog fetch may be slow or a catalog host unreachable (retry, or check the engine with iris ps)", op, catalogListTimeout),
+			}
+		}
 		return catalogListPayload{}, false, nil
 	}
 	defer drainClose(resp)
