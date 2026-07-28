@@ -25,6 +25,11 @@ import (
 // removes it. Not user-facing config.
 const setupEngineChoiceName = ".setup-engine-choice"
 
+// catalogSetupProbeTimeout bounds the reachability fetch of one catalog index
+// during setup. An installer must fail fast on a catalog that black-holes, not
+// hang the last step of the ceremony.
+const catalogSetupProbeTimeout = 15 * time.Second
+
 // setupCmd builds `iris setup`: post-install engine and/or catalog configuration.
 // install.sh runs --phase engine then --phase catalog so the ceremony can show
 // [3/4] and [4/4] as separate steps. Standalone `iris setup` runs both (all).
@@ -423,6 +428,18 @@ func watchStartMilestones(stop <-chan struct{}, s config.Settings, stages chan<-
 
 // setupCatalogs runs the catalog menu (or preselect) and records the chosen
 // index URLs in the engine home iris.toml. Skip leaves the file untouched.
+//
+// Every chosen catalog is fetched before it is recorded, carrying any tokens
+// from IRIS_CATALOG_TOKENS, and a catalog that does not answer fails the phase:
+// install.sh exits on that, so a private catalog with no usable credential is a
+// loud install failure rather than an engine that comes up healthy and lists no
+// packs. Recording an index nobody could read is what made an unreachable
+// catalog look like an empty one.
+//
+// This is the one place a client reaches a catalog URL directly. The daemon owns
+// catalog egress everywhere else -- clients name packs, never URLs -- but the
+// operator has just typed this URL and the daemon does not start until after
+// this phase, so there is no leader to ask.
 func (a *app) setupCatalogs(preselect string, log *ceremonyLog, done func(string)) error {
 	choice, urls, err := selectCatalogSetup(preselect, a.out)
 	if err != nil {
@@ -438,16 +455,74 @@ func (a *app) setupCatalogs(preselect string, log *ceremonyLog, done func(string
 	case catalogSetupCustom:
 		log.line("  • Selected: Custom catalog")
 	}
+	tokenEntries := splitEnvList(os.Getenv(config.EnvCatalogTokens))
+	tokens, err := catalog.ParseHostTokens(tokenEntries)
+	if err != nil {
+		return &fault{code: exitOpFailed, codeStr: "setup_failed", message: fmt.Sprintf("iris setup: %s: %v", config.EnvCatalogTokens, err)}
+	}
+	for _, u := range urls {
+		if err := a.verifyCatalog(u, tokens); err != nil {
+			return err
+		}
+		log.line("  • Reachable: " + u)
+	}
 	home, err := config.Home(os.Getenv)
 	if err != nil {
 		return &fault{code: exitOpFailed, codeStr: "setup_failed", message: fmt.Sprintf("iris setup: resolve the engine home: %v", err)}
 	}
+	lists := map[string][]string{"catalogs": urls}
+	if len(tokenEntries) > 0 {
+		// The env var lives for this install only; the daemon reads iris.toml.
+		lists["catalog_tokens"] = tokenEntries
+	}
 	tomlPath := filepath.Join(home, config.FileName)
-	if err := config.UpsertTOML(tomlPath, nil, map[string][]string{"catalogs": urls}); err != nil {
+	if err := config.UpsertTOML(tomlPath, nil, lists); err != nil {
 		return &fault{code: exitOpFailed, codeStr: "setup_failed", message: fmt.Sprintf("iris setup: record catalogs: %v", err)}
 	}
 	done("Catalog configured")
 	return nil
+}
+
+// verifyCatalog fetches one index, turning a failure into a fault that says what
+// to do about it. An auth-shaped refusal is the likely one on a private catalog,
+// and the remedy is a token, so the message names how to supply one.
+func (a *app) verifyCatalog(indexURL string, tokens catalog.HostTokens) error {
+	probe := a.catalogProbe
+	if probe == nil {
+		probe = fetchCatalogIndex
+	}
+	if err := probe(indexURL, tokens); err != nil {
+		return &fault{
+			code:    exitOpFailed,
+			codeStr: "setup_failed",
+			message: fmt.Sprintf("iris setup: catalog %s did not answer: %v\n"+
+				"  A private catalog needs a token. Either authenticate the GitHub CLI (gh auth login)\n"+
+				"  and re-run, or set %s='<host>=<token>' before installing.",
+				indexURL, err, config.EnvCatalogTokens),
+		}
+	}
+	return nil
+}
+
+// fetchCatalogIndex is the production catalogProbe: one bounded index fetch,
+// carrying whatever token the host is configured for.
+func fetchCatalogIndex(indexURL string, tokens catalog.HostTokens) error {
+	ctx, cancel := context.WithTimeout(context.Background(), catalogSetupProbeTimeout)
+	defer cancel()
+	_, err := catalog.Remote{URL: indexURL, Fetch: tokens.Fetch}.Index(ctx)
+	return err
+}
+
+// splitEnvList splits a comma-separated environment value, dropping blanks. It
+// matches how IRIS_CATALOGS and IRIS_CATALOG_TOKENS are read into settings.
+func splitEnvList(v string) []string {
+	out := []string{}
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func (a *app) saveEngineSetupChoice(choice engineSetupChoice) error {

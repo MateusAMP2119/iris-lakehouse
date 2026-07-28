@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,12 +62,20 @@ func TestSetupCatalogsWritesTOML(t *testing.T) {
 
 	var out bytes.Buffer
 	a := newApp(&out, &out)
+	var probed []string
+	a.catalogProbe = func(indexURL string, _ catalog.HostTokens) error {
+		probed = append(probed, indexURL)
+		return nil
+	}
 	log := newCeremonyLog(&out)
 	done := func(label string) {
 		log.line(formatCeremonyLine(label, ceremonyCheckMark("✓")))
 	}
 	if err := a.setupCatalogs("public", log, done); err != nil {
 		t.Fatalf("setupCatalogs: %v", err)
+	}
+	if len(probed) != 1 || probed[0] != catalog.PublicCatalogURL {
+		t.Errorf("probed = %v, want the public catalog fetched before it was recorded", probed)
 	}
 	tomlPath := filepath.Join(home, config.FileName)
 	res, err := config.LoadTOMLFile(tomlPath)
@@ -98,6 +107,89 @@ func TestSetupCatalogsSkipLeavesNoFile(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Catalog: skipped") {
 		t.Errorf("output = %q, want Catalog: skipped", out.String())
+	}
+}
+
+// TestSetupCatalogsVerifiesBeforeRecording proves the install-time contract the
+// installer leans on: a catalog that does not answer fails the phase and leaves
+// iris.toml alone, so an unreachable catalog can never be recorded and then
+// surface later as an engine that starts healthy and lists no packs.
+func TestSetupCatalogsVerifiesBeforeRecording(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("IRIS_HOME", home)
+	t.Setenv("HOME", home)
+
+	var out bytes.Buffer
+	a := newApp(&out, &out)
+	a.catalogProbe = func(string, catalog.HostTokens) error {
+		return errors.New("unexpected status 404 Not Found")
+	}
+	err := a.setupCatalogs("https://private.test/catalog.json", newCeremonyLog(&out), func(string) {})
+	if err == nil {
+		t.Fatal("setupCatalogs succeeded, want the phase failed")
+	}
+	// The operator's next move has to be in the message: install.sh exits here.
+	for _, want := range []string{"private.test", "404", config.EnvCatalogTokens, "gh auth login"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to mention %q", err, want)
+		}
+	}
+	if _, statErr := os.Stat(filepath.Join(home, config.FileName)); !os.IsNotExist(statErr) {
+		t.Errorf("an unreachable catalog was recorded anyway: %v", statErr)
+	}
+}
+
+// TestSetupCatalogsPersistsTokens proves IRIS_CATALOG_TOKENS reaches iris.toml.
+// The variable lives for the install only; the daemon reads the file, so a token
+// that stopped at the environment would work once and never again.
+func TestSetupCatalogsPersistsTokens(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("IRIS_HOME", home)
+	t.Setenv("HOME", home)
+	t.Setenv(config.EnvCatalogTokens, "raw.githubusercontent.com=ghp_example")
+
+	var out bytes.Buffer
+	a := newApp(&out, &out)
+	var gotTokens catalog.HostTokens
+	a.catalogProbe = func(_ string, tokens catalog.HostTokens) error {
+		gotTokens = tokens
+		return nil
+	}
+	if err := a.setupCatalogs("https://private.test/catalog.json", newCeremonyLog(&out), func(string) {}); err != nil {
+		t.Fatalf("setupCatalogs: %v", err)
+	}
+	if gotTokens["raw.githubusercontent.com"] != "ghp_example" {
+		t.Errorf("probe tokens = %v, want the configured token presented during verification", gotTokens.Hosts())
+	}
+	res, err := config.LoadTOMLFile(filepath.Join(home, config.FileName))
+	if err != nil {
+		t.Fatalf("LoadTOMLFile: %v", err)
+	}
+	if res.Layer.CatalogTokens == nil || len(*res.Layer.CatalogTokens) != 1 ||
+		(*res.Layer.CatalogTokens)[0] != "raw.githubusercontent.com=ghp_example" {
+		t.Fatalf("CatalogTokens = %#v, want the entry persisted for the daemon", res.Layer.CatalogTokens)
+	}
+	if res.Layer.Catalogs == nil || len(*res.Layer.Catalogs) != 1 {
+		t.Fatalf("Catalogs = %#v, want the verified url recorded", res.Layer.Catalogs)
+	}
+}
+
+// TestSetupCatalogsRefusesMalformedTokens proves a bad entry fails the install
+// rather than starting an engine that is silently unauthenticated.
+func TestSetupCatalogsRefusesMalformedTokens(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("IRIS_HOME", home)
+	t.Setenv("HOME", home)
+	t.Setenv(config.EnvCatalogTokens, "this-has-no-separator")
+
+	var out bytes.Buffer
+	a := newApp(&out, &out)
+	a.catalogProbe = func(string, catalog.HostTokens) error {
+		t.Fatal("a malformed token must be refused before any catalog is fetched")
+		return nil
+	}
+	if err := a.setupCatalogs("public", newCeremonyLog(&out), func(string) {}); err == nil {
+		t.Fatal("setupCatalogs succeeded, want the malformed entry refused")
 	}
 }
 

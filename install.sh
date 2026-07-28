@@ -18,6 +18,8 @@
 #   IRIS_DEST=<dir>      install into this directory (default ~/.iris/bin)
 #   IRIS_ENGINE_SETUP=<local|remote|skip>  answer the engine-setup menu without a prompt
 #   IRIS_SETUP_CATALOGS=<public|skip|url[,url…]>  answer the catalog menu without a prompt
+#   IRIS_CATALOG_TOKENS=<host=token[,host=token…]>  credentials for a private catalog;
+#                        recorded in iris.toml so the engine keeps them after install
 #   IRIS_SETUP_EXISTING=<reuse|restart|wipe>  answer the existing-engine menu without a prompt
 #                        (unanswered: restart when an engine is running, else reuse)
 #   NO_COLOR             plain output
