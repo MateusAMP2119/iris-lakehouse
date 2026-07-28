@@ -149,6 +149,32 @@ func TestPsFrameGoldens(t *testing.T) {
 			golden.Assert(t, []byte(framePlain(m, 100, 30)), "testdata/psv_empty_100x30.txt")
 		})
 
+		t.Run("empty workspace catalog loaded 100x30", func(t *testing.T) {
+			// The idle card's catalog with a listing absorbed: rows are pipelines,
+			// the pack column repeats down each pack's run, and the description
+			// rides only the row that opens one. A pack declaring no pipelines
+			// (dlq-demo) still holds a row under its own name.
+			m := newPsModel(Snapshot{Ps: api.PsPayload{
+				Engine: api.PsEngine{Version: "dev", Role: "leader", PID: 7, Uptime: "12s"},
+			}}, "unix:///home/tiger/.iris/engine.sock")
+			m.quote = quotes.Farewell[0]
+			req := m.takeCatalogReq()
+			if req == nil {
+				t.Fatal("the idle card parked no catalog listing request")
+			}
+			m.absorbCatalog(psCatalogMsg{kind: psCatalogList, seq: req.seq, packs: []api.CatalogPack{
+				{
+					Name:        "orders-etl",
+					Description: "Order ingest, staged and loaded",
+					Tags:        []string{"etl", "orders"},
+					Installed:   true,
+					Pipelines:   []string{"extract", "load_orders"},
+				},
+				{Name: "dlq-demo", Description: "A pack with no declared members"},
+			}})
+			golden.Assert(t, []byte(framePlain(m, 100, 30)), "testdata/psv_empty_catalog_100x30.txt")
+		})
+
 		t.Run("empty workspace tiny terminal falls back", func(t *testing.T) {
 			m := newPsModel(Snapshot{Ps: api.PsPayload{
 				Engine: api.PsEngine{Version: "dev", Role: "leader", PID: 7, Uptime: "12s"},

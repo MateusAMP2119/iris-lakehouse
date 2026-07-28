@@ -163,14 +163,98 @@ func TestPsCatalogOverlay(t *testing.T) {
 	})
 }
 
+// TestPsCatalogRows proves the list is browsed by pipeline while picking stays
+// a pack decision: a pack contributes one row per declared pipeline, one that
+// declares none still holds a row, marking any row marks the whole pack, and
+// '*' takes or clears everything currently visible.
+func TestPsCatalogRows(t *testing.T) {
+	t.Run("ps-catalog-rows", func(t *testing.T) {
+		load := func() *psCatalog {
+			return &psCatalog{packs: []api.CatalogPack{
+				{Name: "quake-monitor", Pipelines: []string{"quake_feed", "quake_report"}},
+				{Name: "dlq-demo"},
+			}}
+		}
+
+		t.Run("a pack expands into its pipelines, one without keeps its own row", func(t *testing.T) {
+			vis := load().visible()
+			want := []string{"quake_feed", "quake_report", "dlq-demo"}
+			if len(vis) != len(want) {
+				t.Fatalf("visible = %d rows, want %d", len(vis), len(want))
+			}
+			for i, w := range want {
+				if vis[i].label() != w {
+					t.Errorf("row %d label = %q, want %q", i, vis[i].label(), w)
+				}
+			}
+			if vis[0].pack.Name != "quake-monitor" || vis[2].pipeline != "" {
+				t.Errorf("rows = %+v, want the pipelines owned by quake-monitor and dlq-demo bare", vis)
+			}
+		})
+
+		t.Run("marking a pipeline marks its pack, siblings included", func(t *testing.T) {
+			c := load()
+			c.toggleMarkAt(0) // quake_feed
+			if !c.marked["quake-monitor"] {
+				t.Fatalf("marked = %v, want the pipeline's pack marked", c.marked)
+			}
+			// The sibling row reads as marked because the mark is the pack's.
+			if vis := c.visible(); !c.marked[vis[1].pack.Name] {
+				t.Error("the sibling pipeline does not read as marked; the pack is the unit")
+			}
+			if got := c.batch(); len(got) != 1 || got[0] != "quake-monitor" {
+				t.Errorf("batch = %v, want one pack", got)
+			}
+			c.toggleMarkAt(1) // the sibling unmarks the same pack
+			if len(c.marked) != 0 {
+				t.Errorf("marked = %v, want the sibling to unmark the pack", c.marked)
+			}
+		})
+
+		t.Run("* takes everything, then clears it", func(t *testing.T) {
+			c := load()
+			c.toggleMarkAll()
+			if got := c.batch(); len(got) != 2 {
+				t.Fatalf("batch = %v, want both packs marked", got)
+			}
+			c.toggleMarkAll()
+			if got := c.batch(); len(got) != 0 {
+				t.Errorf("batch = %v, want the second * to clear", got)
+			}
+		})
+
+		t.Run("* follows the filter, not the whole catalog", func(t *testing.T) {
+			c := load()
+			c.query = []rune("quake")
+			c.toggleMarkAll()
+			if got := c.batch(); len(got) != 1 || got[0] != "quake-monitor" {
+				t.Errorf("batch = %v, want only the filtered pack", got)
+			}
+		})
+
+		t.Run("the filter matches a pipeline name, not only its pack", func(t *testing.T) {
+			c := load()
+			c.query = []rune("report")
+			vis := c.visible()
+			if len(vis) != 1 || vis[0].label() != "quake_report" {
+				t.Fatalf("visible = %+v, want the one matching pipeline", vis)
+			}
+		})
+	})
+}
+
 // TestPsCatalogBatch proves the space-marked batch apply: marks toggle, 'a'
 // chains one apply per marked pack through the single-request loop, a failure
 // stops the chain naming the skipped tail, and a refreshed listing prunes
 // marks whose packs vanished.
 func TestPsCatalogBatch(t *testing.T) {
 	t.Run("ps-catalog-batch", func(t *testing.T) {
+		// Rows are pipelines, so quake-monitor owns two of them (quake_feed,
+		// quake_report) and dlq-demo -- which declares none -- owns the third.
+		// Reaching the second pack is two rows down, not one.
 		markBoth := func(m *psModel) {
-			m.update(key(' ')) // quake-monitor
+			m.update(key(' ')) // quake_feed -> marks quake-monitor
+			m.update(psKey{kind: psKeyDown})
 			m.update(psKey{kind: psKeyDown})
 			m.update(key(' ')) // dlq-demo
 		}

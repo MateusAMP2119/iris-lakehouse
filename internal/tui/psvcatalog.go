@@ -44,6 +44,33 @@ type psCatalogMsg struct {
 	seq      int      // echo of the request's correlation id; stale outcomes are dropped
 }
 
+// psCatalogRow is one line of a catalog list. A catalog is browsed by pipeline
+// -- what an operator is actually looking for is a scraper, not the crate it
+// shipped in -- so a pack contributes one row per pipeline it declares. A pack
+// whose index carries no member list still contributes a row naming itself,
+// rather than vanishing from a list it belongs in.
+//
+// Picking stays a pack decision. Install materializes a whole pack, and it has
+// to: a lane composer orders every member of its lane and a member's depends_on
+// can name a sibling, so half a pack is not a thing the engine can apply. The
+// row therefore marks its pack, and its siblings light up with it, which shows
+// that consequence rather than hiding it.
+type psCatalogRow struct {
+	// pipeline is the declared pipeline this row names, "" for a pack that
+	// declares none.
+	pipeline string
+	// pack is the pack the row belongs to and the unit picking it marks.
+	pack api.CatalogPack
+}
+
+// label is the row's leading cell: the pipeline, or the pack when it names none.
+func (r psCatalogRow) label() string {
+	if r.pipeline != "" {
+		return r.pipeline
+	}
+	return r.pack.Name
+}
+
 // psCatalog is one catalog surface's state: the overlay, or the idle card's
 // inline searchable list.
 type psCatalog struct {
@@ -92,14 +119,15 @@ func (c *psCatalog) toggleMark() {
 	c.toggleMarkAt(c.sel)
 }
 
-// toggleMarkAt flips the batch mark on the i-th visible pack (the ○/● circle's
-// click target).
+// toggleMarkAt flips the batch mark on the i-th visible row's pack (the ○/●
+// circle's click target). Rows are pipelines and the mark is a pack, so every
+// sibling row of the same pack flips with it.
 func (c *psCatalog) toggleMarkAt(i int) {
 	vis := c.visible()
 	if i < 0 || i >= len(vis) {
 		return
 	}
-	name := vis[i].Name
+	name := vis[i].pack.Name
 	if c.marked == nil {
 		c.marked = map[string]bool{}
 	}
@@ -109,6 +137,36 @@ func (c *psCatalog) toggleMarkAt(i int) {
 		c.marked[name] = true
 	}
 	c.banner = ""
+}
+
+// toggleMarkAll marks every pack the visible rows belong to, or clears them all
+// when they are already marked. It follows the filter: with a query typed it is
+// "all of what I am looking at", not "all of the catalog".
+func (c *psCatalog) toggleMarkAll() {
+	vis := c.visible()
+	if len(vis) == 0 {
+		return
+	}
+	c.banner = ""
+	allMarked := true
+	for _, r := range vis {
+		if !c.marked[r.pack.Name] {
+			allMarked = false
+			break
+		}
+	}
+	if allMarked {
+		for _, r := range vis {
+			delete(c.marked, r.pack.Name)
+		}
+		return
+	}
+	if c.marked == nil {
+		c.marked = map[string]bool{}
+	}
+	for _, r := range vis {
+		c.marked[r.pack.Name] = true
+	}
 }
 
 // working reports whether the surface owns an in-flight request or an
@@ -193,23 +251,30 @@ func (m *psModel) takeCatalogReq() *psCatalogReq {
 
 // visible is the query-filtered pack list (the full list on an empty query).
 // Matches name, description, and tags, case-insensitively.
-func (c *psCatalog) visible() []api.CatalogPack {
+func (c *psCatalog) visible() []psCatalogRow {
 	q := strings.ToLower(strings.TrimSpace(string(c.query)))
-	if q == "" {
-		return c.packs
-	}
-	var out []api.CatalogPack
+	var out []psCatalogRow
 	for _, p := range c.packs {
-		hay := strings.ToLower(p.Name + " " + p.Description + " " + strings.Join(p.Tags, " "))
-		if strings.Contains(hay, q) {
-			out = append(out, p)
+		// A pipeline matches on its own name as well as its pack's, so filtering
+		// for "lusa" finds the pipeline and filtering for the pack finds all of it.
+		packHay := strings.ToLower(p.Name + " " + p.Description + " " + strings.Join(p.Tags, " "))
+		if len(p.Pipelines) == 0 {
+			if q == "" || strings.Contains(packHay, q) {
+				out = append(out, psCatalogRow{pack: p})
+			}
+			continue
+		}
+		for _, name := range p.Pipelines {
+			if q == "" || strings.Contains(packHay, q) || strings.Contains(strings.ToLower(name), q) {
+				out = append(out, psCatalogRow{pipeline: name, pack: p})
+			}
 		}
 	}
 	return out
 }
 
-// selected returns the pack under the cursor, nil on an empty (filtered) list.
-func (c *psCatalog) selected() *api.CatalogPack {
+// selected returns the row under the cursor, nil on an empty (filtered) list.
+func (c *psCatalog) selected() *psCatalogRow {
 	vis := c.visible()
 	if c.sel < 0 || c.sel >= len(vis) {
 		return nil
@@ -267,6 +332,8 @@ func (m *psModel) updateCatalog(k psKey) {
 			m.catalogApply(c)
 		case ' ':
 			c.toggleMark()
+		case '*':
+			c.toggleMarkAll()
 		case '+':
 			c.addingURL, c.urlInput = true, nil
 			c.banner = ""
@@ -346,6 +413,9 @@ func (m *psModel) updateIdleCatalog(k psKey) bool {
 		case ' ':
 			c.toggleMark()
 			return true
+		case '*':
+			c.toggleMarkAll()
+			return true
 		case '+':
 			c.addingURL, c.urlInput = true, nil
 			c.banner = ""
@@ -361,7 +431,7 @@ func (m *psModel) catalogMove(delta int) {
 }
 
 // psCatalogPickHint nudges toward the circles when apply fires with nothing picked.
-const psCatalogPickHint = "nothing picked · ␣ or click ○ to pick packs"
+const psCatalogPickHint = "nothing picked · ␣ or click ○ to pick · * for all"
 
 // catalogApply fires the picked batch: one install+apply per marked pack, in
 // catalog order, chained through the single-request loop. No confirm — enter,

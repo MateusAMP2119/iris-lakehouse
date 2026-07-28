@@ -3,8 +3,6 @@ package tui
 import (
 	"fmt"
 	"strings"
-
-	"github.com/MateusAMP2119/iris-lakehouse/internal/api"
 )
 
 // This file renders the `iris ps` dashboard: a cell-grid screen buffer the
@@ -803,7 +801,7 @@ func renderIdleCatalogBox(b *screenBuf, m *psModel, x, y, w, h int) {
 	c, spin := m.idleCat, m.spin
 	title := "catalog"
 	if !c.loading {
-		title += fmt.Sprintf(" · %d packs", len(c.packs))
+		title += fmt.Sprintf(" · %d pipelines · %d packs", len(c.visible()), len(c.packs))
 	}
 
 	// Filter input box, titled; the pack list box sits directly under it.
@@ -831,7 +829,7 @@ func renderIdleCatalogBox(b *screenBuf, m *psModel, x, y, w, h int) {
 			m.addClick(psClick{x: hx, y: y + h - 1, w: len([]rune(button)) + 2, kind: psClickCatalogApply})
 		}
 	} else {
-		hint := "␣ pick · + source · ↑↓ browse · ⏎ apply picked"
+		hint := "␣ pick · * all · + source · ↑↓ browse · ⏎ apply picked"
 		if hx := x + w - 3 - len([]rune(hint)); hx > x+2 {
 			b.text(hx, y+h-1, ansiDim, " "+hint+" ")
 		}
@@ -861,33 +859,35 @@ func renderIdleCatalogBox(b *screenBuf, m *psModel, x, y, w, h int) {
 		b.text(x+5, listY, ansiDim, "loading catalog…")
 		return
 	case len(vis) == 0 && len(c.query) > 0:
-		b.text(x+3, listY, ansiDim, clipCells("no packs match "+string(c.query), w-6))
+		b.text(x+3, listY, ansiDim, clipCells("nothing matches "+string(c.query), w-6))
 		return
 	case len(vis) == 0:
-		b.text(x+3, listY, ansiDim, "no packs")
+		b.text(x+3, listY, ansiDim, "no pipelines")
 		return
 	}
 
-	// Column layout: name, tags, description, each sized to its widest cell.
-	nameW, tagsW := 0, 0
-	rowTags := func(p api.CatalogPack) string { return strings.Join(p.Tags, ",") }
-	for _, p := range vis {
-		n := len([]rune(p.Name))
-		if p.Installed {
+	// Column layout: pipeline, pack, description, each sized to its widest cell.
+	// The description repeats down a pack's rows, so only its first row carries
+	// it -- twenty-two copies of one sentence is noise, and the gap reads as the
+	// grouping it is.
+	nameW, packW := 0, 0
+	for _, r := range vis {
+		n := len([]rune(r.label()))
+		if r.pack.Installed {
 			n += 2 // " ●"
 		}
 		if n > nameW {
 			nameW = n
 		}
-		if t := len([]rune(rowTags(p))); t > tagsW {
-			tagsW = t
+		if p := len([]rune(r.pack.Name)); r.pipeline != "" && p > packW {
+			packW = p
 		}
 	}
 	// Leading mark circles: ○ unpicked, ● picked; clicking one toggles it.
 	const markW = 2
 	nameX := x + 3 + markW
-	tagsX := nameX + nameW + 6
-	descX := tagsX + tagsW + 6
+	packX := nameX + nameW + 6
+	descX := packX + packW + 6
 	right := x + w - 3
 
 	// Full-row selection highlight: soft violet backdrop, bright bold name.
@@ -897,7 +897,7 @@ func renderIdleCatalogBox(b *screenBuf, m *psModel, x, y, w, h int) {
 		top = c.sel - listH + 1
 	}
 	for i := top; i < len(vis) && i-top < listH; i++ {
-		p := vis[i]
+		r := vis[i]
 		ry := listY + (i - top)
 		m.addClick(psClick{x: x + 1, y: ry, w: w - 2, kind: psClickCatalogRow, idx: i})
 		nameSGR, metaSGR := "", ansiDim
@@ -908,28 +908,35 @@ func renderIdleCatalogBox(b *screenBuf, m *psModel, x, y, w, h int) {
 			nameSGR = selBG + "\033[1;38;2;235;235;245m"
 			metaSGR = selBG + "\033[38;2;154;150;174m"
 		}
-		if c.marked[p.Name] {
+		if c.marked[r.pack.Name] {
 			b.text(x+3, ry, ansiMagenta, "●")
 		} else {
 			b.text(x+3, ry, metaSGR, "○")
 		}
 		m.addClick(psClick{x: x + 3, y: ry, w: 1, kind: psClickMarkPack, idx: i})
 		nx := nameX
-		b.text(nx, ry, nameSGR, clipEll(p.Name, right-nx))
-		nx += len([]rune(p.Name))
-		if p.Installed && nx+2 <= right {
+		label := r.label()
+		b.text(nx, ry, nameSGR, clipEll(label, right-nx))
+		nx += len([]rune(label))
+		if r.pack.Installed && nx+2 <= right {
 			b.text(nx, ry, ansiGreen, " ●")
 		}
-		if tags := rowTags(p); tags != "" && tagsX < right {
-			b.text(tagsX, ry, metaSGR, clipEll(tags, min(tagsW, right-tagsX)))
+		if r.pipeline != "" && packX < right {
+			b.text(packX, ry, metaSGR, clipEll(r.pack.Name, min(packW, right-packX)))
 		}
-		if p.Description != "" && descX < right {
-			b.text(descX, ry, metaSGR, clipEll(p.Description, right-descX))
+		if firstRowOfPack(vis, i) && r.pack.Description != "" && descX < right {
+			b.text(descX, ry, metaSGR, clipEll(r.pack.Description, right-descX))
 		}
 	}
 	if more := len(vis) - top - listH; more > 0 {
 		b.text(x+3, y+h-1, ansiDim, fmt.Sprintf("─ %d more ─", more))
 	}
+}
+
+// firstRowOfPack reports whether row i opens its pack's run of rows, which is
+// the row that carries the pack-level description.
+func firstRowOfPack(vis []psCatalogRow, i int) bool {
+	return i == 0 || vis[i-1].pack.Name != vis[i].pack.Name
 }
 
 // renderIdleStatusBox paints the idle card's left box: state, queue depth,
@@ -1576,29 +1583,33 @@ func renderCatalogOverlay(b *screenBuf, m *psModel) {
 
 	b.box(ox, oy, leftW, listH, ansiBorder, ansiDim, "catalog")
 
-	// Pack list, selection inverted; installed and shadowed badges plus tags ride
-	// the row. The list windows over the packs so a selection moved past the pane
-	// height stays visible (the search overlay's rule).
+	// Pipeline list, selection inverted; each row names its pack, and the pack's
+	// installed and shadowed badges ride its first row. The list windows over the
+	// rows so a selection moved past the pane height stays visible (the search
+	// overlay's rule).
+	vis := c.visible()
 	innerH := listH - 2
 	top := 0
 	if innerH > 0 && c.sel >= innerH {
 		top = c.sel - innerH + 1
 	}
-	for i := top; i < len(c.packs) && i-top < innerH; i++ {
-		p := c.packs[i]
-		label := p.Name
-		if p.Installed {
-			label += " ●installed"
+	for i := top; i < len(vis) && i-top < innerH; i++ {
+		r := vis[i]
+		label := r.label()
+		if r.pipeline != "" {
+			label += "  " + r.pack.Name
 		}
-		if p.Shadowed {
-			label += " (shadowed)"
-		}
-		if len(p.Tags) > 0 {
-			label += "  " + strings.Join(p.Tags, ",")
+		if firstRowOfPack(vis, i) {
+			if r.pack.Installed {
+				label += " ●installed"
+			}
+			if r.pack.Shadowed {
+				label += " (shadowed)"
+			}
 		}
 		row := oy + 1 + (i - top)
-		// Mark circle: ○ unpicked, ● picked; clicking one toggles it.
-		if c.marked[p.Name] {
+		// Mark circle: ○ unpicked, ● picked; clicking one toggles its pack.
+		if c.marked[r.pack.Name] {
 			b.text(ox+2, row, ansiMagenta, "●")
 		} else {
 			b.text(ox+2, row, ansiDim, "○")
@@ -1609,30 +1620,37 @@ func renderCatalogOverlay(b *screenBuf, m *psModel) {
 			paintSelAccent(b, ox+1, row, leftW-1, false)
 		}
 	}
-	if top+innerH < len(c.packs) {
-		b.text(ox+2, oy+listH-1, ansiDim, fmt.Sprintf("─ %d more ─", len(c.packs)-top-innerH))
+	if top+innerH < len(vis) {
+		b.text(ox+2, oy+listH-1, ansiDim, fmt.Sprintf("─ %d more ─", len(vis)-top-innerH))
 	}
 	if c.loading {
 		b.text(ox+2, oy+1, ansiDim, "loading…")
-	} else if len(c.packs) == 0 {
-		b.text(ox+2, oy+1, ansiDim, "no packs")
+	} else if len(vis) == 0 {
+		b.text(ox+2, oy+1, ansiDim, "no pipelines")
 	}
 
 	// Preview pane follows the selection.
 	px := ox + leftW + 1
 	pw := ow - leftW - 1
 	title := "preview"
-	if p := c.selected(); p != nil {
-		title = "preview · " + p.Name
+	if r := c.selected(); r != nil {
+		title = "preview · " + r.label()
 	}
 	b.box(px, oy, pw, listH, ansiBorder, ansiDim, title)
-	if p := c.selected(); p != nil {
+	if r := c.selected(); r != nil {
+		p := r.pack
 		tx, ty, tw := px+2, oy+1, pw-4
 		line := func(sgr, s string) {
 			if ty < oy+listH-1 {
 				b.text(tx, ty, sgr, clipCells(s, tw))
 				ty++
 			}
+		}
+		// The pack is what a pick applies, so say so on the pipeline's own preview
+		// rather than letting the row's granularity imply a partial install.
+		if r.pipeline != "" {
+			line(ansiCyan, r.pipeline)
+			line(ansiDim, "picking installs the whole pack:")
 		}
 		line(ansiCyan, p.Name+"  ["+p.Source+"]")
 		if p.Description != "" {
@@ -1663,10 +1681,10 @@ func renderCatalogOverlay(b *screenBuf, m *psModel) {
 
 	// Bottom band: banner (yellow) above the key hints.
 	b.box(ox, oy+listH, ow, footH, ansiBorder, ansiDim, "")
-	hint := "␣ pick · ⏎ apply picked · + source · esc close"
+	hint := "␣ pick · * all · ⏎ apply picked · + source · esc close"
 	button := "" // the clickable select-then-apply affordance, when circles are picked
 	if n := len(c.batch()); n > 0 {
-		hint = "␣ mark · esc close"
+		hint = "␣ mark · * all · esc close"
 		button = fmt.Sprintf("▶ apply %d marked", n)
 	}
 	switch {
