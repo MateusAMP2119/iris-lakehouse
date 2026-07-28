@@ -217,10 +217,14 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 	catalogCtl := newCatalogPlane()
 	// The live source set behind every catalog plane: iris.toml's catalogs list,
 	// growable at runtime through POST /catalog/sources with the grown list
-	// persisted back to iris.toml.
-	catalogSrc := newCatalogSources(s.Catalogs, func(urls []string) error {
+	// persisted back to iris.toml, and carrying catalog_tokens so a private
+	// catalog resolves like a public one.
+	catalogSrc, err := newCatalogSources(s.Catalogs, s.CatalogTokens, func(urls []string) error {
 		return config.UpsertTOML(filepath.Join(home, config.FileName), nil, map[string][]string{"catalogs": urls})
 	}, logger)
+	if err != nil {
+		return err
+	}
 	catalogResolver := catalogSrc.resolver
 	// The pipeline plane serves iris pipeline list from the reader pool (any node) and,
 	// once this daemon leads, POST /pipeline/run through the single writer and exec seam.

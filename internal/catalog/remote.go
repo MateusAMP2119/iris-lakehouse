@@ -36,18 +36,36 @@ const indexFetchTimeout = 15 * time.Second
 
 // HTTPFetch is the production Fetcher: plain GET, timeout, 200-only, size-bounded.
 func HTTPFetch(ctx context.Context, rawURL string) ([]byte, error) {
+	return fetchURL(ctx, rawURL, nil)
+}
+
+// fetchURL is the one fetch path, authenticated or not: HTTPFetch holds no
+// tokens, HostTokens.Fetch holds some, and everything else about the request
+// is identical either way.
+func fetchURL(ctx context.Context, rawURL string, tokens HostTokens) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("catalog: fetch %s: %w", rawURL, err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client := http.DefaultClient
+	if token := tokens.tokenFor(req.URL); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+		client = authorizedClient(req.URL.Hostname())
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("catalog: fetch %s: %w", rawURL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
+		// A private catalog answers an unauthenticated reader with 404 as readily
+		// as with 401, so a bare status reads as "gone" when it means "not yours".
+		// Say so whenever no token is held for the host.
+		if authIsMissing(resp.StatusCode, tokens, req.URL) {
+			return nil, fmt.Errorf("catalog: fetch %s: unexpected status %s (no token configured for %s: a private catalog answers this way; add %s=<token> to catalog_tokens)", rawURL, resp.Status, req.URL.Hostname(), req.URL.Hostname())
+		}
 		return nil, fmt.Errorf("catalog: fetch %s: unexpected status %s", rawURL, resp.Status)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxPackBytes+1))
