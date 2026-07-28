@@ -21,7 +21,7 @@ func newSettingsViper() *viper.Viper {
 	for _, key := range []string{
 		"socket", "host", "token", "pg_dsn", "retain",
 		"journal_partition_rows", "objects_path", "workspace",
-		"tcp", "tls_cert", "tls_key", "catalogs",
+		"tcp", "tls_cert", "tls_key", "catalogs", "catalog_tokens",
 	} {
 		_ = v.BindEnv(key)
 	}
@@ -57,6 +57,7 @@ func FromEnv(getenv func(string) string) (Layer, error) {
 		"objects_path":           getenv(EnvObjectsPath),
 		"workspace":              getenv(EnvWorkspace),
 		"catalogs":               getenv(EnvCatalogs),
+		"catalog_tokens":         getenv(EnvCatalogTokens),
 		"retain":                 getenv(EnvRetain),
 		"journal_partition_rows": getenv(EnvJournalPartitionRows),
 	}
@@ -88,6 +89,10 @@ func FromEnv(getenv func(string) string) (Layer, error) {
 	if raw := strings.TrimSpace(v.GetString("catalogs")); raw != "" {
 		list := splitList(raw)
 		l.Catalogs = &list
+	}
+	if raw := strings.TrimSpace(v.GetString("catalog_tokens")); raw != "" {
+		list := splitList(raw)
+		l.CatalogTokens = &list
 	}
 	if raw := strings.TrimSpace(v.GetString("retain")); raw != "" {
 		n, err := parseInt(raw)

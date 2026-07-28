@@ -22,7 +22,7 @@ import (
 	"strings"
 )
 
-// The documented IRIS_* environment variable names. These nine are the complete
+// The documented IRIS_* environment variable names. These ten are the complete
 // recognized set; no other IRIS_* variable feeds configuration.
 const (
 	// EnvHome relocates the engine home wholesale (tests, packaging). It is not a
@@ -39,6 +39,9 @@ const (
 	EnvWorkspace            = "IRIS_WORKSPACE"
 	// EnvCatalogs is a comma-separated list of catalog index URLs.
 	EnvCatalogs = "IRIS_CATALOGS"
+	// EnvCatalogTokens is a comma-separated list of host=token entries, the
+	// bearer token presented to a private catalog host.
+	EnvCatalogTokens = "IRIS_CATALOG_TOKENS"
 )
 
 // The built-in default numeric settings: run-history retention (keep the newest
@@ -115,6 +118,10 @@ type Settings struct {
 	Workspace string
 	// Catalogs is the ordered list of catalog index URLs pipeline packs install from (#220); empty by default.
 	Catalogs []string
+	// CatalogTokens holds host=token entries, the bearer token the daemon
+	// presents to a private catalog host; empty by default (public catalogs
+	// need none).
+	CatalogTokens []string
 }
 
 // Managed reports whether the engine runs its own managed Postgres. That is the
@@ -143,6 +150,8 @@ type Layer struct {
 	Workspace            *string
 	// Catalogs is set-whole-or-unset: a later layer replaces the entire list, never merges.
 	Catalogs *[]string
+	// CatalogTokens is set-whole-or-unset, like Catalogs.
+	CatalogTokens *[]string
 }
 
 // Resolve folds the four configuration sources into resolved Settings under
@@ -190,6 +199,9 @@ func Resolve(defaults, file, env, flags Layer) Settings {
 		if l.Catalogs != nil {
 			s.Catalogs = *l.Catalogs // whole-list replacement: the highest layer that set it wins
 		}
+		if l.CatalogTokens != nil {
+			s.CatalogTokens = *l.CatalogTokens // whole-list replacement, as for Catalogs
+		}
 	}
 	return s
 }
@@ -200,8 +212,9 @@ func Resolve(defaults, file, env, flags Layer) Settings {
 // journal partition size take their documented defaults; and the admin DSN is
 // left unset, which selects the managed Postgres. An empty home yields paths
 // relative to the invoking directory, the caller's last-resort fallback when no
-// home directory resolves. The catalog list is left unset: no catalog indexes by
-// default.
+// home directory resolves. The catalog list and its tokens are left unset: no
+// catalog indexes by default, and a configured one is fetched unauthenticated
+// until a token names its host.
 func Defaults(home string) Layer {
 	socket := filepath.Join(home, SocketName)
 	objects := filepath.Join(home, ObjectsDir)

@@ -4,6 +4,13 @@
 # `curl -fsSL https://install.iris-lakehouse.bymarreco.com/snapshot | bash`,
 # local bits. Extra knobs pass through: IRIS_DEST, IRIS_ENGINE_SETUP, NO_COLOR.
 #
+# A GitHub-hosted private catalog needs a credential, so when the GitHub CLI is
+# logged in this borrows its token for raw.githubusercontent.com and hands it to
+# the installer as IRIS_CATALOG_TOKENS. Setup fetches every catalog it is asked
+# to record and fails the install when one does not answer, so a missing or
+# unusable token stops here rather than surfacing later as an engine that comes
+# up healthy and lists no packs. An already-set IRIS_CATALOG_TOKENS wins.
+#
 # Same-shell: after install, `iris` should work without hash -r when the primary
 # shim (~/.local/bin) is on PATH, or when a passwordless-sudo refresh of
 # /usr/local/bin/iris covers a stale bash hash from older installs.
@@ -32,5 +39,16 @@ CGO_ENABLED=0 go build -trimpath \
 
 tar -czf "${DEV}/iris_${os}_${arch}.tar.gz" -C "$DEV" iris
 (cd "$DEV" && shasum -a 256 "iris_${os}_${arch}.tar.gz" > checksums.txt)
+
+# Borrow the GitHub CLI's token for a private catalog. Absence is not fatal here:
+# a public catalog needs none, and setup's fetch is what decides. The token is
+# never echoed -- it goes straight into the environment install.sh inherits.
+if [ -z "${IRIS_CATALOG_TOKENS:-}" ] && command -v gh >/dev/null 2>&1; then
+  if gh_token=$(gh auth token 2>/dev/null) && [ -n "$gh_token" ]; then
+    IRIS_CATALOG_TOKENS="raw.githubusercontent.com=${gh_token}"
+    export IRIS_CATALOG_TOKENS
+    echo "· Using your GitHub CLI login for raw.githubusercontent.com"
+  fi
+fi
 
 exec env IRIS_BASE_URL="file://${DEV}" bash "${ROOT}/install.sh" "$@"

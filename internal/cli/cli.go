@@ -28,6 +28,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/MateusAMP2119/iris-lakehouse/internal/catalog"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/declare"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/tui"
 	"github.com/MateusAMP2119/iris-lakehouse/internal/update"
@@ -67,6 +68,10 @@ type app struct {
 	// against the system trust store) and injected by tests to trust a self-signed
 	// test CA. A remote-control epic can promote it to a real --tls-ca flag.
 	daemonTLSConfig *tls.Config
+	// catalogProbe fetches a catalog index during setup to prove it answers
+	// before the URL is recorded. Nil in production (a real fetch); tests inject
+	// it so the suite stays hermetic and offline-safe.
+	catalogProbe func(indexURL string, tokens catalog.HostTokens) error
 	// applyWarnings computes the advisory warnings `iris declare apply` surfaces for
 	// a parsed declaration -- cross-mode reads and the like. It is still nil in
 	// production: the data-mode facts it needs live in meta, which only the daemon

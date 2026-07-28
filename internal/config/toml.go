@@ -44,7 +44,7 @@ const (
 //
 // The file is limited to engine/connection settings: the recognized keys are
 // socket, host, token, pg_dsn, retain, journal_partition_rows, objects_path,
-// tcp, tls_cert, tls_key, and catalogs. Any other well-formed key -- including the
+// tcp, tls_cert, tls_key, catalogs, and catalog_tokens. Any other well-formed key -- including the
 // project-level keys of an iris-declare.yaml (name, run, reads, writes,
 // depends_on, ...) -- is not honored: it is recorded in Ignored and contributes
 // nothing to the resolved settings. iris.toml is never a project manifest.
@@ -124,6 +124,8 @@ func (t *TOML) assign(key string, kind tomlValueKind, str string, num int64, lis
 		return setInt(&t.Layer.JournalPartitionRows, key, kind, num)
 	case "catalogs":
 		return setStringList(&t.Layer.Catalogs, key, kind, list)
+	case "catalog_tokens":
+		return setStringList(&t.Layer.CatalogTokens, key, kind, list)
 	default:
 		// Not an engine/connection setting: not honored, recorded so the caller
 		// can warn. iris.toml is never a project manifest.
