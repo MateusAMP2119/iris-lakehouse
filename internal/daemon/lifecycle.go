@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	osexec "os/exec"
 	"path/filepath"
@@ -33,10 +34,17 @@ import (
 // never recurses. It is set by Detach on the child's environment.
 const DaemonizedEnv = "IRIS_DAEMONIZED"
 
-// detachReadyPollBackoff caps the backoff between socket-reachability probes while
-// a detach waits for its child to come up. Readiness is a successful dial, never
-// elapsed time; the backoff only keeps the poll from spinning.
+// detachReadyPollBackoff caps the backoff between readiness probes while a detach
+// waits for its child to come up. Readiness is an answered request, never elapsed
+// time; the backoff only keeps the poll from spinning.
 const detachReadyPollBackoff = 200 * time.Millisecond
+
+// detachReadyProbeTimeout bounds ONE readiness probe. A connect(2) on a unix
+// socket lands in the listener's kernel backlog and succeeds whether or not
+// anything is accepting, so a probe against a bound-but-not-yet-serving listener
+// would otherwise park until the whole detach wait expired. Bounding each probe
+// retries instead.
+const detachReadyProbeTimeout = time.Second
 
 // killConfirmTimeout bounds how long StopDaemon waits, after a SIGKILL
 // escalation, to confirm the daemon has actually exited (and released its socket)
@@ -459,8 +467,9 @@ func Run(ctx context.Context, s config.Settings, logger *slog.Logger) error {
 
 // Detach re-execs the binary at exePath with childArgs as a background,
 // session-leading daemon whose stdout and stderr are redirected to the workspace
-// daemon log, then waits until the daemon's socket is reachable before returning
-// (-d detaches; the daemon survives the CLI's exit). The child inherits
+// daemon log, then waits until the daemon's control plane serves a request before
+// returning (-d detaches; the daemon survives the CLI's exit), so the command
+// issued right after a reported start finds a daemon that answers. The child inherits
 // DaemonizedEnv so it runs in the foreground of its new session and never detaches
 // again. The parent does not reap the child: it outlives the CLI.
 func Detach(ctx context.Context, s config.Settings, exePath string, childArgs []string) error {
@@ -487,7 +496,7 @@ func Detach(ctx context.Context, s config.Settings, exePath string, childArgs []
 		return fmt.Errorf("daemon: release detached daemon: %w", err)
 	}
 
-	if err := waitSocketReachable(ctx, s.Socket); err != nil {
+	if err := waitControlPlaneReady(ctx, s.Socket); err != nil {
 		return fmt.Errorf("daemon: detached daemon did not become reachable: %w", err)
 	}
 	return nil
@@ -568,26 +577,67 @@ func waitProcessGone(ctx context.Context, pid int) {
 // Accepted for the minimal stop; a pidfd-based handle can close it when the
 // platform surface allows.
 
-// waitSocketReachable polls until the unix socket at path accepts a connection or
-// ctx is done. Readiness is decided by a successful dial, never elapsed time; the
-// backoff only keeps the loop from spinning.
-func waitSocketReachable(ctx context.Context, path string) error {
-	var dialer net.Dialer
+// waitControlPlaneReady polls until the daemon on the unix socket at path answers
+// GET /healthz, or ctx is done. Readiness is decided by a served response, never
+// elapsed time and never a bare dial; the backoff only keeps the loop from
+// spinning.
+//
+// A successful dial is strictly weaker than a served request, in two ways that
+// both let a command issued right after `iris engine start -d` find nothing to
+// talk to. A connect(2) on a unix socket succeeds as soon as something is bound
+// at the path, so it also succeeds against this daemon's listener before its HTTP
+// server accepts. And Server.Start unlinks whatever socket file it finds before
+// binding its own (PrepareSocketDir), so a dial answered by a predecessor still
+// draining on that path says nothing about the daemon being started -- the detach
+// then reports ready while the real listener has not bound yet, and every command
+// in the gap is refused rather than waiting. Only a served response proves the
+// control plane will answer the next command; /healthz answers on every role, so
+// this is satisfied the moment the mux serves, without waiting for election.
+func waitControlPlaneReady(ctx context.Context, path string) error {
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", path)
+		},
+	}}
+	defer client.CloseIdleConnections()
+
 	backoff := 5 * time.Millisecond
 	for {
-		conn, err := dialer.DialContext(ctx, "unix", path)
-		if err == nil {
-			return conn.Close()
+		if err := probeHealthz(ctx, client); err == nil {
+			return nil
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("socket %s never became ready: %w", path, ctx.Err())
+			return fmt.Errorf("socket %s never served /healthz: %w", path, ctx.Err())
 		case <-time.After(backoff):
 		}
 		if backoff < detachReadyPollBackoff {
 			backoff *= 2
 		}
 	}
+}
+
+// probeHealthz issues one GET /healthz over client, reporting nil when the daemon
+// answers 2xx. The per-probe deadline keeps a connection parked in a bound
+// listener's backlog from stalling the whole readiness wait on one request.
+func probeHealthz(ctx context.Context, client *http.Client) error {
+	pctx, cancel := context.WithTimeout(ctx, detachReadyProbeTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(pctx, http.MethodGet, "http://iris/healthz", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("daemon: /healthz returned status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // modeLabel names the Postgres mode for the daemon's ready line.
